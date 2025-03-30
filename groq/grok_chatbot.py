@@ -13,7 +13,12 @@ from mcp.client.stdio import stdio_client
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("grok_chatbot.log"),
+        logging.StreamHandler()
+    ]
 )
 
 
@@ -100,6 +105,7 @@ class Server:
             )
             await session.initialize()
             self.session = session
+            logging.info(f"Server {self.name} initialized successfully.")
         except Exception as e:
             logging.error(f"Error initializing server {self.name}: {e}")
             await self.cleanup()
@@ -339,6 +345,7 @@ class ChatSession:
 
     async def start(self) -> None:
         """Main chat session handler."""
+        logging.info("Starting chat session...")
         try:
             for server in self.servers:
                 try:

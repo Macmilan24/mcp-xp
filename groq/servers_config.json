@@ -7,6 +7,10 @@
       "puppeteer": {
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
+      },
+      "galaxyTools": {
+        "command": "python3",
+        "args": ["/home/biniam/Desktop/Projects/mcp-xp/groq/bioblend_server"]
       }
     }
   }
