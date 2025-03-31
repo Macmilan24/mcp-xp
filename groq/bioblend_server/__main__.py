@@ -1,5 +1,6 @@
 import asyncio
-from .server import serve
+import server
+
 
 if __name__ == "__main__":
-    asyncio.run(serve())
+    asyncio.run(server.serve())
