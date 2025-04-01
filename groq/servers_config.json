@@ -10,7 +10,9 @@
       },
       "galaxyTools": {
         "command": "python3",
-        "args": ["/home/biniam/Desktop/Projects/mcp-xp/groq/bioblend_server"]
+        "args": ["-m", "bioblend_server"],
+        "env": {}
       }
     }
   }
+

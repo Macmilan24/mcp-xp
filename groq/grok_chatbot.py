@@ -112,27 +112,25 @@ class Server:
             raise
 
     async def list_tools(self) -> list[Any]:
-        """List available tools from the server.
-
-        Returns:
-            A list of available tools.
-
-        Raises:
-            RuntimeError: If the server is not initialized.
-        """
         if not self.session:
+            logging.error(f"Server {self.name} not initialized")
             raise RuntimeError(f"Server {self.name} not initialized")
 
+        logging.debug("getting tools")
         tools_response = await self.session.list_tools()
+        if not tools_response:
+            logging.warning(f"No tools found for server {self.name}")
+            return []
         tools = []
+        logging.info(f"Raw tools response from {self.name}: {tools_response}")
 
         for item in tools_response:
             if isinstance(item, tuple) and item[0] == "tools":
                 for tool in item[1]:
+                    logging.info(f"Server: {self.name}, Tool: {tool.name}, Description: {tool.description}")
                     tools.append(Tool(tool.name, tool.description, tool.inputSchema))
-
         return tools
-
+    
     async def execute_tool(
         self,
         tool_name: str,

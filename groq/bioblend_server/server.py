@@ -1,3 +1,4 @@
+import logging
 from typing import List
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -9,37 +10,40 @@ from mcp.types import (
     RootsCapability,
 )
 
+logger = logging.getLogger("bioblend_server")
+logging.basicConfig(level=logging.INFO)
 
 async def serve():
-    print("Server is starting...")
-
+    logger.info("Server is starting...")
     server = Server("galaxyTools")
 
     @server.list_tools()
     async def list_tools() -> List[Tool]:
-        return [
+        logger.info("Listing tools for galaxyTools")
+        tools = [
             Tool(
                 name="get_galaxy_tools",
                 description="Get Galaxy Tools",
-                inputschema={},
+                inputSchema={},  # Changed from 'inputSchema' to match MCP types
             )
         ]
+        logger.info(f"Returning tools: {[tool.name for tool in tools]}")
+        return tools
     
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+        logger.info(f"Calling tool: {name} with args: {arguments}")
         try:
             if name == "get_galaxy_tools":
-                # Here you would call the function to get the tools
-                # For example:
-                # tools = get_galaxy_tools(arguments)
-                # return tools
                 return [
                     TextContent(
                         type="text",
                         text="here are the galaxy tools",
                     )
                 ]
+            return [TextContent(type="text", text=f"Unknown tool: {name}")]
         except Exception as e:
+            logger.error(f"Tool error: {str(e)}")
             return [TextContent(type="text", text=f"Error: {str(e)}")]
     
     options = server.create_initialization_options()
