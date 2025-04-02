@@ -2,7 +2,6 @@ from bioblend import galaxy
 from utils.fetch_tool_source_code import fetch_galaxy_tool_source_code
 from utils.input_output_xml_data_extractor import extract_input_details,extract_output_details
 from utils.extract_inputs_outputs_xml import extract_inputs_outputs
-from utils.convert_to_html_form import converter
 from dotenv import load_dotenv
 import os
 import pprint
