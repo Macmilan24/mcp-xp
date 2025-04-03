@@ -9,6 +9,7 @@ from mcp.types import (
     ListRootsResult,
     RootsCapability,
 )
+from galaxy_tools import get_tools
 
 logger = logging.getLogger("bioblend_server")
 logging.basicConfig(level=logging.INFO)
@@ -20,13 +21,17 @@ async def serve():
     @server.list_tools()
     async def list_tools() -> List[Tool]:
         logger.info("Listing tools for galaxyTools")
-        tools = [
-            Tool(
-                name="get_galaxy_tools",
-                description="Get Galaxy Tools",
-                inputSchema={},  # Changed from 'inputSchema' to match MCP types
+        galaxy_tools = get_tools()
+        tools = []
+        for tool in galaxy_tools:
+            tools.append(
+                Tool(
+                    name=tool.name,
+                    description=tool.description,
+                    inputSchema=tool.input_schema,  # Changed from 'inputSchema' to match MCP types
+                )
             )
-        ]
+        
         logger.info(f"Returning tools: {[tool.name for tool in tools]}")
         return tools
     
