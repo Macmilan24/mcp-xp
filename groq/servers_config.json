@@ -1,13 +1,6 @@
 {
     "mcpServers": {
-      "sqlite": {
-        "command": "uvx",
-        "args": ["mcp-server-sqlite", "--db-path", "./test.db"]
-      },
-      "puppeteer": {
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
-      },
+      
       "galaxyTools": {
         "command": "python3",
         "args": ["-m", "bioblend_server"],
