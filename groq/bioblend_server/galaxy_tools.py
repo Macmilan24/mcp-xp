@@ -47,6 +47,15 @@ def get_tools(number_of_tools=10):
     t = tools(gi, int(number_of_tools))
     return t
 
+def get_tool(id):
+
+    """
+    Get a specific tool by its ID from the galaxy instance
+    """
+    gi = setup_instance()
+    tools_client = galaxy.tools.ToolClient(gi)
+    tool = tools_client.show_tool(tool_id=id)
+    return pprint.pformat(tool)
 
 if __name__ == "__main__":
     tools()

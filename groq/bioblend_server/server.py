@@ -9,7 +9,7 @@ from mcp.types import (
     ListRootsResult,
     RootsCapability,
 )
-from bioblend_server import get_tools
+from bioblend_server import get_tools, get_tool
 from pydantic import BaseModel
 
 
@@ -24,7 +24,6 @@ async def serve():
     @server.list_tools()
     async def list_tools() -> List[Tool]:
         logger.info("Listing tools for galaxyTools")
-        # galaxy_tools = get_tools()
         
         tools = []
 
@@ -44,6 +43,23 @@ async def serve():
                     }, 
                 )
             )
+        
+        tools.append(
+            Tool(
+                name="galaxy_tool_by_id",
+                description="Get a specific tool by its ID from the galaxy instance",
+                inputSchema={
+                    "type" : "object",
+                    "properties": {
+                        "tool_id": {
+                            "type": "string",
+                            "description": "The ID of the tool to fetch",
+                        },
+                    },
+                    "required" : ["tool_id"]
+                },
+            )
+        )
 
         return tools
     
@@ -63,6 +79,20 @@ async def serve():
                     TextContent(
                         type="text",
                         text=galaxy_tools,
+                    )
+                ]
+            
+            elif name == "galaxy_tool_by_id":
+                try:
+                    tool = get_tool(arguments["tool_id"])
+                    logger.info(f"tool: {tool}")
+                except Exception as e:
+                    logger.error(f"error: {str(e)}")
+                    return [TextContent(type="text", text=f"Error in executing get tool by id: {str(e)}")]
+                return [
+                    TextContent(
+                        type="text",
+                        text=tool,
                     )
                 ]
         except Exception as e:
