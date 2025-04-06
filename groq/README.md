@@ -157,6 +157,43 @@ galaxy_tools: {'description': 'from your computer', 'edam_operations': ['operati
 -   The first part lists 5 Galaxy tools with their metadata (e.g., id, name, description).
 -   The JSON at the end (`{"tool": "galaxy_tools", "arguments": {"number_of_tools": "5"}}`) is the LLM’s response, indicating it called the `galaxy_tools` tool with the argument `number_of_tools=5`.
 
+**Specific Tool Retrieval:**
+
+**Input:** At the `You:` prompt, type:
+
+get me the tools whose id is upload1
+
+
+**Expected Output:**
+
+The chatbot will fetch the tool with the specified ID (`upload1`) and display its metadata. The output will look like:
+
+tool: {'description': 'from your computer', 'edam_operations': ['operation_0224'], 'edam_topics': [], 'form_style': 'regular', 'hidden': '', 'id': 'upload1', 'is_workflow_compatible': False, 'labels': [], 'model_class': 'Tool', 'name': 'Upload File', 'panel_section_id': 'get_data', 'panel_section_name': 'Get Data', 'version': '1.1.7', 'xrefs': []}
+{
+"tool": "galaxy_tool_by_id",
+"arguments": {
+"tool_id": "upload1"
+}
+}
+
+
+**Tool Listing:**
+
+**Input:** At the `You:` prompt, type:
+
+what tools do u have
+
+
+**Expected Output:**
+
+The chatbot will list the available tools and their descriptions:
+
+I have two tools available:
+
+galaxy_tools: This tool allows me to fetch a specified number of tools from the galaxy instance.
+galaxy_tool_by_id: This tool allows me to fetch a specific tool by its ID from the galaxy instance.
+Please let me know if you need to use either of these tools.
+
 ## LLM Configuration
 
 The chatbot uses the Grok LLM with the following settings:
