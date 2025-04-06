@@ -9,47 +9,65 @@ from mcp.types import (
     ListRootsResult,
     RootsCapability,
 )
-from galaxy_tools import get_tools
+from bioblend_server import get_tools
+from pydantic import BaseModel
+
+
 
 logger = logging.getLogger("bioblend_server")
 logging.basicConfig(level=logging.INFO)
 
 async def serve():
-    logger.info("Server is starting...")
+    # logger.info("Server is starting...")
     server = Server("galaxyTools")
 
     @server.list_tools()
     async def list_tools() -> List[Tool]:
         logger.info("Listing tools for galaxyTools")
-        galaxy_tools = get_tools()
+        # galaxy_tools = get_tools()
+        
         tools = []
-        for tool in galaxy_tools:
-            tools.append(
+
+        tools.append(
                 Tool(
-                    name=tool.name,
-                    description=tool.description,
-                    inputSchema=tool.input_schema,  # Changed from 'inputSchema' to match MCP types
+                    name="galaxy_tools",
+                    description="get galaxy tools",
+                    inputSchema={
+                        "type" : "object",
+                        "properties": {
+                            "number_of_tools": {
+                                "type": "integer",
+                                "description": "The number of tools to fetch",
+                                "default": 10,
+                            },
+                        },
+                    }, 
                 )
             )
-        
-        logger.info(f"Returning tools: {[tool.name for tool in tools]}")
+
         return tools
     
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        logger.info(f"Calling tool: {name} with args: {arguments}")
         try:
-            if name == "get_galaxy_tools":
+            logger.info(f"Calling tool: {name} with args: {arguments}")
+            # logger.info(f"Tools: {galaxy_tools}")
+            if name == "galaxy_tools":
+                try:
+                    galaxy_tools = get_tools(arguments["number_of_tools"])
+                    logger.info(f"galaxy_tools: {galaxy_tools}")
+                except Exception as e:
+                    logger.error(f"error: {str(e)}")
+                    return [TextContent(type="text", text=f"Error in executing get tools: {str(e)}")]
                 return [
                     TextContent(
                         type="text",
-                        text="here are the galaxy tools",
+                        text=galaxy_tools,
                     )
                 ]
-            return [TextContent(type="text", text=f"Unknown tool: {name}")]
         except Exception as e:
-            logger.error(f"Tool error: {str(e)}")
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+            # logger.error(f"Tool error: {str(e)}")
+            raise ValueError(f"Tool error: {str(e)}")
     
     options = server.create_initialization_options()
     async with stdio_server() as (read_stream, write_stream):
