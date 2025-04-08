@@ -33,12 +33,7 @@ def tools(gi, number_of_tools=10):
         tools.append(pprint.pformat(tool) + "\n")
     return "\n".join(tools)
     
-    return """{
-        "name": "Unzip collection",
-        "description": "",
-        "category": "Collection Operations",
-        "help": "Synopsis\nThis tool takes a paired collection and \"unzips\" it into two simple dataset collections (lists of datasets).\n\nDescription\n1. **Functionality**\n   - Given a paired collection of forward and reverse reads, this tool separates them into two distinct collections.\n   - The first output collection contains all forward reads, and the second output collection contains all reverse reads.\n\n2. **Use Case**\n   - Useful for processing paired-end sequencing data.\n   - Enables downstream analysis by handling forward and reverse reads separately.\n\nThis tool simplifies paired dataset management, allowing for more flexible analysis workflows in Galaxy."
-    },"""
+    
 def get_tools(number_of_tools=10):
     """
     Get the tools from the galaxy instance

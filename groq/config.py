@@ -1,4 +1,3 @@
-# filepath: /home/biniam/Desktop/Projects/mcp-xp/groq/config.py
 
 from dotenv import load_dotenv
 import os

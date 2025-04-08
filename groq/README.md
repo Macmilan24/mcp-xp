@@ -20,7 +20,7 @@ This project integrates a chatbot (`grok_chatbot.py`) with a custom MCP server (
 The project is structured as follows:
 
 ```
-/home/biniam/Desktop/Projects/mcp-xp/groq/
+mcp-xp/groq/
 ├── bioblend_server/
 │   ├── __init__.py
 │   ├── __main__.py
@@ -51,7 +51,7 @@ The project is structured as follows:
 -   Set up a virtual environment:
 
     ```bash
-    cd /home/biniam/Desktop/Projects/mcp-xp/groq/
+    mcp-xp/groq/
     python3 -m venv .venv
     source .venv/bin/activate
     ```
@@ -74,7 +74,7 @@ The project is structured as follows:
 
 ### 1. Configure Environment Variables
 
--   Create or edit the `.env` file in `/home/biniam/Desktop/Projects/mcp-xp/groq/bioblend_server/` with the following content:
+-   Create or edit the `.env` file in `/mcp-xp/groq/bioblend_server/` with the following content:
 
     ```
     LLM_API_KEY=<your-grok-api-key>
@@ -88,7 +88,7 @@ The project is structured as follows:
 
 ### 2. Configure Servers
 
--   Ensure `servers_config.json` in `/home/biniam/Desktop/Projects/mcp-xp/groq/` contains:
+-   Ensure `servers_config.json` in `/mcp-xp/groq/` contains:
 
     ```json
     {
@@ -109,7 +109,7 @@ The project is structured as follows:
 1.  Navigate to the Project Directory:
 
     ```bash
-    cd /home/biniam/Desktop/Projects/mcp-xp/groq/
+    cd /mcp-xp/groq/
     ```
 
 2.  Activate the Virtual Environment (if not already active):
@@ -216,7 +216,7 @@ The chatbot uses the Grok LLM with the following settings:
 -   If running `galaxy_tools.py` standalone fails, use:
 
     ```bash
-    cd /home/biniam/Desktop/Projects/mcp-xp/groq/
+    cd /mcp-xp/groq/
     python3 -m bioblend_server.galaxy_tools
     ```
 
@@ -242,7 +242,7 @@ The chatbot uses the Grok LLM with the following settings:
     -   Test `galaxy_tools.py` alone:
 
         ```bash
-        cd /home/biniam/Desktop/Projects/mcp-xp/groq/
+        cd /mcp-xp/groq/
         python3 -m bioblend_server.galaxy_tools
         ```
 ```
