@@ -1,0 +1,13 @@
+{
+    "mcpServers": {
+      
+      "galaxyTools": {
+        "command": "python3",
+        "args": ["-m", "app.AI.bioblend_server"],
+        "env": {}
+      }
+      
+    
+    }
+  }
+

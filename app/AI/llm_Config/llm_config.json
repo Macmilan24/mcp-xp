@@ -1,0 +1,39 @@
+{
+    "providers": {
+        "azure": {
+            "api_key": "your_azure_api_key",
+            "base_url": "https://models.inference.ai.azure.com",
+            "model": "gpt-4o",
+            "provider": "azure",
+            "temperature": 0.7,
+            "max_tokens": 150,
+            "top_p": 1,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "stop": null,
+            "stream": true,
+            "stream_options": {
+                "include_usage": true
+            }
+        },
+        "groq": {
+            "api_key": "your_groq_api_key",
+            "base_url": "https://api.groq.com/openai/v1/chat/completions",
+            "model": "llama-3.2-90b-vision-preview",
+            "provider": "groq",
+            "temperature": 0.7,
+            "max_tokens": 4096,
+            "top_p": 1,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "stream": false,
+            "stop": null
+        }
+    },
+    "default_provider": "azure",
+    "cache": {
+        "enabled": true,
+        "cache_size": 100,
+        "cache_expiry": 3600
+    }
+}
