@@ -1,47 +1,22 @@
 ```markdown
-# Grok Chatbot with Galaxy Integration
+# Chatbot with Galaxy Integration
 
-This project integrates a chatbot (`grok_chatbot.py`) with a custom MCP server (`bioblend_server`) to fetch tools from a Galaxy instance (e.g., https://usegalaxy.eu/). The chatbot uses the Grok LLM to process user requests and interacts with Galaxy via the bioblend library.
+This project integrates a chatbot with a custom MCP server (`bioblend_server`) to fetch tools from a Galaxy instance (e.g., https://usegalaxy.eu/). The chatbot uses various LLM providers (Azure, Groq) to process user requests and interacts with Galaxy via the bioblend library.
 
 ## Project Overview
 
-**Purpose:** Fetch Galaxy tools and their metadata using a chatbot interface.
+**Purpose:** Fetch Galaxy tools and their metadata using a chatbot interface with support for multiple LLM providers.
 
 **Components:**
 
--   `grok_chatbot.py`: The main script that runs the chatbot, interfacing with the LLM and MCP servers.
--   `bioblend_server/`: An MCP server that connects to Galaxy and fetches tools.
+-   `main.py`: The FastAPI application that provides REST endpoints for interacting with the chatbot.
+-   `AI/chatbot.py`: The core chatbot implementation that interfaces with LLM providers and MCP servers.
+-   `AI/llm_Config/`: Configuration and implementation for different LLM providers.
+-   `AI/bioblend_server/`: An MCP server that connects to Galaxy and fetches tools.
 -   `utils/`: Helper functions for fetching and processing Galaxy tool data.
 
-**Dependencies:** Python 3.8+, bioblend, mcp, httpx, python-dotenv, and other packages listed in `requirements.txt`.
+**Dependencies:** Python 3.8+, FastAPI, uvicorn, bioblend, mcp, httpx, python-dotenv, and other packages listed in `requirements.txt`.
 
-## File Structure
-
-The project is structured as follows:
-
-```
-mcp-xp/groq/
-├── bioblend_server/
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── galaxy_tools.py
-│   ├── server.py
-├── docs/
-│   └── (documentation files)
-├── grok_chatbot.py
-├── .env
-├── .env.example
-├── config.py
-├── requirements.txt
-├── servers_config.json
-├── README.md
-├── test.db
-├── .venv/
-├── .gitignore
-├── python-version
-├── pyproject.toml
-└── uv.lock
-```
 
 ## Prerequisites
 
@@ -51,7 +26,7 @@ mcp-xp/groq/
 -   Set up a virtual environment:
 
     ```bash
-    mcp-xp/groq/
+    mcp-xp/
     python3 -m venv .venv
     source .venv/bin/activate
     ```
@@ -74,28 +49,30 @@ mcp-xp/groq/
 
 ### 1. Configure Environment Variables
 
--   Create or edit the `.env` file in `/mcp-xp/groq/bioblend_server/` with the following content:
+-   Create or edit the `.env` file in the project root with the following content:
 
     ```
-    LLM_API_KEY=<your-grok-api-key>
+    GROQ_API_KEY=<your-groq-api-key>
+    AZURE_API_KEY=<your-azure-api-key>
     GALAXY_API_KEY=<your-galaxy-api-key>
-    GALAXY_URL=[https://usegalaxy.eu/](https://usegalaxy.eu/)
+    GALAXY_URL=https://usegalaxy.eu/
     ```
 
-    -   `LLM_API_KEY`: Your API key for the Grok LLM (provided by xAI).
+    -   `GROQ_API_KEY`: Your API key for the Groq LLM provider.
+    -   `AZURE_API_KEY`: Your API key for the Azure OpenAI service (for GPT-4o).
     -   `GALAXY_API_KEY`: Your API key for the Galaxy instance (e.g., from https://usegalaxy.eu/).
     -   `GALAXY_URL`: The URL of the Galaxy instance (default: https://usegalaxy.eu/).
 
 ### 2. Configure Servers
 
--   Ensure `servers_config.json` in `/mcp-xp/groq/` contains:
+-   Ensure `app/AI/servers_config.json` contains:
 
     ```json
     {
       "mcpServers": {
         "galaxyTools": {
           "command": "python3",
-          "args": ["-m", "bioblend_server"],
+          "args": ["-m", "app.AI.bioblend_server"],
           "env": {}
         }
       }
@@ -104,12 +81,56 @@ mcp-xp/groq/
 
     This configures the `bioblend_server` to run as an MCP server named `galaxyTools`.
 
-## Running the Chatbot
+### 3. Configure LLM Providers
+
+-   The LLM providers are configured in `app/AI/llm_Config/llm_config.json`. This file defines the available LLM providers and their settings:
+
+    ```json
+    {
+        "providers": {
+            "azure": {
+                "api_key": "your_azure_api_key",
+                "base_url": "https://models.inference.ai.azure.com",
+                "model": "gpt-4o",
+                "provider": "azure",
+                "temperature": 0.7,
+                "max_tokens": 150,
+                "top_p": 1,
+                "frequency_penalty": 0,
+                "presence_penalty": 0,
+                "stop": null,
+                "stream": true,
+                "stream_options": {
+                    "include_usage": true
+                }
+            },
+            "groq": {
+                "api_key": "your_groq_api_key",
+                "base_url": "https://api.groq.com/openai/v1/chat/completions",
+                "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+                "provider": "groq",
+                "temperature": 0.7,
+                "max_tokens": 1024,
+                "top_p": 1,
+                "stream": true,
+                "stop": null
+            }
+        },
+        "default_provider": "azure",
+        "cache": {
+            "enabled": true,
+            "cache_size": 100,
+            "cache_expiry": 3600
+        }
+    }
+    ```
+
+## Running the Application
 
 1.  Navigate to the Project Directory:
 
     ```bash
-    cd /mcp-xp/groq/
+    cd /path/to/project
     ```
 
 2.  Activate the Virtual Environment (if not already active):
@@ -118,95 +139,101 @@ mcp-xp/groq/
     source .venv/bin/activate
     ```
 
-3.  Run the Chatbot:
+3.  Run the FastAPI application:
 
     ```bash
-    python3 grok_chatbot.py
+    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
     ```
 
-    The chatbot will initialize, start the `bioblend_server`, and prompt for input with `You:`.
+    The application will start and be available at http://localhost:8000.
 
-## Using the Chatbot
+## Using the API Endpoints
 
-**Input:** At the `You:` prompt, type:
+### 1. Initialize the Chat Session
 
+Before sending messages, you need to initialize the chat session:
+
+```bash
+curl -X POST http://localhost:8000/initiate_chat
 ```
-get me 5 galaxy tools
-```
 
-**Expected Output:**
-
-The chatbot will fetch 5 tools from the Galaxy instance and display their metadata. The output will look like:
-
-```
-galaxy_tools: {'description': 'from your computer', 'edam_operations': ['operation_0224'], 'edam_topics': [], 'form_style': 'regular', 'hidden': '', 'id': 'upload1', 'is_workflow_compatible': False, 'labels': [], 'link': '/tool_runner?tool_id=upload1', 'min_width': -1, 'model_class': 'Tool', 'name': 'Upload File', 'panel_section_id': 'get_data', 'panel_section_name': 'Get Data', 'target': 'galaxy_main', 'version': '1.1.7', 'xrefs': []}
-{'description': 'Trying to get open files out of SEEK', 'edam_operations': [], 'edam_topics': [], 'form_style': 'special', 'hidden': '', 'id': 'ds_seek_test', 'is_workflow_compatible': False, 'labels': ['beta'], 'link': '/tool_runner/data_source_redirect?tool_id=ds_seek_test', 'min_width': '800', 'model_class': 'DataSourceTool', 'name': 'SEEK test', 'panel_section_id': 'get_data', 'panel_section_name': 'Get Data', 'target': '_top', 'version': '0.0.1', 'xrefs': []}
-{'description': 'table browser', 'edam_operations': ['operation_0224'], 'edam_topics': [], 'form_style': 'special', 'hidden': '', 'id': 'ucsc_table_direct1', 'is_workflow_compatible': False, 'labels': [], 'link': '/tool_runner/data_source_redirect?tool_id=ucsc_table_direct1', 'min_width': '800', 'model_class': 'DataSourceTool', 'name': 'UCSC Main', 'panel_section_id': 'get_data', 'panel_section_name': 'Get Data', 'target': '_top', 'version': '1.0.0', 'xrefs': []}
-{'description': 'table browser', 'edam_operations': ['operation_0224'], 'edam_topics': [], 'form_style': 'special', 'hidden': '', 'id': 'ucsc_table_direct_archaea1', 'is_workflow_compatible': False, 'labels': [], 'link': '/tool_runner/data_source_redirect?tool_id=ucsc_table_direct_archaea1', 'min_width': '800', 'model_class': 'DataSourceTool', 'name': 'UCSC Archaea', 'panel_section_id': 'get_data', 'panel_section_name': 'Get Data', 'target': '_top', 'version': '1.0.0', 'xrefs': []}
-{'description': 'import data from the NCBI Datasets Genomes page', 'edam_operations': ['operation_0224'], 'edam_topics': [], 'form_style': 'special', 'hidden': '', 'id': 'ncbi_datasets_source', 'is_workflow_compatible': False, 'labels': [], 'link': '/tool_runner/data_source_redirect?tool_id=ncbi_datasets_source', 'min_width': -1, 'model_class': 'DataSourceTool', 'name': 'NCBI Datasets Genomes', 'panel_section_id': 'get_data', 'panel_section_name': 'Get Data', 'target': '_top', 'version': '13.14.0', 'xrefs': []}
+**Expected Response:**
+```json
 {
-    "tool": "galaxy_tools",
-    "arguments": {
-        "number_of_tools": "5"
-    }
+  "message": "Chat session initiated"
 }
 ```
 
-**Explanation:**
+### 2. Send a Message to a Specific Model
 
--   The first part lists 5 Galaxy tools with their metadata (e.g., id, name, description).
--   The JSON at the end (`{"tool": "galaxy_tools", "arguments": {"number_of_tools": "5"}}`) is the LLM’s response, indicating it called the `galaxy_tools` tool with the argument `number_of_tools=5`.
+After initializing the chat session, you can send messages to a specific model using the model_id parameter:
 
-**Specific Tool Retrieval:**
+```bash
+curl -X POST "http://localhost:8000/send_message?model_id=azure" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "what tools do you have"}'
+```
 
-**Input:** At the `You:` prompt, type:
-
-get me the tools whose id is upload1
-
-
-**Expected Output:**
-
-The chatbot will fetch the tool with the specified ID (`upload1`) and display its metadata. The output will look like:
-
-tool: {'description': 'from your computer', 'edam_operations': ['operation_0224'], 'edam_topics': [], 'form_style': 'regular', 'hidden': '', 'id': 'upload1', 'is_workflow_compatible': False, 'labels': [], 'model_class': 'Tool', 'name': 'Upload File', 'panel_section_id': 'get_data', 'panel_section_name': 'Get Data', 'version': '1.1.7', 'xrefs': []}
+**Expected Response:**
+```json
 {
-"tool": "galaxy_tool_by_id",
-"arguments": {
-"tool_id": "upload1"
+  "response": "I can access tools from the Galaxy platform, which is a bioinformatics workflow management system. I can either fetch a list of tools available in the Galaxy instance or provide details about a specific tool using its ID. Let me know if you'd like me to retrieve a list of tools or details about a specific one!"
 }
-}
+```
 
+### Example Interactions
 
-**Tool Listing:**
+**Fetching Galaxy Tools:**
 
-**Input:** At the `You:` prompt, type:
+```bash
+curl -X POST "http://localhost:8000/send_message?model_id=azure" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "get me 5 galaxy tools"}'
+```
 
-what tools do u have
+**Fetching a Specific Tool by ID:**
 
+```bash
+curl -X POST "http://localhost:8000/send_message?model_id=azure" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "get me the tool with id upload1"}'
+```
 
-**Expected Output:**
+**Listing Available Tools:**
 
-The chatbot will list the available tools and their descriptions:
+```bash
+curl -X POST "http://localhost:8000/send_message?model_id=azure" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "what tools do you have"}'
+```
 
-I have two tools available:
+## LLM Configuration System
 
-galaxy_tools: This tool allows me to fetch a specified number of tools from the galaxy instance.
-galaxy_tool_by_id: This tool allows me to fetch a specific tool by its ID from the galaxy instance.
-Please let me know if you need to use either of these tools.
+The application uses a flexible configuration system to support multiple LLM providers:
 
-## LLM Configuration
+### LLM Configuration Files
 
-The chatbot uses the Grok LLM with the following settings:
+1. **llm_config.json**: Located at `app/AI/llm_Config/llm_config.json`, this file defines the available LLM providers and their settings. Each provider has its own configuration section with parameters like model name, API endpoint, temperature, etc.
 
--   **Model:** `llama-3.2-90b-vision-preview`
--   **API Key:** Set via `LLM_API_KEY` in `.env`.
--   **Endpoint:** `https://api.groq.com/openai/v1/chat/completions`
--   **Parameters:**
-    -   `temperature`: 0.7
-    -   `max_tokens`: 4096
-    -   `top_p`: 1
-    -   `stream`: False
-    -   `stop`: None
+2. **llmConfig.py**: Located at `app/AI/llm_Config/llmConfig.py`, this file implements the provider-specific classes:
+   - `LLMModelConfig`: Base class for all LLM configurations
+   - `GROQConfig` and `AZUREConfig`: Provider-specific configuration classes
+   - `LLMProvider`: Abstract base class for all LLM providers
+   - `GroqProvider` and `AzureProvider`: Concrete implementations for each provider
+
+### Application Flow
+
+1. When the application starts, it loads the configuration from `llm_config.json`
+2. The `/initiate_chat` endpoint initializes a chat session and loads all configured providers
+3. When a message is sent to `/send_message?model_id=azure`, the application:
+   - Checks if the chat session is initialized
+   - Retrieves the specified provider (e.g., Azure)
+   - Sends the message to the provider's API
+   - Returns the response
+
+This architecture allows for easy addition of new LLM providers by:
+1. Adding a new provider configuration to `llm_config.json`
+2. Implementing provider-specific classes in `llmConfig.py`
 
 ## Troubleshooting
 
@@ -227,22 +254,23 @@ The chatbot uses the Grok LLM with the following settings:
 
 ### LLM Errors:
 
--   Ensure `LLM_API_KEY` is valid and you have access to the `llama-3.2-90b-vision-preview` model.
--   Check `grok_chatbot.log` for detailed error messages.
+-   Ensure `GROQ_API_KEY` and `AZURE_API_KEY` are valid and you have access to the configured models.
+-   Check application logs for detailed error messages.
 
 ### No Output:
 
--   If the `You:` prompt doesn’t appear, check `grok_chatbot.log` for errors during server initialization.
+-   If the API doesn't respond, check that you've initialized the chat session first.
+-   Verify that the FastAPI application is running correctly.
 
 ## Additional Notes
 
--   **Logging:** Logs are written to `grok_chatbot.log` for debugging.
+-   **Logging:** Logs are written to the application logs for debugging.
 -   **Extending Functionality:** Add more tools to `bioblend_server/server.py` by extending the `list_tools()` function.
 -   **Testing Standalone:**
     -   Test `galaxy_tools.py` alone:
 
         ```bash
-        cd /mcp-xp/groq/
-        python3 -m bioblend_server.galaxy_tools
+        cd /path/to/project
+        python3 -m app.AI.bioblend_server.galaxy_tools
         ```
 ```
