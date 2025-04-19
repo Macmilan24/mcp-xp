@@ -42,7 +42,7 @@ class Configuration:
         """
         with open(file_path, "r") as f:
             return json.load(f)
-    
+
     @staticmethod
     def load_llm_config(file_path: str) -> dict[str, Any]:
         """Load LLM configuration from JSON file.
@@ -126,7 +126,7 @@ class Server:
                     # logging.info(f"Server: {self.name}, Tool: {tool.name}, Description: {tool.description}")
                     tools.append(Tool(tool.name, tool.description, tool.inputSchema))
         return tools
-    
+
     async def execute_tool(
         self,
         tool_name: str,
@@ -221,7 +221,7 @@ Arguments:
 class LLMClient:
     def __init__(self, llm_providers: dict):
         self.providers = llm_providers  # Creates an instance of the providers
-    
+
 
 
 class ChatSession:
@@ -232,14 +232,17 @@ class ChatSession:
         self.llm_client: LLMClient = llm_client
 
     async def cleanup_servers(self) -> None:
-        cleanup_tasks = [asyncio.create_task(server.cleanup()) for server in self.servers]
-        try:
-            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-        except asyncio.CancelledError:
-            # Optionally cancel individual tasks and log if needed
-            for task in cleanup_tasks:
-                task.cancel()
-            raise
+        """Clean up all server resources safely."""
+        if not self.servers:
+            return
+
+        for server in self.servers:
+            try:
+                await server.cleanup()
+            except Exception as e:
+                # Silently handle cleanup errors to ensure all servers get cleanup attempts
+                print(f"Error cleaning up server {server.name}: {e}")
+                pass
 
     async def process_llm_response(self, llm_response: str) -> str:
         """Process the LLM response and execute tools if needed.
@@ -342,7 +345,7 @@ class ChatSession:
                 # Validate model_id
                 if model_id not in providers:
                     raise ValueError(f"Invalid model_id: {model_id}. Available providers: {list(providers.keys())}")
-                
+
                 # Get LLM response
                 llm_response = await providers[model_id].get_response(messages)
 

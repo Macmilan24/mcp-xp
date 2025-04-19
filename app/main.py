@@ -18,8 +18,8 @@ async def initiate_chat():
     Initiate a chat session
     """
     global _chatSession
-    if _chatSession is None:
-        _chatSession = await initialize_session()
+   
+    _chatSession = await initialize_session()
     return {"message": "Chat session initiated"}
 
 class MessageRequest(BaseModel):

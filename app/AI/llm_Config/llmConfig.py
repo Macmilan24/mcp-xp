@@ -16,6 +16,7 @@ class LLMModelConfig:
 class GROQConfig(LLMModelConfig):
     @property
     def api_key(self) -> str:
+        print(GROQ_API_KEY)
         return GROQ_API_KEY
 
 class AZUREConfig(LLMModelConfig):
@@ -50,15 +51,32 @@ class GroqProvider(LLMProvider):
             "model": self.config.model_name,
             "temperature": self.config.config_data.get("temperature", 0.7),
             "max_tokens": self.config.config_data.get("max_tokens", 4096),
+            "top_p": self.config.config_data.get("top_p", 1),
+            "stream": self.config.config_data.get("stream", False),
+            "stop": self.config.config_data.get("stop", None),
         }
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.post(self.config.base_url, headers=headers, json=payload)
+        try:
+            with httpx.Client() as client:
+                response = client.post(self.config.base_url, headers=headers, json=payload)
                 response.raise_for_status()
-                result = response.json()
-                return result["choices"][0]["message"]["content"]
-            except httpx.HTTPError as exc:
-                raise RuntimeError(f"Groq API error: {exc}") from exc
+                data = response.json()
+                # print(data["choices"][0]["message"]["content"])
+                return data["choices"][0]["message"]["content"]
+
+
+        except httpx.RequestError as e:
+            error_message = f"Error getting LLM response: {str(e)}"
+            # logging.error(error_message)
+
+            if isinstance(e, httpx.HTTPStatusError):
+                status_code = e.response.status_code
+                # logging.error(f"Status code: {status_code}")
+                # logging.error(f"Response details: {e.response.text}")
+
+            return (
+                f"I encountered an error: {error_message}. "
+                "Please try again or rephrase your request."
+            )
 
 # Azure Provider
 class AzureProvider(LLMProvider):

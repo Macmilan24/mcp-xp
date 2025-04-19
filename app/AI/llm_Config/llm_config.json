@@ -19,14 +19,12 @@
         "groq": {
             "api_key": "your_groq_api_key",
             "base_url": "https://api.groq.com/openai/v1/chat/completions",
-            "model": "llama-3.2-90b-vision-preview",
+            "model": "meta-llama/llama-4-scout-17b-16e-instruct",
             "provider": "groq",
             "temperature": 0.7,
-            "max_tokens": 4096,
+            "max_tokens": 1024,
             "top_p": 1,
-            "frequency_penalty": 0,
-            "presence_penalty": 0,
-            "stream": false,
+            "stream": true,
             "stop": null
         }
     },
