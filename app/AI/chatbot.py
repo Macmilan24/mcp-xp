@@ -125,6 +125,8 @@ class Server:
                 for tool in item[1]:
                     # logging.info(f"Server: {self.name}, Tool: {tool.name}, Description: {tool.description}")
                     tools.append(Tool(tool.name, tool.description, tool.inputSchema))
+        print("tools fetched")
+        print(len(tools))
         return tools
 
     async def execute_tool(
@@ -230,6 +232,7 @@ class ChatSession:
     def __init__(self, servers: list[Server], llm_client: LLMClient) -> None:
         self.servers: list[Server] = servers
         self.llm_client: LLMClient = llm_client
+        self.memory = []
 
     async def cleanup_servers(self) -> None:
         """Clean up all server resources safely."""
@@ -339,7 +342,9 @@ class ChatSession:
 
             # Process user input
             try:
+                messages.extend(self.memory)
                 messages.append({"role": "user", "content": user_input})
+                self.memory.append({"role": "user", "content": user_input})
                 providers = self.llm_client.providers
 
                 # Validate model_id
@@ -358,9 +363,11 @@ class ChatSession:
                     messages.append({"role": "system", "content": result})
                     final_response = await providers[model_id].get_response(messages)
                     messages.append({"role": "assistant", "content": final_response})
+                    self.memory.append({"role": "assistant", "content": final_response})
                     return final_response
                 else:
                     messages.append({"role": "assistant", "content": llm_response})
+                    self.memory.append({"role": "assistant", "content": llm_response})
                     return llm_response
 
             except Exception as e:

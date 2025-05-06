@@ -1,0 +1,383 @@
+
+[
+    {
+      "name": "fasta_to_fastq_converter",
+      "description_suffix": "Converts FASTA to FASTQ format.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "input_fasta": {"type": "string", "description": "Mock input FASTA path."},
+          "output_fastq": {"type": "string", "description": "Mock output FASTQ path."}
+        },
+        "required": ["input_fasta"]
+      }
+    },
+    {
+      "name": "bam_filter",
+      "description_suffix": "Filters BAM alignment files.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "input_bam": {"type": "string", "description": "Mock input BAM path."},
+          "output_bam": {"type": "string", "description": "Mock output BAM path."},
+          "min_quality": {"type": "integer", "description": "Minimum mapping quality.", "default": 20}
+        },
+        "required": ["input_bam", "output_bam"]
+      }
+    },
+    {
+      "name": "variant_caller_gatk",
+      "description_suffix": "Calls genetic variants (GATK-like).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "input_bam": {"type": "string", "description": "Mock input BAM path."},
+          "reference_fasta": {"type": "string", "description": "Mock reference FASTA path."},
+          "output_vcf": {"type": "string", "description": "Mock output VCF path."}
+        },
+        "required": ["input_bam", "reference_fasta"]
+      }
+    },
+    {
+      "name": "rna_seq_aligner_star",
+      "description_suffix": "Aligns RNA-Seq reads (STAR-like).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fastq_reads_1": {"type": "string", "description": "Mock forward reads path."},
+          "genome_index": {"type": "string", "description": "Mock genome index path."}
+        },
+        "required": ["fastq_reads_1", "genome_index"]
+      }
+    },
+    {
+      "name": "peak_caller_macs2",
+      "description_suffix": "Identifies ChIP-Seq/ATAC-Seq peaks (MACS2-like).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "treatment_bam": {"type": "string", "description": "Mock treatment BAM path."},
+          "control_bam": {"type": "string", "description": "Mock control BAM path (optional)."},
+          "output_prefix": {"type": "string", "description": "Prefix for output files."}
+        },
+        "required": ["treatment_bam", "output_prefix"]
+      }
+    },
+    {
+      "name": "quality_control_fastqc",
+      "description_suffix": "Generates sequence quality reports (FastQC-like).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "input_fastq": {"type": "string", "description": "Mock input FASTQ path."},
+          "output_dir": {"type": "string", "description": "Directory for reports."}
+        },
+        "required": ["input_fastq"]
+      }
+    },
+    {
+      "name": "genome_assembly_spades",
+      "description_suffix": "Assembles short reads (SPAdes-like).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "forward_reads": {"type": "string", "description": "Mock forward reads path."},
+          "reverse_reads": {"type": "string", "description": "Mock reverse reads path (optional)."}
+        },
+        "required": ["forward_reads"]
+      }
+    },
+    {
+      "name": "differential_expression_deseq2",
+      "description_suffix": "Performs differential expression (DESeq2-like).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "count_matrix": {"type": "string", "description": "Mock count matrix path."},
+          "metadata": {"type": "string", "description": "Mock metadata file path."},
+          "design_formula": {"type": "string", "description": "Design formula string."}
+        },
+        "required": ["count_matrix", "metadata", "design_formula"]
+      }
+    },
+    {
+      "name": "sequence_trimmer_cutadapt",
+      "description_suffix": "Trims adapters/quality from sequences (Cutadapt-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq": {"type": "string"}, "output_fastq": {"type": "string"}}, "required": ["input_fastq"]
+      }
+    },
+    {
+      "name": "read_quality_filter_prinseq",
+      "description_suffix": "Filters reads by quality/length (PRINSEQ-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq": {"type": "string"}, "min_len": {"type": "integer"}}, "required": ["input_fastq"]
+      }
+    },
+    {
+      "name": "adapter_remover_trimmomatic",
+      "description_suffix": "Removes adapters (Trimmomatic-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq_1": {"type": "string"}, "input_fastq_2": {"type": "string"}}, "required": ["input_fastq_1"]
+      }
+    },
+    {
+      "name": "fastq_sampler_seqtk",
+      "description_suffix": "Subsamples FASTQ files (Seqtk-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq": {"type": "string"}, "sample_size": {"type": "integer"}}, "required": ["input_fastq"]
+      }
+    },
+    {
+      "name": "fasta_formatter",
+      "description_suffix": "Reformats FASTA files.",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fasta": {"type": "string"}, "line_length": {"type": "integer"}}, "required": ["input_fasta"]
+      }
+    },
+    {
+      "name": "kmer_counter_jellyfish",
+      "description_suffix": "Counts k-mers in sequence data (Jellyfish-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fasta": {"type": "string"}, "kmer_size": {"type": "integer"}}, "required": ["input_fasta"]
+      }
+    },
+    {
+      "name": "short_read_aligner_bwa",
+      "description_suffix": "Aligns short reads (BWA-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq": {"type": "string"}, "reference_genome": {"type": "string"}}, "required": ["input_fastq", "reference_genome"]
+      }
+    },
+    {
+      "name": "long_read_aligner_minimap2",
+      "description_suffix": "Aligns long reads (Minimap2-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq": {"type": "string"}, "reference_genome": {"type": "string"}}, "required": ["input_fastq", "reference_genome"]
+      }
+    },
+    {
+      "name": "splice_aware_aligner_hisat2",
+      "description_suffix": "Aligns RNA-seq reads (HISAT2-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq": {"type": "string"}, "genome_index": {"type": "string"}}, "required": ["input_fastq", "genome_index"]
+      }
+    },
+    {
+      "name": "local_alignment_blastn",
+      "description_suffix": "Performs nucleotide BLAST.",
+      "inputSchema": {
+        "type": "object", "properties": {"query_fasta": {"type": "string"}, "database_path": {"type": "string"}}, "required": ["query_fasta"]
+      }
+    },
+    {
+      "name": "protein_alignment_blastp",
+      "description_suffix": "Performs protein BLAST.",
+      "inputSchema": {
+        "type": "object", "properties": {"query_fasta": {"type": "string"}, "database_path": {"type": "string"}}, "required": ["query_fasta"]
+      }
+    },
+    {
+      "name": "snp_caller_freebayes",
+      "description_suffix": "Calls SNPs/Indels (FreeBayes-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_bam": {"type": "string"}, "reference_fasta": {"type": "string"}}, "required": ["input_bam", "reference_fasta"]
+      }
+    },
+    {
+      "name": "indel_detector_pindel",
+      "description_suffix": "Detects larger indels (Pindel-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_bam": {"type": "string"}, "reference_fasta": {"type": "string"}}, "required": ["input_bam", "reference_fasta"]
+      }
+    },
+    {
+      "name": "structural_variant_caller_manta",
+      "description_suffix": "Calls structural variants (Manta-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"tumor_bam": {"type": "string"}, "normal_bam": {"type": "string"}}, "required": ["tumor_bam"]
+      }
+    },
+    {
+      "name": "vcf_filter_bcftools",
+      "description_suffix": "Filters VCF files (BCFtools-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_vcf": {"type": "string"}, "filter_expression": {"type": "string"}}, "required": ["input_vcf"]
+      }
+    },
+    {
+      "name": "variant_annotator_snpeff",
+      "description_suffix": "Annotates variants (SnpEff-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_vcf": {"type": "string"}, "database_name": {"type": "string"}}, "required": ["input_vcf"]
+      }
+    },
+    {
+      "name": "read_quantifier_salmon",
+      "description_suffix": "Quantifies transcript abundance (Salmon-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq": {"type": "string"}, "transcriptome_index": {"type": "string"}}, "required": ["input_fastq"]
+      }
+    },
+    {
+      "name": "isoform_detector_stringtie",
+      "description_suffix": "Assembles transcripts (StringTie-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_bam": {"type": "string"}, "reference_gtf": {"type": "string"}}, "required": ["input_bam"]
+      }
+    },
+    {
+      "name": "fusion_gene_finder_starfusion",
+      "description_suffix": "Detects fusion genes (STAR-Fusion-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq": {"type": "string"}, "genome_lib_dir": {"type": "string"}}, "required": ["input_fastq"]
+      }
+    },
+    {
+      "name": "noncoding_rna_analyzer",
+      "description_suffix": "Analyzes non-coding RNAs.",
+      "inputSchema": {
+        "type": "object", "properties": {"input_sequence": {"type": "string"}, "database": {"type": "string"}}, "required": ["input_sequence"]
+      }
+    },
+    {
+      "name": "single_cell_analyzer_seurat",
+      "description_suffix": "Performs single-cell analysis (Seurat-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"count_matrix": {"type": "string"}, "metadata": {"type": "string"}}, "required": ["count_matrix"]
+      }
+    },
+    {
+      "name": "peak_annotator_homer",
+      "description_suffix": "Annotates genomic peaks (HOMER-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"peak_file": {"type": "string"}, "reference_gtf": {"type": "string"}}, "required": ["peak_file"]
+      }
+    },
+    {
+      "name": "motif_finder_meme",
+      "description_suffix": "Discovers sequence motifs (MEME-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fasta": {"type": "string"}, "output_dir": {"type": "string"}}, "required": ["input_fasta"]
+      }
+    },
+    {
+      "name": "differential_binding_diffbind",
+      "description_suffix": "Analyzes differential ChIP-seq binding (DiffBind-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"peak_files": {"type": "string"}, "sample_sheet": {"type": "string"}}, "required": ["peak_files", "sample_sheet"]
+      }
+    },
+    {
+      "name": "atac_seq_processor",
+      "description_suffix": "Processes ATAC-seq data.",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq": {"type": "string"}, "reference_genome": {"type": "string"}}, "required": ["input_fastq"]
+      }
+    },
+    {
+      "name": "metagenomic_assembler_megahit",
+      "description_suffix": "Assembles metagenomic reads (MEGAHIT-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq_1": {"type": "string"}, "input_fastq_2": {"type": "string"}}, "required": ["input_fastq_1"]
+      }
+    },
+    {
+      "name": "taxonomic_classifier_kraken2",
+      "description_suffix": "Classifies reads taxonomically (Kraken2-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq": {"type": "string"}, "database_path": {"type": "string"}}, "required": ["input_fastq"]
+      }
+    },
+    {
+      "name": "metagenomic_binning_metabat",
+      "description_suffix": "Bins metagenomic contigs (MetaBAT-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"contigs_fasta": {"type": "string"}, "alignment_bam": {"type": "string"}}, "required": ["contigs_fasta"]
+      }
+    },
+    {
+      "name": "functional_profiler_humann2",
+      "description_suffix": "Profiles functional potential (HUMAnN2-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq": {"type": "string"}, "protein_database": {"type": "string"}}, "required": ["input_fastq"]
+      }
+    },
+    {
+      "name": "long_read_assembler_flye",
+      "description_suffix": "Assembles long reads (Flye-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fastq": {"type": "string"}, "genome_size": {"type": "string"}}, "required": ["input_fastq"]
+      }
+    },
+    {
+      "name": "assembly_polisher_pilon",
+      "description_suffix": "Polishes genome assemblies (Pilon-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"assembly_fasta": {"type": "string"}, "reads_bam": {"type": "string"}}, "required": ["assembly_fasta"]
+      }
+    },
+    {
+      "name": "genome_completeness_busco",
+      "description_suffix": "Assesses genome assembly completeness (BUSCO-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"assembly_fasta": {"type": "string"}, "lineage_dataset": {"type": "string"}}, "required": ["assembly_fasta"]
+      }
+    },
+    {
+      "name": "scaffolder_ragtag",
+      "description_suffix": "Scaffolds assemblies using references (RagTag-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"contigs_fasta": {"type": "string"}, "reference_fasta": {"type": "string"}}, "required": ["contigs_fasta"]
+      }
+    },
+    {
+      "name": "phylogenetic_tree_builder_iqtree",
+      "description_suffix": "Builds phylogenetic trees (IQ-TREE-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"alignment_file": {"type": "string"}, "model": {"type": "string"}}, "required": ["alignment_file"]
+      }
+    },
+    {
+      "name": "tree_visualizer_figtree",
+      "description_suffix": "Visualizes phylogenetic trees (FigTree-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"tree_file": {"type": "string"}, "output_image": {"type": "string"}}, "required": ["tree_file"]
+      }
+    },
+    {
+      "name": "multiple_sequence_aligner_mafft",
+      "description_suffix": "Aligns multiple sequences (MAFFT-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_fasta": {"type": "string"}, "output_alignment": {"type": "string"}}, "required": ["input_fasta"]
+      }
+    },
+    {
+      "name": "protein_domain_scanner_interproscan",
+      "description_suffix": "Scans proteins for domains (InterProScan-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"protein_fasta": {"type": "string"}, "databases": {"type": "string"}}, "required": ["protein_fasta"]
+      }
+    },
+    {
+      "name": "protein_structure_prediction_alphafold",
+      "description_suffix": "Predicts protein structure (AlphaFold-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"protein_sequence": {"type": "string"}}, "required": ["protein_sequence"]
+      }
+    },
+    {
+      "name": "signal_peptide_predictor_signalp",
+      "description_suffix": "Predicts signal peptides (SignalP-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"protein_fasta": {"type": "string"}}, "required": ["protein_fasta"]
+      }
+    },
+    {
+      "name": "file_format_converter_samtools",
+      "description_suffix": "Converts sequence alignment formats (SAMtools-like).",
+      "inputSchema": {
+        "type": "object", "properties": {"input_file": {"type": "string"}, "output_format": {"type": "string"}}, "required": ["input_file"]
+      }
+    }
+  ]

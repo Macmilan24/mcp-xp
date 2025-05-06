@@ -1,348 +1,187 @@
 # app/AI/bioblend_server/server.py
+
 import logging
-from typing import List, Dict, Any # Added Dict, Any
+import json # Import the json library
+import os   # Import os to construct file paths
+from typing import List, Dict, Any, Callable # Added Callable for type hinting
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import (
-    ClientCapabilities,
-    TextContent,
-    Tool,
-    ListRootsResult,
-    RootsCapability,
-)
+from mcp.types import TextContent, Tool
 
 print("bioblend_server server.py")
 
-# Import the new functions from galaxy_tools
-from app.AI.bioblend_server.galaxy_tools import (
-    get_tools,
-    get_tool,
-    list_histories,
-    get_history_details,
-    create_history,
-    delete_history,
-    list_workflows,
-    get_workflow_details,
-    list_datasets_in_history,
-    get_dataset_details,
-    list_users,
-    get_user_details,
-    list_libraries,
-    get_library_details,
-)
-from pydantic import BaseModel # Keep if needed for other parts, not strictly necessary for schema here
+# Keep existing imports - DO NOT CHANGE
+from app.AI.bioblend_server.galaxy_tools import get_tools, get_tool
 
 logger = logging.getLogger("bioblend_server")
-# Ensure basicConfig is called only once, potentially in your main entry point
-# logging.basicConfig(level=logging.INFO) # Comment out if configured elsewhere
+# Ensure logging is configured
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
+# --- Constants ---
+MOCK_TOOLS_JSON_PATH = os.path.join(os.path.dirname(__file__), "mock_tools.json")
+
+# --- Generic Mock Function Executor ---
+# This single function will handle the execution logic for ALL mock tools.
+# It's identified by the tool_name passed to it.
+def execute_generic_mock_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
+    """Logs execution and returns a standard mock response string."""
+    logger.info(f"Executing MOCK function for: {tool_name} with args: {arguments}")
+    result_text = f"Executed mock tool function: {tool_name}"
+    logger.info(f"Mock function {tool_name} returning: '{result_text}'")
+    return result_text
+
+# --- Tool Loading and Dispatcher Setup ---
+# Load mock tool definitions from JSON
+try:
+    with open(MOCK_TOOLS_JSON_PATH, 'r') as f:
+        MOCK_TOOL_DEFINITIONS = json.load(f)
+    logger.info(f"Successfully loaded {len(MOCK_TOOL_DEFINITIONS)} mock tool definitions from {MOCK_TOOLS_JSON_PATH}")
+except FileNotFoundError:
+    logger.error(f"Mock tools JSON file not found at {MOCK_TOOLS_JSON_PATH}. No mock tools will be available.")
+    MOCK_TOOL_DEFINITIONS = []
+except json.JSONDecodeError as e:
+    logger.error(f"Error decoding JSON from {MOCK_TOOLS_JSON_PATH}: {e}. No mock tools will be available.")
+    MOCK_TOOL_DEFINITIONS = []
+
+# Create a dispatcher dictionary mapping mock tool names to the generic executor
+# We use a lambda here to capture the tool_name for the generic function
+MOCK_TOOL_DISPATCHER: Dict[str, Callable[[Dict[str, Any]], str]] = {
+    tool_def["name"]: (lambda name=tool_def["name"]: lambda args: execute_generic_mock_tool(name, args))()
+    for tool_def in MOCK_TOOL_DEFINITIONS
+}
+logger.info(f"Created dispatcher for {len(MOCK_TOOL_DISPATCHER)} mock tools.")
+
+# --- Server Implementation ---
 async def serve():
-    logger.info("Starting galaxyTools MCP Server...")
+    logger.info("Server is starting...")
     server = Server("galaxyTools")
 
     @server.list_tools()
     async def list_tools() -> List[Tool]:
         logger.info("Listing tools for galaxyTools server")
-
         tools = []
 
-        # --- Existing Tools ---
-        tools.append(
-            Tool(
-                name="galaxy_get_tools_list", # Renamed slightly for clarity
-                description="Get a list of available tools (analysis tools like aligners, etc.) from the Galaxy instance.",
-                inputSchema={
-                    "type" : "object",
-                    "properties": {
-                        "number_of_tools": {
-                            "type": "integer",
-                            "description": "The maximum number of tools to fetch from the list.",
-                            "default": 10,
-                        },
-                    },
-                },
-            )
-        )
+        # 1. Add the REAL BioBlend tools manually
+        # tools.append(
+        #     Tool(
+        #         name="galaxy_tools",
+        #         description="Fetch a list of tools from the connected Galaxy instance using BioBlend.",
+        #         inputSchema={
+        #             "type" : "object",
+        #             "properties": {
+        #                 "number_of_tools": {
+        #                     "type": "integer",
+        #                     "description": "The maximum number of tools to fetch from Galaxy.",
+        #                     "default": 10,
+        #                 },
+        #             },
+        #         },
+        #     )
+        # )
+        # tools.append(
+        #     Tool(
+        #         name="galaxy_tool_by_id",
+        #         description="Fetch detailed information about a specific tool by its ID from the Galaxy instance using BioBlend.",
+        #         inputSchema={
+        #             "type" : "object",
+        #             "properties": {
+        #                 "tool_id": {
+        #                     "type": "string",
+        #                     "description": "The exact ID of the tool to fetch from Galaxy (e.g., 'upload1').",
+        #                 },
+        #             },
+        #             "required" : ["tool_id"]
+        #         },
+        #     )
+        # )
 
-        tools.append(
-            Tool(
-                name="galaxy_get_tool_details", # Renamed slightly for clarity
-                description="Get detailed information about a specific Galaxy analysis tool by its ID.",
-                inputSchema={
-                    "type" : "object",
-                    "properties": {
-                        "tool_id": {
-                            "type": "string",
-                            "description": "The ID of the analysis tool to fetch (e.g., 'upload1', 'cat1').",
-                        },
-                    },
-                    "required" : ["tool_id"]
-                },
-            )
-        )
+        # 2. Add MOCK tools loaded from JSON
+        for tool_def in MOCK_TOOL_DEFINITIONS:
+            try:
+                tools.append(
+                    Tool(
+                        name=tool_def["name"],
+                        # Add "Mock Tool:" prefix to the description
+                        description=f"Mock Tool: {tool_def.get('description_suffix', 'No description provided.')}",
+                        inputSchema=tool_def.get("inputSchema", {"type": "object", "properties": {}}) # Use provided schema or default
+                    )
+                )
+            except KeyError as e:
+                logger.warning(f"Skipping mock tool definition due to missing key {e} in JSON: {tool_def}")
+            except Exception as e:
+                 logger.warning(f"Skipping mock tool definition due to unexpected error: {e} in JSON: {tool_def}")
 
-        # --- New Tools ---
 
-        # History Tools
-        tools.append(
-            Tool(
-                name="galaxy_list_histories",
-                description="List all accessible histories for the current user.",
-                inputSchema={"type": "object", "properties": {}}, # No input needed
-            )
-        )
-        tools.append(
-            Tool(
-                name="galaxy_get_history_details",
-                description="Get detailed information about a specific history by its ID.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "history_id": {
-                            "type": "string",
-                            "description": "The ID of the history to fetch details for.",
-                        },
-                    },
-                    "required": ["history_id"],
-                },
-            )
-        )
-        tools.append(
-            Tool(
-                name="galaxy_create_history",
-                description="Create a new, empty history with a specified name.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "The desired name for the new history.",
-                        },
-                    },
-                    "required": ["name"],
-                },
-            )
-        )
-        tools.append(
-            Tool(
-                name="galaxy_delete_history",
-                description="Delete a history by its ID. Can optionally purge (permanently delete) it.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "history_id": {
-                            "type": "string",
-                            "description": "The ID of the history to delete.",
-                        },
-                        "purge": {
-                            "type": "boolean",
-                            "description": "Set to true to permanently delete the history, false to just mark as deleted.",
-                            "default": False,
-                        }
-                    },
-                    "required": ["history_id"],
-                },
-            )
-        )
-
-        # Workflow Tools
-        tools.append(
-            Tool(
-                name="galaxy_list_workflows",
-                description="List all accessible workflows for the current user.",
-                inputSchema={"type": "object", "properties": {}}, # No input needed
-            )
-        )
-        tools.append(
-            Tool(
-                name="galaxy_get_workflow_details",
-                description="Get detailed information about a specific workflow by its ID.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "workflow_id": {
-                            "type": "string",
-                            "description": "The ID of the workflow to fetch details for.",
-                        },
-                    },
-                    "required": ["workflow_id"],
-                },
-            )
-        )
-
-        # Dataset Tools
-        tools.append(
-            Tool(
-                name="galaxy_list_datasets_in_history",
-                description="List all datasets within a specific history.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "history_id": {
-                            "type": "string",
-                            "description": "The ID of the history whose datasets should be listed.",
-                        },
-                    },
-                    "required": ["history_id"],
-                },
-            )
-        )
-        tools.append(
-            Tool(
-                name="galaxy_get_dataset_details",
-                description="Get detailed information about a specific dataset by its ID.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "dataset_id": {
-                            "type": "string",
-                            "description": "The ID of the dataset to fetch details for.",
-                        },
-                    },
-                    "required": ["dataset_id"],
-                },
-            )
-        )
-
-        # User Tools (Note: Often require Admin privileges)
-        tools.append(
-            Tool(
-                name="galaxy_list_users",
-                description="List all users registered in the Galaxy instance. Requires admin privileges.",
-                inputSchema={"type": "object", "properties": {}}, # No input needed
-            )
-        )
-        tools.append(
-            Tool(
-                name="galaxy_get_user_details",
-                description="Get detailed information about a specific user by their ID. Requires admin privileges.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "user_id": {
-                            "type": "string",
-                            "description": "The ID of the user to fetch details for.",
-                        },
-                    },
-                    "required": ["user_id"],
-                },
-            )
-        )
-
-        # Library Tools
-        tools.append(
-            Tool(
-                name="galaxy_list_libraries",
-                description="List all accessible data libraries in the Galaxy instance.",
-                inputSchema={"type": "object", "properties": {}}, # No input needed
-            )
-        )
-        tools.append(
-            Tool(
-                name="galaxy_get_library_details",
-                description="Get detailed information about a specific data library by its ID.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "library_id": {
-                            "type": "string",
-                            "description": "The ID of the data library to fetch details for.",
-                        },
-                    },
-                    "required": ["library_id"],
-                },
-            )
-        )
-
-        logger.info(f"Defined {len(tools)} tools for the LLM.")
+        logger.info(f"Total tools listed: {len(tools)}")
         return tools
 
     @server.call_tool()
-    async def call_tool(name: str, arguments: Dict[str, Any]) -> list[TextContent]: # Use Dict[str, Any] for arguments
-        logger.info(f"Received tool call request for: '{name}' with args: {arguments}")
-        result_text = "" # Initialize result text
-
+    async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+        logger.info(f"Attempting to call tool: '{name}' with args: {arguments}")
         try:
-            # --- Map tool name to function call ---
-            if name == "galaxy_get_tools_list":
-                num_tools = arguments.get("number_of_tools", 10) # Use default if not provided
-                result_text = get_tools(num_tools)
-            elif name == "galaxy_get_tool_details":
-                tool_id = arguments.get("tool_id")
-                if not tool_id: raise ValueError("Missing required argument: tool_id")
-                result_text = get_tool(tool_id)
-            elif name == "galaxy_list_histories":
-                result_text = list_histories()
-            elif name == "galaxy_get_history_details":
-                history_id = arguments.get("history_id")
-                if not history_id: raise ValueError("Missing required argument: history_id")
-                result_text = get_history_details(history_id)
-            elif name == "galaxy_create_history":
-                hist_name = arguments.get("name")
-                if not hist_name: raise ValueError("Missing required argument: name")
-                result_text = create_history(hist_name)
-            elif name == "galaxy_delete_history":
-                history_id = arguments.get("history_id")
-                purge = arguments.get("purge", False) # Use default if not provided
-                if not history_id: raise ValueError("Missing required argument: history_id")
-                result_text = delete_history(history_id, purge)
-            elif name == "galaxy_list_workflows":
-                result_text = list_workflows()
-            elif name == "galaxy_get_workflow_details":
-                workflow_id = arguments.get("workflow_id")
-                if not workflow_id: raise ValueError("Missing required argument: workflow_id")
-                result_text = get_workflow_details(workflow_id)
-            elif name == "galaxy_list_datasets_in_history":
-                history_id = arguments.get("history_id")
-                if not history_id: raise ValueError("Missing required argument: history_id")
-                result_text = list_datasets_in_history(history_id)
-            elif name == "galaxy_get_dataset_details":
-                dataset_id = arguments.get("dataset_id")
-                if not dataset_id: raise ValueError("Missing required argument: dataset_id")
-                result_text = get_dataset_details(dataset_id)
-            elif name == "galaxy_list_users":
-                result_text = list_users()
-            elif name == "galaxy_get_user_details":
-                user_id = arguments.get("user_id")
-                if not user_id: raise ValueError("Missing required argument: user_id")
-                result_text = get_user_details(user_id)
-            elif name == "galaxy_list_libraries":
-                result_text = list_libraries()
-            elif name == "galaxy_get_library_details":
-                library_id = arguments.get("library_id")
-                if not library_id: raise ValueError("Missing required argument: library_id")
-                result_text = get_library_details(library_id)
-            else:
-                logger.error(f"Unknown tool name received: {name}")
-                raise ValueError(f"Unknown tool name: {name}")
+            result_text = None # Initialize result text
 
-            # Log the successful result before returning
-            # Limit log length to avoid flooding logs with huge outputs
-            log_result = result_text[:500] + "..." if len(result_text) > 500 else result_text
-            logger.info(f"Tool '{name}' executed successfully. Result preview: {log_result}")
-            return [TextContent(type="text", text=result_text)]
+            # --- Handle REAL BioBlend Tools ---
+            # if name == "galaxy_tools":
+            #     try:
+            #         logger.info(f"Calling REAL tool handler function: get_tools")
+            #         num_tools = arguments.get("number_of_tools", 10)
+            #         result_text = get_tools(num_tools)
+            #         logger.info(f"Successfully executed REAL tool function: get_tools")
+            #     except Exception as e:
+            #         logger.error(f"Error executing REAL tool function 'get_tools': {str(e)}", exc_info=True)
+            #         return [TextContent(type="text", text=f"Error executing tool '{name}': {str(e)}")]
+
+            # elif name == "galaxy_tool_by_id":
+            #     try:
+            #         logger.info(f"Calling REAL tool handler function: get_tool")
+            #         tool_id = arguments.get("tool_id")
+            #         if not tool_id:
+            #             logger.error(f"Missing 'tool_id' argument for tool: {name}")
+            #             return [TextContent(type="text", text=f"Error: Missing required argument 'tool_id' for tool '{name}'.")]
+            #         result_text = get_tool(tool_id)
+            #         logger.info(f"Successfully executed REAL tool function: get_tool for id: {tool_id}")
+            #     except Exception as e:
+            #         logger.error(f"Error executing REAL tool function 'get_tool' with id '{arguments.get('tool_id')}': {str(e)}", exc_info=True)
+            #         return [TextContent(type="text", text=f"Error executing tool '{name}': {str(e)}")]
+
+            # --- Handle MOCK Tools using the Dispatcher ---
+            if name in MOCK_TOOL_DISPATCHER:
+                 mock_function = MOCK_TOOL_DISPATCHER[name]
+                 # The mock_function already includes the tool name via the lambda capture
+                 result_text = mock_function(arguments)
+                 # Logging is now done inside execute_generic_mock_tool
+
+            # --- Handle Unknown Tool ---
+            else:
+                logger.warning(f"Attempted to call unknown tool: {name}")
+                return [TextContent(type="text", text=f"Error: Unknown tool name '{name}' provided.")]
+
+            # --- Wrap result in TextContent if successful ---
+            if result_text is not None:
+                 return [TextContent(type="text", text=str(result_text))]
+            else:
+                 # Should only happen if a real tool returns None unexpectedly or error handling fails
+                 logger.error(f"Tool '{name}' matched but did not produce a result or handle error appropriately.")
+                 return [TextContent(type="text", text=f"Internal server error processing tool '{name}'.")]
 
         except Exception as e:
-            logger.error(f"Error calling tool '{name}' with args {arguments}: {str(e)}", exc_info=True)
-            # Return a user-friendly error message within the expected structure
-            return [TextContent(type="text", text=f"Error executing tool '{name}': {str(e)}")]
+            # Catch unexpected errors during tool dispatch or mock function execution
+            logger.error(f"Unexpected error in call_tool dispatch for tool '{name}': {str(e)}", exc_info=True)
+            return [TextContent(type="text", text=f"An unexpected server error occurred while trying to execute tool '{name}'.")]
 
 
     options = server.create_initialization_options()
-    logger.info(f"Server initialization options created. Running server via stdio...")
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, options, raise_exceptions=False) # Set raise_exceptions=False for production
+        await server.run(read_stream, write_stream, options, raise_exceptions=False)
 
-# Make sure serve() is called if this script is run directly
-# (though usually it's run via the command in servers_config.json)
-if __name__ == "__main__":
-     import asyncio
-     # Ensure logging is configured if running standalone
-     if not logger.handlers:
-         logging.basicConfig(level=logging.INFO)
-         logger.addHandler(logging.StreamHandler())
-         logger.setLevel(logging.INFO)
-     try:
-         asyncio.run(serve())
-     except KeyboardInterrupt:
-         logger.info("Server stopped by user.")
+# # Optional guard for direct execution (less useful now as it depends on the JSON)
+# if __name__ == "__main__":
+#      import asyncio
+#      logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+#      # Check if JSON loading worked before trying to run
+#      if not MOCK_TOOL_DEFINITIONS:
+#          logger.error("Cannot run server directly, mock tools failed to load.")
+#      else:
+#          asyncio.run(serve())
