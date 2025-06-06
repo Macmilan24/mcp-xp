@@ -1,6 +1,3 @@
-# app/AI/bioblend_server/__init__.py
-print("bioblend_server __init__.py")
-
 # Import all the functions you want to be accessible from the server
 from .galaxy_tools import (
     setup_instance,

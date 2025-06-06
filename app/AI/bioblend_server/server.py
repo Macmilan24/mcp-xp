@@ -1,5 +1,3 @@
-# app/AI/bioblend_server/server.py
-
 import logging
 import json # Import the json library
 import os   # Import os to construct file paths
@@ -9,7 +7,6 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-print("bioblend_server server.py")
 
 # Keep existing imports - DO NOT CHANGE
 from app.AI.bioblend_server.galaxy_tools import get_tools, get_tool

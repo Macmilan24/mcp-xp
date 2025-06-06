@@ -5,9 +5,10 @@ import sys
 from app.AI.chatbot import ChatSession, initialize_session
 from pydantic import BaseModel
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # Optional: Add project root to Python path
-# import os
-# import sys
-# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+class MessageRequest(BaseModel):
+    message: str
+
 _chatSession = None
 
 app = FastAPI()
@@ -22,8 +23,6 @@ async def initiate_chat():
     _chatSession = await initialize_session()
     return {"message": "Chat session initiated"}
 
-class MessageRequest(BaseModel):
-    message: str
 
 @app.post("/send_message")
 async def send_message(model_id: str, request: MessageRequest):

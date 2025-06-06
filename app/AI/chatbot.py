@@ -9,7 +9,7 @@ import httpx
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from app.AI.llm_Config.llmConfig import GroqProvider, AzureProvider, GROQConfig, AZUREConfig
+from app.AI.llm_Config.llmConfig import GroqProvider, AzureProvider,GeminiProvider, GROQConfig, AZUREConfig, GEMINIConfig
 
 
 
@@ -319,26 +319,27 @@ class ChatSession:
             system_message = (
                 "You are a helpful assistant with access to these tools:\n\n"
                 f"{tools_description}\n"
-                "Choose the appropriate tool based on the user's question. "
-                "If no tool is needed, reply directly.\n\n"
-                "IMPORTANT: When you need to use a tool, you must ONLY respond with "
-                "the exact JSON object format below, nothing else:\n"
-                "{\n"
-                '    "tool": "tool-name",\n'
-                '    "arguments": {\n'
-                '        "argument-name": "value"\n'
-                "    }\n"
-                "}\n\n"
-                "After receiving a tool's response:\n"
-                "1. Transform the raw data into a natural, conversational response\n"
-                "2. Keep responses concise but informative\n"
-                "3. Focus on the most relevant information\n"
-                "4. Use appropriate context from the user's question\n"
-                "5. Avoid simply repeating the raw data\n\n"
-                "Please use only the tools that are explicitly defined above."
+                # "Choose the appropriate tool based on the user's question. "
+                # "If no tool is needed, reply directly.\n\n"
+                # "IMPORTANT: When you need to use a tool, you must ONLY respond with "
+                # "the exact JSON object format below, nothing else:\n"
+                # "{\n"
+                # '    "tool": "tool-name",\n'
+                # '    "arguments": {\n'
+                # '        "argument-name": "value"\n'
+                # "    }\n"
+                # "}\n\n"
+                # "After receiving a tool's response:\n"
+                # "1. Transform the raw data into a natural, conversational response\n"
+                # "2. Keep responses concise but informative\n"
+                # "3. Focus on the most relevant information\n"
+                # "4. Use appropriate context from the user's question\n"
+                # "5. Avoid simply repeating the raw data\n\n"
+                # "Please use only the tools that are explicitly defined above."
             )
 
-            messages = [{"role": "system", "content": system_message}]
+            # messages = [{"role": "user", "content": system_message}]
+            messages = [{"role": "user", "content": system_message}]
 
             # Process user input
             try:
@@ -359,15 +360,15 @@ class ChatSession:
 
                 if result != llm_response:
                     # Tool was used; get a final response
-                    messages.append({"role": "assistant", "content": llm_response})
-                    messages.append({"role": "system", "content": result})
+                    messages.append({"role": "model", "content": llm_response})
+                    messages.append({"role": "model", "content": result})
                     final_response = await providers[model_id].get_response(messages)
-                    messages.append({"role": "assistant", "content": final_response})
-                    self.memory.append({"role": "assistant", "content": final_response})
+                    messages.append({"role": "model", "content": final_response})
+                    self.memory.append({"role": "model", "content": final_response})
                     return final_response
                 else:
-                    messages.append({"role": "assistant", "content": llm_response})
-                    self.memory.append({"role": "assistant", "content": llm_response})
+                    messages.append({"role": "model", "content": llm_response})
+                    self.memory.append({"role": "model", "content": llm_response})
                     return llm_response
 
             except Exception as e:
@@ -398,13 +399,10 @@ def get_providers():
     with open("app/AI/llm_Config/llm_config.json", "r") as f:
         llm_config = json.load(f)
         for provider_name, provider_config in llm_config["providers"].items():
-            if provider_name == "groq":
-                config = GROQConfig(provider_config)
-                provider_class = GroqProvider(config)
-            elif provider_name == "azure":
-                config = AZUREConfig(provider_config)
-                provider_class = AzureProvider(config)
-            else:
-                raise ValueError(f"Unknown provider: {provider_name}")
+            
+            if provider_name == "groq": provider_class = GroqProvider(GROQConfig(provider_config))
+            elif provider_name == "azure": provider_class = AzureProvider(AZUREConfig(provider_config))
+            elif provider_name == "gemini": provider_class = GeminiProvider(GEMINIConfig(provider_config))
+            else: raise ValueError(f"Unknown provider: {provider_name}")
             provider_registry[provider_name] = provider_class
     return provider_registry

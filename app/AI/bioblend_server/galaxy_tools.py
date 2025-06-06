@@ -1,12 +1,8 @@
-print("bioblend_server galaxytools.py")
 from app.config import GALAXY_URL, GALAXY_API_KEY
 from bioblend import galaxy
-import os
 import pprint
 
 def setup_instance():
-    print(GALAXY_API_KEY)
-    print("galaxy url",GALAXY_URL)
     
     gi = galaxy.GalaxyInstance(url=GALAXY_URL, key=GALAXY_API_KEY)
 

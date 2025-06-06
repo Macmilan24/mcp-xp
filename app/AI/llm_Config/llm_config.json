@@ -1,7 +1,6 @@
 {
     "providers": {
         "azure": {
-            "api_key": "your_azure_api_key",
             "base_url": "https://models.inference.ai.azure.com",
             "model": "gpt-4o",
             "provider": "azure",
@@ -17,7 +16,6 @@
             }
         },
         "groq": {
-            "api_key": "your_groq_api_key",
             "base_url": "https://api.groq.com/openai/v1/chat/completions",
             "model": "meta-llama/llama-4-scout-17b-16e-instruct",
             "provider": "groq",
@@ -26,9 +24,19 @@
             "top_p": 1,
             "stream": true,
             "stop": null
+        },
+        "gemini": {
+            "base_url": "https://generativelanguage.googleapis.com/v1beta/models",
+            "model": "gemini-2.0-flash:generateContent",
+            "provider": "gemini",
+            "temperature": 0.7,
+            "max_tokens": 1024,
+            "top_p": 1,
+            "stream": true,
+            "stop": null
         }
     },
-    "default_provider": "azure",
+    "default_provider": "gemini",
     "cache": {
         "enabled": true,
         "cache_size": 100,

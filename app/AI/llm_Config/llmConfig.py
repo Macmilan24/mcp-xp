@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 import httpx
-from app.config import GROQ_API_KEY, AZURE_API_KEY
+from app.config import GROQ_API_KEY, AZURE_API_KEY, GEMINI_API_KEY
 from openai import OpenAI, AsyncOpenAI  # Use AsyncOpenAI for async support
 import json
+import google.generativeai as genai
+import httpx # Keep for other providers if needed, though not directly for Gemini's SDK
+
 
 # Configuration Classes
 class LLMModelConfig:
@@ -16,13 +19,17 @@ class LLMModelConfig:
 class GROQConfig(LLMModelConfig):
     @property
     def api_key(self) -> str:
-        print(GROQ_API_KEY)
         return GROQ_API_KEY
 
 class AZUREConfig(LLMModelConfig):
     @property
     def api_key(self) -> str:
         return AZURE_API_KEY
+
+class GEMINIConfig(LLMModelConfig):
+    @property
+    def api_key(self) -> str:
+        return GEMINI_API_KEY
 
 # Abstract Provider Base Class
 class LLMProvider(ABC):
@@ -44,7 +51,7 @@ class GroqProvider(LLMProvider):
         """
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.api_key}"
+            "Authorization": f"Bearer {GROQ_API_KEY}"
         }
         payload = {
             "messages": messages,
@@ -86,7 +93,7 @@ class AzureProvider(LLMProvider):
         """
         client = AsyncOpenAI(
             base_url=self.config.base_url,
-            api_key=self.config.api_key,
+            api_key=AZURE_API_KEY,
         )
 
         try:
@@ -107,3 +114,49 @@ class AzureProvider(LLMProvider):
         finally:
             await client.close()
 
+
+# Gemini Provider
+class GeminiProvider(LLMProvider):
+    async def get_response(self, messages: List[Dict[str, str]]) -> str:
+        """
+        Sends a request to the Gemini REST API and returns the generated response.
+        """
+        print("gemini model ",self.config.config_data.get("model"))
+        headers = {
+            "Content-Type": "application/json",
+        }
+
+        # Convert messages to the format expected by Gemini
+        content_parts = []
+        for message in messages:
+            print("message " ,message)
+            role = message.get("role", "user")
+            text = message.get("content", "")
+            content_parts.append({
+                "role": role,
+                "parts": [{"text": text}]
+            })
+
+        payload = {
+            "contents": content_parts,
+            "generationConfig": {
+                "temperature": self.config.config_data.get("temperature", 0.7),
+                "maxOutputTokens": self.config.config_data.get("max_tokens", 1024),
+                "topP": self.config.config_data.get("top_p", 1),
+                "stopSequences": self.config.config_data.get("stop", [])
+            }
+        }
+
+        endpoint = f"{self.config.base_url}/{self.config.config_data.get("model")}?key={GEMINI_API_KEY}"
+        print("endpoint ", endpoint)
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(endpoint, headers=headers, json=payload)
+                print("response ",response)
+                print("Status:", response.status_code)
+                print("Response text:", response.text)
+                response.raise_for_status()
+                data = response.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as e:
+            return f"Gemini API error: {str(e)}"
