@@ -233,6 +233,62 @@ class ChatSession:
         self.servers: list[Server] = servers
         self.llm_client: LLMClient = llm_client
         self.memory = []
+        self.system_message = None
+        self.messages = None
+        
+    @classmethod
+    async def create(cls, servers: list[Server], llm_client: LLMClient) -> "ChatSession":
+        self = cls(servers, llm_client)
+        
+        try:
+            for server in self.servers:
+                try:
+                    await server.initialize()
+                except Exception as e:
+                    print(f"Failed to initialize server {server.name}: {e}")
+                    await self.cleanup_servers()
+                    raise RuntimeError(f"Server initialization failed: {e}") from e
+
+            # Gather tools
+            all_tools = []
+            try:
+                for server in self.servers:
+                    tools = await server.list_tools()
+                    all_tools.extend(tools)
+                tools_description = "\n".join([tool.format_for_llm() for tool in all_tools])
+            except Exception as e:
+                print(f"Error listing tools: {e}")
+                raise RuntimeError(f"Tool listing failed: {e}") from e
+
+            # Compose system message
+            self.system_message = (
+                "You are a helpful assistant with access to these tools:\n\n"
+                f"{tools_description}\n"
+                "Choose the appropriate tool based on the user's question. "
+                "If no tool is needed, reply directly.\n\n"
+                "IMPORTANT: When you need to use a tool, you must ONLY respond with "
+                "the exact JSON object format below, nothing else:\n"
+                "{\n"
+                '    "tool": "tool-name",\n'
+                '    "arguments": {\n'
+                '        "argument-name": "value"\n'
+                "    }\n"
+                "}\n\n"
+                "After receiving a tool's response:\n"
+                "1. Transform the raw data into a natural, conversational response\n"
+                "2. Keep responses concise but informative\n"
+                "3. Focus on the most relevant information\n"
+                "4. Use appropriate context from the user's question\n"
+                "5. Avoid simply repeating the raw data\n\n"
+                "Please use only the tools that are explicitly defined above."
+            )
+
+            self.messages = [{"role": "user", "content": self.system_message}]
+            return self
+
+        except Exception:
+            await self.cleanup_servers()
+            raise
 
     async def cleanup_servers(self) -> None:
         """Clean up all server resources safely."""
@@ -294,86 +350,39 @@ class ChatSession:
 
     async def respond(self, model_id: str, user_input: str) -> str:
         """Handle a user input and return the assistant's response."""
+        # Process user input
         try:
-            for server in self.servers:
-                try:
-                    await server.initialize()
-                except Exception as e:
-                    print(f"Failed to initialize server {server.name}: {e}")
-                    await self.cleanup_servers()
-                    raise RuntimeError(f"Server initialization failed: {e}") from e
+            self.messages.extend(self.memory)
+            self.messages.append({"role": "user", "content": user_input})
+            self.memory.append({"role": "user", "content": user_input})
+            providers = self.llm_client.providers
 
-            # Gather tools
-            all_tools = []
-            tools_description = ""
-            try:
-                for server in self.servers:
-                    tools = await server.list_tools()
-                    all_tools.extend(tools)
-                tools_description = "\n".join([tool.format_for_llm() for tool in all_tools])
-            except Exception as e:
-                print(f"Error listing tools: {e}")
-                raise RuntimeError(f"Tool listing failed: {e}") from e
+            # Validate model_id
+            if model_id not in providers:
+                raise ValueError(f"Invalid model_id: {model_id}. Available providers: {list(providers.keys())}")
 
-            # System message with tools
-            system_message = (
-                "You are a helpful assistant with access to these tools:\n\n"
-                f"{tools_description}\n"
-                # "Choose the appropriate tool based on the user's question. "
-                # "If no tool is needed, reply directly.\n\n"
-                # "IMPORTANT: When you need to use a tool, you must ONLY respond with "
-                # "the exact JSON object format below, nothing else:\n"
-                # "{\n"
-                # '    "tool": "tool-name",\n'
-                # '    "arguments": {\n'
-                # '        "argument-name": "value"\n'
-                # "    }\n"
-                # "}\n\n"
-                # "After receiving a tool's response:\n"
-                # "1. Transform the raw data into a natural, conversational response\n"
-                # "2. Keep responses concise but informative\n"
-                # "3. Focus on the most relevant information\n"
-                # "4. Use appropriate context from the user's question\n"
-                # "5. Avoid simply repeating the raw data\n\n"
-                # "Please use only the tools that are explicitly defined above."
-            )
+            # Get LLM response
+            llm_response = await providers[model_id].get_response(self.messages)
 
-            # messages = [{"role": "user", "content": system_message}]
-            messages = [{"role": "user", "content": system_message}]
+            # Process potential tool calls
+            result = await self.process_llm_response(llm_response)
 
-            # Process user input
-            try:
-                messages.extend(self.memory)
-                messages.append({"role": "user", "content": user_input})
-                self.memory.append({"role": "user", "content": user_input})
-                providers = self.llm_client.providers
+            if result != llm_response:
+                # Tool was used; get a final response
+                self.messages.append({"role": "model", "content": llm_response})
+                self.messages.append({"role": "model", "content": result})
+                final_response = await providers[model_id].get_response(self.messages)
+                self.messages.append({"role": "model", "content": final_response})
+                self.memory.append({"role": "model", "content": final_response})
+                return final_response
+            else:
+                self.messages.append({"role": "model", "content": llm_response})
+                self.memory.append({"role": "model", "content": llm_response})
+                return llm_response
 
-                # Validate model_id
-                if model_id not in providers:
-                    raise ValueError(f"Invalid model_id: {model_id}. Available providers: {list(providers.keys())}")
-
-                # Get LLM response
-                llm_response = await providers[model_id].get_response(messages)
-
-                # Process potential tool calls
-                result = await self.process_llm_response(llm_response)
-
-                if result != llm_response:
-                    # Tool was used; get a final response
-                    messages.append({"role": "model", "content": llm_response})
-                    messages.append({"role": "model", "content": result})
-                    final_response = await providers[model_id].get_response(messages)
-                    messages.append({"role": "model", "content": final_response})
-                    self.memory.append({"role": "model", "content": final_response})
-                    return final_response
-                else:
-                    messages.append({"role": "model", "content": llm_response})
-                    self.memory.append({"role": "model", "content": llm_response})
-                    return llm_response
-
-            except Exception as e:
-                print(f"Error processing response: {e}")
-                raise RuntimeError(f"Response processing failed: {e}") from e
+        except Exception as e:
+            print(f"Error processing response: {e}")
+            raise RuntimeError(f"Response processing failed: {e}") from e
 
         finally:
             await self.cleanup_servers()
@@ -388,7 +397,7 @@ async def initialize_session() -> ChatSession:
     ]
     llm_providers = get_providers()
     llm_client = LLMClient(llm_providers)
-    chat_session = ChatSession(servers, llm_client)
+    chat_session = await ChatSession.create(servers, llm_client)
     return chat_session
 
 
