@@ -39,3 +39,22 @@ async def send_message(model_id: str, request: MessageRequest):
     if response is None:
         return {"error": "No response from model"}
     return {"response": response}
+
+@app.post("/list_tools")
+async def list_tools():
+    """
+    Send a message to the chat session with a specific model ID
+    """
+    global _chatSession
+    if _chatSession is None:
+        return {"error": "Chat session not initiated"}
+
+    for server in _chatSession.servers:
+        await server.initialize()
+        tools = await server.list_tools()
+        tools_description = [tool for tool in tools]
+        # tools_description = [tool.format_for_llm() for tool in tools]
+        print(tools_description)
+        return tools_description
+        # print(tool.format_for_llm() for tool in tools )
+    # return {"response": response}
