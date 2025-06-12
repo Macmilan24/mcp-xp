@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from app.AI.llm_Config.llmConfig import GroqProvider, AzureProvider,GeminiProvider, GROQConfig, AZUREConfig, GEMINIConfig
+from datetime import datetime
 
 
 
@@ -213,11 +214,11 @@ class Tool:
                 args_desc.append(arg_desc)
 
         return f"""
-Tool: {self.name}
-Description: {self.description}
-Arguments:
-{chr(10).join(args_desc)}
-"""
+                    Tool: {self.name}
+                    Description: {self.description}
+                    Arguments:
+                    {chr(10).join(args_desc)}
+                """
 
 
 class LLMClient:
@@ -229,16 +230,19 @@ class LLMClient:
 class ChatSession:
     """Orchestrates the interaction between user, LLM, and tools."""
 
-    def __init__(self, servers: list[Server], llm_client: LLMClient) -> None:
+    def __init__(self, servers: list[Server], llm_client: LLMClient, user_ip: str = None) -> None:
         self.servers: list[Server] = servers
         self.llm_client: LLMClient = llm_client
         self.memory = []
         self.system_message = None
         self.messages = None
-        
+        self.user_ip = user_ip
+        self.log_filename = f"chat_session_{self.user_ip}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        self._initialize_log_file()
+
     @classmethod
-    async def create(cls, servers: list[Server], llm_client: LLMClient) -> "ChatSession":
-        self = cls(servers, llm_client)
+    async def create(cls, servers: list[Server], llm_client: LLMClient, user_ip: str = None) -> "ChatSession":
+        self = cls(servers, llm_client, user_ip)
         
         try:
             for server in self.servers:
@@ -254,6 +258,8 @@ class ChatSession:
             try:
                 for server in self.servers:
                     tools = await server.list_tools()
+                    print(f"Type of tools: {type(tools)}")
+                    print(type(tools), type(tools[0]), tools[0])
                     all_tools.extend(tools)
                 tools_description = "\n".join([tool.format_for_llm() for tool in all_tools])
             except Exception as e:
@@ -269,9 +275,9 @@ class ChatSession:
                 "IMPORTANT: When you need to use a tool, you must ONLY respond with "
                 "the exact JSON object format below, nothing else:\n"
                 "{\n"
-                '    "tool": "tool-name",\n'
+                '    "tool": "tool name",\n'
                 '    "arguments": {\n'
-                '        "argument-name": "value"\n'
+                '        "argument name": "value"\n'
                 "    }\n"
                 "}\n\n"
                 "After receiving a tool's response:\n"
@@ -289,6 +295,20 @@ class ChatSession:
         except Exception:
             await self.cleanup_servers()
             raise
+
+    def _initialize_log_file(self):
+        """Create the log file when the session starts."""
+        try:
+            with open(self.log_filename, "w") as log_file:
+                log_data = {
+                    "user_ip": self.user_ip,
+                    "session_start": datetime.now().isoformat(),
+                    "messages": []
+                }
+                json.dump(log_data, log_file)
+                log_file.write("\n")  # Ensure each session is on a new line
+        except Exception as e:
+            print(f"Error initializing log file: {e}")
 
     async def cleanup_servers(self) -> None:
         """Clean up all server resources safely."""
@@ -387,7 +407,7 @@ class ChatSession:
         finally:
             await self.cleanup_servers()
 
-async def initialize_session() -> ChatSession:
+async def initialize_session(user_ip: str) -> ChatSession:
     """Initialize and return the chat session."""
     config = Configuration()  # Assumes Configuration class exists
     server_config = config.load_server_config("app/AI/servers_config.json")
@@ -397,7 +417,7 @@ async def initialize_session() -> ChatSession:
     ]
     llm_providers = get_providers()
     llm_client = LLMClient(llm_providers)
-    chat_session = await ChatSession.create(servers, llm_client)
+    chat_session = await ChatSession.create(servers, llm_client, user_ip)
     return chat_session
 
 

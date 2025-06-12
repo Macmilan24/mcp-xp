@@ -29,7 +29,8 @@ def tools(gi, number_of_tools=10):
         print(tool)
         
         tools.append(pprint.pformat(tool) + "\n")
-    return "\n".join(tools)
+    # return "\n".join(tools)
+    return tools
     
     
 def get_tools(number_of_tools=10):
