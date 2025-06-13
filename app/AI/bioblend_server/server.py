@@ -59,8 +59,8 @@ async def serve():
         logger.info("Listing tools for galaxyTools server")
         tools = []
 
-        print(f"Type of tools: {type(get_tools())}")
-        return get_tools()
+        # print(f"Type of tools: {type(get_tools())}")
+        # return get_tools()
         # 1. Add the REAL BioBlend tools manually
         # tools.append(
         #     Tool(
@@ -96,23 +96,23 @@ async def serve():
         # )
 
         # 2. Add MOCK tools loaded from JSON
-        # for tool_def in MOCK_TOOL_DEFINITIONS:
-        #     try:
-        #         tools.append(
-        #             Tool(
-        #                 name=tool_def["name"],
-        #                 # Add "Mock Tool:" prefix to the description
-        #                 description=f"Mock Tool: {tool_def.get('description_suffix', 'No description provided.')}",
-        #                 inputSchema=tool_def.get("inputSchema", {"type": "object", "properties": {}}) # Use provided schema or default
-        #             )
-        #         )
-        #     except KeyError as e:
-        #         logger.warning(f"Skipping mock tool definition due to missing key {e} in JSON: {tool_def}")
-        #     except Exception as e:
-        #          logger.warning(f"Skipping mock tool definition due to unexpected error: {e} in JSON: {tool_def}")
+        for tool_def in MOCK_TOOL_DEFINITIONS:
+            try:
+                tools.append(
+                    Tool(
+                        name=tool_def["name"],
+                        # Add "Mock Tool:" prefix to the description
+                        description=f"Mock Tool: {tool_def.get('description_suffix', 'No description provided.')}",
+                        inputSchema=tool_def.get("inputSchema", {"type": "object", "properties": {}}) # Use provided schema or default
+                    )
+                )
+            except KeyError as e:
+                logger.warning(f"Skipping mock tool definition due to missing key {e} in JSON: {tool_def}")
+            except Exception as e:
+                 logger.warning(f"Skipping mock tool definition due to unexpected error: {e} in JSON: {tool_def}")
 
 
-        # logger.info(f"Total tools listed: {len(tools)}")
+        logger.info(f"Total tools listed: {len(tools)}")
         return tools
 
     @server.call_tool()

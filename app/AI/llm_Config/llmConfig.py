@@ -147,7 +147,7 @@ class GeminiProvider(LLMProvider):
             }
         }
 
-        endpoint = f"{self.config.base_url}/{self.config.config_data.get("model")}?key={GEMINI_API_KEY}"
+        endpoint = f"{self.config.base_url}/{self.config.config_data.get('model')}?key={GEMINI_API_KEY}"
         print("endpoint ", endpoint)
         try:
             async with httpx.AsyncClient() as client:
