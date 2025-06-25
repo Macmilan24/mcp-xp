@@ -1,8 +1,9 @@
 # Import all the functions you want to be accessible from the server
-from .galaxy_tools import (
+from .galaxy import (
     setup_instance,
     get_tools,
     get_tool,
+    GalaxyClient
     # list_histories,
     # get_history_details,
     # create_history,
@@ -16,8 +17,6 @@ from .galaxy_tools import (
     # list_libraries,
     # get_library_details,
 )
-
-import asyncio
 
 # Make them available for import * from this package
 __all__ = [
@@ -36,4 +35,5 @@ __all__ = [
     "get_user_details",
     "list_libraries",
     "get_library_details",
+    "GalaxyClient"
 ]

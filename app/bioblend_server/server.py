@@ -1,7 +1,7 @@
 import logging
 import json # Import the json library
 import os   # Import os to construct file paths
-from typing import List, Dict, Any, Callable # Added Callable for type hinting
+from typing import Dict, Any, Callable # Added Callable for type hinting
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -9,7 +9,7 @@ from mcp.types import TextContent, Tool
 
 
 # Keep existing imports - DO NOT CHANGE
-from app.AI.bioblend_server.galaxy_tools import get_tools, get_tool
+from app.bioblend_server.galaxy import get_tools, get_tool, GalaxyClient
 
 logger = logging.getLogger("bioblend_server")
 # Ensure logging is configured
@@ -53,12 +53,20 @@ logger.info(f"Created dispatcher for {len(MOCK_TOOL_DISPATCHER)} mock tools.")
 async def serve():
     logger.info("Server is starting...")
     server = Server("galaxyTools")
+    GALAXY_URL = os.getenv("GALAXY_URL")
+    GALAXY_API_KEY = os.getenv("GALAXY_API_KEY")
+
+    client = GalaxyClient(GALAXY_URL, GALAXY_API_KEY)
 
     @server.list_tools()
-    async def list_tools() -> List[Tool]:
+    async def list_tools():
+        print("Listing tools for galaxyTools server")
         logger.info("Listing tools for galaxyTools server")
         tools = []
-
+        tls = client.get_tools(10,5)
+        print("tls ", tls)
+        # for tool in tls:
+        #     return tls
         # print(f"Type of tools: {type(get_tools())}")
         # return get_tools()
         # 1. Add the REAL BioBlend tools manually
@@ -94,7 +102,21 @@ async def serve():
         #         },
         #     )
         # )
-
+        # for tl in tls[1]:
+        #     print("tl ", tl)
+        #     try:
+        #         tools.append(
+        #             Tool(
+        #                 name=tl["description"],
+        #                 # Add "Mock Tool:" prefix to the description
+        #                 description=f"Mock Tool: ",
+        #                 # inputSchema=tool_def.get("inputSchema", {"type": "object", "properties": {}}) # Use provided schema or default
+        #             )
+        #         )
+        #     except KeyError as e:
+        #         logger.warning(f"Skipping mock tool definition due to missing key {e} in JSON: {tool_def}")
+        #     except Exception as e:
+        #          logger.warning
         # 2. Add MOCK tools loaded from JSON
         for tool_def in MOCK_TOOL_DEFINITIONS:
             try:

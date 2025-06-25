@@ -2,7 +2,8 @@ PORT := 8888
 
 
 start:
-	nohup uvicorn app.main:app --reload --host 0.0.0.0 --port $(PORT) > uvicorn.log 2>&1 &
+	uvicorn app.main:app --timeout-keep-alive 1 --host 0.0.0.0 --port $(PORT)
+# nohup uvicorn app.main:app --reload --host 0.0.0.0 --port $(PORT) > uvicorn.log 2>&1 &
 
 log:
 	tail -f uvicorn.log

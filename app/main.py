@@ -1,14 +1,11 @@
-from fastapi import FastAPI
-import uvicorn
 import os
 import sys
-from app.AI.chatbot import ChatSession, initialize_session
+from fastapi import FastAPI
 from pydantic import BaseModel
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # Optional: Add project root to Python path
 from fastapi import FastAPI, Request
-import os
-import pickle
+from app.AI.chatbot import ChatSession, initialize_session
 
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # Optional: Add project root to Python path
 # def session_file_path(user_ip: str) -> str:
 #     safe_ip = user_ip.replace(":", "_")  # Windows-safe file naming
 #     return os.path.join(SESSION_DIR, f"{safe_ip}.pkl")
@@ -61,13 +58,23 @@ async def send_message(request: Request, message: MessageRequest):
 
 @app.post("/list_tools")
 async def list_tools(request: Request):
+    print("ksdnflksfd")
+    
     user_ip = request.client.host
     if user_ip not in sessions:
-        return {"error": "Chat session not initiated"}
+            chat_session = await initialize_session(user_ip)
+            sessions[user_ip] = chat_session
 
     chat_session = sessions[user_ip]
     all_tools = []
     for server in chat_session.servers:
+        print("server 1")
         tools = await server.list_tools()
-        all_tools.extend([tool.format_for_llm() for tool in tools])
+        print("toosls uuuu ", tools)
+        all_tools.extend([tool for tool in tools])
     return {"tools": all_tools}
+
+
+@app.post("/upload_file")
+async def uploaf_file():
+        return 1

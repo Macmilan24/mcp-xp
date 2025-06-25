@@ -1,5 +1,5 @@
 import asyncio
-from app.AI.bioblend_server.server import serve
+from app.bioblend_server.server import serve
 
 
 if __name__ == "__main__":
