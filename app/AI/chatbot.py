@@ -1,4 +1,5 @@
 import json
+import logging
 
 from datetime import datetime
 from app.AI.server import Server
@@ -17,6 +18,7 @@ class LLMClient:
     def __init__(self, llm_providers: dict):
         self.providers = llm_providers  # Creates an instance of the providers
 
+logger=logging.getLogger()
 
 class ChatSession:
     """Orchestrates the interaction between user, LLM, and tools."""
@@ -28,8 +30,9 @@ class ChatSession:
         self.system_message = None
         self.messages = None
         self.user_ip = user_ip
+        self.tools = None 
         self.log_filename = f"chat_session_{self.user_ip}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        # self._initialize_log_file()
+        self.logger=logging.getLogger(__class__.__name__)
 
     @classmethod
     async def create(cls, servers: list[Server], llm_client: LLMClient, user_ip: str = None) -> "ChatSession":
@@ -40,7 +43,7 @@ class ChatSession:
                 try:
                     await server.initialize()
                 except Exception as e:
-                    print(f"Failed to initialize server {server.name}: {e}")
+                    self.logger.error(f"Failed to initialize server {server.name}: {e}")
                     await self.cleanup_servers()
                     raise RuntimeError(f"Server initialization failed: {e}") from e
 
@@ -48,14 +51,13 @@ class ChatSession:
             all_tools = []
             try:
                 for server in self.servers:
-                    print("before the server list tools")
                     tools = await server.list_tools()
-                    print(f"Type of tools: {type(tools)}")
-                    # print(type(tools), type(tools[0]), tools[0])
-                    all_tools.extend(tools)
+                    self.logger.info(f"Type of tools: {type(tools)} for {server.name}")
+                    self.tools=tools.tools
+                    all_tools.extend(tools.tools)
                 tools_description = [tool for tool in all_tools]
             except Exception as e:
-                print(f"Error listing tools: {e}")
+                self.logger.error(f"Error listing tools: {e}")
                 raise RuntimeError(f"Tool listing failed: {e}") from e
 
             # Compose system message
@@ -110,9 +112,10 @@ class ChatSession:
         for server in self.servers:
             try:
                 await server.cleanup()
+                self.logger.info("server cleared up successfully.")
             except Exception as e:
                 # Silently handle cleanup errors to ensure all servers get cleanup attempts
-                print(f"Error cleaning up server {server.name}: {e}")
+                self.logger.error(f"Error cleaning up server {server.name}: {e}")
                 pass
 
     async def process_llm_response(self, llm_response: str) -> str:
@@ -127,19 +130,21 @@ class ChatSession:
         import json
 
         try:
-            tool_call = json.loads(llm_response)
+            tool_call = json.loads(llm_response) if isinstance(llm_response,str) else llm_response
+            self.logger.info(f" the tool called: {tool_call}")
             if "tool" in tool_call and "arguments" in tool_call:
                 # logging.info(f"Executing tool: {tool_call['tool']}")
                 # logging.info(f"With arguments: {tool_call['arguments']}")
 
                 for server in self.servers:
-                    tools = await server.list_tools()
+                    tools = self.tools  # Use stored tools
+                    
                     if any(tool.name == tool_call["tool"] for tool in tools):
                         try:
                             result = await server.execute_tool(
                                 tool_call["tool"], tool_call["arguments"]
                             )
-
+                            # print(f'result from tool call: {result}')
                             if isinstance(result, dict) and "progress" in result:
                                 progress = result["progress"]
                                 total = result["total"]
@@ -148,8 +153,30 @@ class ChatSession:
                                 #     f"Progress: {progress}/{total} "
                                 #     f"({percentage:.1f}%)"
                                 # )
+                            if isinstance(result.content, list) and len(result.content) > 0:
 
-                            return f"Tool execution result: {result}"
+                                content_type = result.content[0].type
+                                content_text = result.content[0].text
+                                annotations = result.content[0].annotations
+
+                                self.logger.info(f" The return type: {content_type} Annotations: {annotations} Content : {content_text} ")
+
+                                return f"""
+                                        You are required to respond **strictly and exclusively** based on the following Tool Execution Result:
+                                        **{content_text}**
+
+                                        **Instructions:**
+                                        1. If the Tool Execution Result is complete and directly answers the query, **return it exactly as-is**. Do **not** paraphrase, summarize, interpret, or alter it in any way.
+                                        2. If the Tool Execution Result is **incomplete, unclear, or insufficient**, respond only using the information it contains—**do not draw on external knowledge or assumptions**.
+                                        3. Your response must remain **self-contained**, with no reference to outside sources, general knowledge, or unrelated context.
+                                        4. If appropriate, you may suggest **guidance or next steps**, but only when clearly warranted by the Tool Execution Result, and only if they can be logically and explicitly **derived from the given context**.
+                                        5. Never introduce new information, explanations, or assumptions beyond what is directly stated in the Tool Execution Result.
+
+                                        **Default behavior:**
+                                        Always return the Tool Execution Result **verbatim**, unless doing so would leave the query unresolved **based solely on the result itself**.
+                                        """
+                            else:
+                                return "Tool execution result: No content returned."
                         except Exception as e:
                             error_msg = f"Error executing tool: {str(e)}"
                             # logging.error(error_msg)
@@ -181,28 +208,30 @@ class ChatSession:
 
             if result != llm_response:
                 # Tool was used; get a final response
-                self.messages.append({"role": "model", "content": llm_response})
-                self.messages.append({"role": "model", "content": result})
+                self.messages.append({"role": "assistant", "content": f"{llm_response}"})
+                self.messages.append({"role": "user", "content": result})
+
                 final_response = await providers[model_id].get_response(self.messages)
-                self.messages.append({"role": "model", "content": final_response})
-                self.memory.append({"role": "model", "content": final_response})
+
+                self.messages.append({"role": "assistant", "content": final_response})
+                self.memory.append({"role": "assistant", "content": final_response})
+                # print(self.messages)
                 return final_response
             else:
-                self.messages.append({"role": "model", "content": llm_response})
-                self.memory.append({"role": "model", "content": llm_response})
+                self.messages.append({"role": "assistant", "content": llm_response})
+                self.memory.append({"role": "assistant", "content": llm_response})
                 return llm_response
 
         except Exception as e:
-            print(f"Error processing response: {e}")
+            self.logger.error(f"Error processing response: {e}")
             raise RuntimeError(f"Response processing failed: {e}") from e
 
-        finally:
-            await self.cleanup_servers()
+        # finally:
+        #     await self.cleanup_servers()
 
 
 async def initialize_session(user_ip: str) -> ChatSession:
     """Initialize and return the chat session."""
-    print("init 1")
     config = Configuration()  # Assumes Configuration class exists
     server_config = config.load_server_config("app/AI/servers_config.json")
     servers = [
@@ -211,7 +240,7 @@ async def initialize_session(user_ip: str) -> ChatSession:
     ]
     llm_providers = get_providers()
     llm_client = LLMClient(llm_providers)
-    print("init 2")
+    logger.info('Initializng session')
     chat_session = await ChatSession.create(servers, llm_client, user_ip)
     return chat_session
 
