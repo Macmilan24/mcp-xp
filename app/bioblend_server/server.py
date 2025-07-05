@@ -1,180 +1,69 @@
 import logging
 import json # Import the json library
 import os   # Import os to construct file paths
-from typing import Dict, Any, Callable # Added Callable for type hinting
-
+from typing import Dict, Any, Callable, Awaitable # Added Callable for type hinting
+import sys
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import TextContent, Tool, LoggingMessageNotification
+sys.path.append('.')
 
-
-# Keep existing imports - DO NOT CHANGE
-from app.bioblend_server.galaxy import get_tools, get_tool, GalaxyClient
-
-logger = logging.getLogger("bioblend_server")
-# Ensure logging is configured
-# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-# --- Constants ---
-MOCK_TOOLS_JSON_PATH = os.path.join(os.path.dirname(__file__), "mock_tools.json")
-
-# --- Generic Mock Function Executor ---
-# This single function will handle the execution logic for ALL mock tools.
-# It's identified by the tool_name passed to it.
-def execute_generic_mock_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
-    """Logs execution and returns a standard mock response string."""
-    logger.info(f"Executing MOCK function for: {tool_name} with args: {arguments}")
-    result_text = f"Executed mock tool function: {tool_name}"
-    logger.info(f"Mock function {tool_name} returning: '{result_text}'")
-    return result_text
-
-# --- Tool Loading and Dispatcher Setup ---
-# Load mock tool definitions from JSON
-try:
-    with open(MOCK_TOOLS_JSON_PATH, 'r') as f:
-        MOCK_TOOL_DEFINITIONS = json.load(f)
-    logger.info(f"Successfully loaded {len(MOCK_TOOL_DEFINITIONS)} mock tool definitions from {MOCK_TOOLS_JSON_PATH}")
-except FileNotFoundError:
-    logger.error(f"Mock tools JSON file not found at {MOCK_TOOLS_JSON_PATH}. No mock tools will be available.")
-    MOCK_TOOL_DEFINITIONS = []
-except json.JSONDecodeError as e:
-    logger.error(f"Error decoding JSON from {MOCK_TOOLS_JSON_PATH}: {e}. No mock tools will be available.")
-    MOCK_TOOL_DEFINITIONS = []
-
-# Create a dispatcher dictionary mapping mock tool names to the generic executor
-# We use a lambda here to capture the tool_name for the generic function
-MOCK_TOOL_DISPATCHER: Dict[str, Callable[[Dict[str, Any]], str]] = {
-    tool_def["name"]: (lambda name=tool_def["name"]: lambda args: execute_generic_mock_tool(name, args))()
-    for tool_def in MOCK_TOOL_DEFINITIONS
-}
-logger.info(f"Created dispatcher for {len(MOCK_TOOL_DISPATCHER)} mock tools.")
+# The information retreiver tool
+from app.bioblend_server.galaxy import get_galaxy_information
 
 # --- Server Implementation ---
 async def serve():
+    logger = logging.getLogger("bioblend_server")
+    # Ensure logging is configured
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
     logger.info("Server is starting...")
     server = Server("galaxyTools")
-    GALAXY_URL = os.getenv("GALAXY_URL")
-    GALAXY_API_KEY = os.getenv("GALAXY_API_KEY")
-
-    client = GalaxyClient(GALAXY_URL, GALAXY_API_KEY)
 
     @server.list_tools()
     async def list_tools():
-        print("Listing tools for galaxyTools server")
-        logger.info("Listing tools for galaxyTools server")
-        tools = []
-        tls = client.get_tools(10,5)
-        print("tls ", tls)
-        # for tool in tls:
-        #     return tls
-        # print(f"Type of tools: {type(get_tools())}")
-        # return get_tools()
-        # 1. Add the REAL BioBlend tools manually
-        # tools.append(
-        #     Tool(
-        #         name="galaxy_tools",
-        #         description="Fetch a list of tools from the connected Galaxy instance using BioBlend.",
-        #         inputSchema={
-        #             "type" : "object",
-        #             "properties": {
-        #                 "number_of_tools": {
-        #                     "type": "integer",
-        #                     "description": "The maximum number of tools to fetch from Galaxy.",
-        #                     "default": 10,
-        #                 },
-        #             },
-        #         },
-        #     )
-        # )
-        # tools.append(
-        #     Tool(
-        #         name="galaxy_tool_by_id",
-        #         description="Fetch detailed information about a specific tool by its ID from the Galaxy instance using BioBlend.",
-        #         inputSchema={
-        #             "type" : "object",
-        #             "properties": {
-        #                 "tool_id": {
-        #                     "type": "string",
-        #                     "description": "The exact ID of the tool to fetch from Galaxy (e.g., 'upload1').",
-        #                 },
-        #             },
-        #             "required" : ["tool_id"]
-        #         },
-        #     )
-        # )
-        # for tl in tls[1]:
-        #     print("tl ", tl)
-        #     try:
-        #         tools.append(
-        #             Tool(
-        #                 name=tl["description"],
-        #                 # Add "Mock Tool:" prefix to the description
-        #                 description=f"Mock Tool: ",
-        #                 # inputSchema=tool_def.get("inputSchema", {"type": "object", "properties": {}}) # Use provided schema or default
-        #             )
-        #         )
-        #     except KeyError as e:
-        #         logger.warning(f"Skipping mock tool definition due to missing key {e} in JSON: {tool_def}")
-        #     except Exception as e:
-        #          logger.warning
-        # 2. Add MOCK tools loaded from JSON
-        for tool_def in MOCK_TOOL_DEFINITIONS:
-            try:
-                tools.append(
-                    Tool(
-                        name=tool_def["name"],
-                        # Add "Mock Tool:" prefix to the description
-                        description=f"Mock Tool: {tool_def.get('description_suffix', 'No description provided.')}",
-                        inputSchema=tool_def.get("inputSchema", {"type": "object", "properties": {}}) # Use provided schema or default
+        return [
+                Tool(
+                        name="get_galaxy_information",
+                        description="Fetch detailed information about Galaxy entities "
+                                    "(tools, datasets, workflows and workflow invocation details) and answer questions based on entities from galaxy entities.",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string", "description": "The user's query, accompanied by full and detailed contextual information"},
+                                "query_type": {
+                                    "type": "string",
+                                    "enum": ["tool", "dataset", "workflow"],
+                                    "description": "Entity type, select workflow for workflow details and workflow invocation details as well"
+                                    },
+                                "entity_id": { 
+                                    "type":"string" ,
+                                    "description": "Optional parameter used only when the user's query explicitly includes an ID, allowing retrieval of information by that ID."
+                                    }
+                            }, 
+                            "required": ["query", "query_type"],
+                        },
                     )
-                )
-            except KeyError as e:
-                logger.warning(f"Skipping mock tool definition due to missing key {e} in JSON: {tool_def}")
-            except Exception as e:
-                 logger.warning(f"Skipping mock tool definition due to unexpected error: {e} in JSON: {tool_def}")
-
-
-        logger.info(f"Total tools listed: {len(tools)}")
-        return tools
+                ]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        logger.info(f"Attempting to call tool: '{name}' with args: {arguments}")
+        # print(f"Attempting to call tool: '{name}' with args: {arguments}", file=sys.stderr)
         try:
             result_text = None # Initialize result text
 
             # --- Handle REAL BioBlend Tools ---
-            # if name == "galaxy_tools":
-            #     try:
-            #         logger.info(f"Calling REAL tool handler function: get_tools")
-            #         num_tools = arguments.get("number_of_tools", 10)
-            #         result_text = get_tools(num_tools)
-            #         logger.info(f"Successfully executed REAL tool function: get_tools")
-            #     except Exception as e:
-            #         logger.error(f"Error executing REAL tool function 'get_tools': {str(e)}", exc_info=True)
-            #         return [TextContent(type="text", text=f"Error executing tool '{name}': {str(e)}")]
+            if name == "get_galaxy_information":
+                try:
+                    query = arguments.get("query")
+                    query_type=arguments.get("query_type")
+                    entity_id= arguments.get("entity_id", None)
+                    result_text = await get_galaxy_information(query=query, query_type=query_type, entity_id=entity_id)
+                    logger.info(f"Successfully executed REAL tool function: get_tools")
+                except Exception as e:
+                    logger.error(f"Error executing REAL tool function 'get_tools': {str(e)}", exc_info=True)
+                    return [TextContent(type="text", text=f"Error executing tool '{name}': {str(e)}")]
 
-            # elif name == "galaxy_tool_by_id":
-            #     try:
-            #         logger.info(f"Calling REAL tool handler function: get_tool")
-            #         tool_id = arguments.get("tool_id")
-            #         if not tool_id:
-            #             logger.error(f"Missing 'tool_id' argument for tool: {name}")
-            #             return [TextContent(type="text", text=f"Error: Missing required argument 'tool_id' for tool '{name}'.")]
-            #         result_text = get_tool(tool_id)
-            #         logger.info(f"Successfully executed REAL tool function: get_tool for id: {tool_id}")
-            #     except Exception as e:
-            #         logger.error(f"Error executing REAL tool function 'get_tool' with id '{arguments.get('tool_id')}': {str(e)}", exc_info=True)
-            #         return [TextContent(type="text", text=f"Error executing tool '{name}': {str(e)}")]
-
-            # --- Handle MOCK Tools using the Dispatcher ---
-            if name in MOCK_TOOL_DISPATCHER:
-                 mock_function = MOCK_TOOL_DISPATCHER[name]
-                 # The mock_function already includes the tool name via the lambda capture
-                 result_text = mock_function(arguments)
-                 # Logging is now done inside execute_generic_mock_tool
-
-            # --- Handle Unknown Tool ---
             else:
                 logger.warning(f"Attempted to call unknown tool: {name}")
                 return [TextContent(type="text", text=f"Error: Unknown tool name '{name}' provided.")]
@@ -195,14 +84,19 @@ async def serve():
 
     options = server.create_initialization_options()
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, options, raise_exceptions=False)
+        await server.run(
+                        read_stream,
+                        write_stream, 
+                        options, 
+                        raise_exceptions=True
+                          )
 
 # # Optional guard for direct execution (less useful now as it depends on the JSON)
 # if __name__ == "__main__":
-#      import asyncio
-#      logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-#      # Check if JSON loading worked before trying to run
-#      if not MOCK_TOOL_DEFINITIONS:
-#          logger.error("Cannot run server directly, mock tools failed to load.")
-#      else:
-#          asyncio.run(serve())
+#     # import asyncio
+#     # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+#     # asyncio.run(serve())
+
+#     x=TextContent(type="text", text=f"Internal server error processing tool.")
+#     print(type(x.text))
+#     print(x)

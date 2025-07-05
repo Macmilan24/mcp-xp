@@ -1,7 +1,6 @@
-from app.config import GALAXY_URL, GALAXY_API_KEY
 from bioblend import galaxy
-import pprint
-
+from app.bioblend_server.informer.informer import GalaxyInformer
+from mcp.types import CallToolResult
 class GalaxyClient:
 
     def __init__(self, galaxy_url, galaxy_api_key):
@@ -49,62 +48,33 @@ class GalaxyClient:
         """
         tool = self.tools_client.show_tool(tool_id=tool_id)
         return (tool)
-
-# TODO:: Maybe should be removed
-def setup_instance():
     
-    gi = galaxy.GalaxyInstance(url=GALAXY_URL, key=GALAXY_API_KEY)
-
-    hl = gi.histories.get_histories()
-    con = galaxy.config.ConfigClient(gi)
-
-    # test the credit have been created successfully
-    con.get_config()
-    print(con.whoami())
-
-    return gi
-
-def tools(gi, number_of_tools=10):
-
-    
-    gi = setup_instance()
-    tools = galaxy.tools.ToolClient(gi)
-
-    tool_list = tools.show_tool(tool_id="upload1")
-    # pprint.pprint(tool_list)
-    single_tool = tools.get_tools()
-    tools = []
-    for tool in single_tool[:number_of_tools]:
-        print(tool)
-        
-        tools.append(pprint.pformat(tool) + "\n")
-    # return "\n".join(tools)
-    return tools
-    
-    
-def get_tools(number_of_tools=10):
+# informer(information retriever) tool as a tool for the MCP server
+async def get_galaxy_information(query: str, query_type: str, entity_id: str =None)-> CallToolResult:
     """
-    Get the tools from the galaxy instance
-    """
-    gi = setup_instance()
-    print("gi ", gi)
-    t = tools(gi, int(number_of_tools))
-    print("t ",t)
-    if t:
-        return t
-    else:
-        return "none found"
-
-def get_tool(id):
-
-    """
-    Get a specific tool by its ID from the galaxy instance
-    """
-    gi = setup_instance()
-    tools_client = galaxy.tools.ToolClient(gi)
-    tool = tools_client.show_tool(tool_id=id)
-    return pprint.pformat(tool)
-
-if __name__ == "__main__":
-    tools()
+    Fetch detailed information on Galaxy tools, workflows, datasets,
+    and invocations—including their usage, current state, and any related 
+    queries—handling all information requests about Galaxy entities, based on 
+    the query_type(tool, workflow, dataset) and the query
     
+    Args: query(str): The user query message that needs response
+          query_type(str): The tyoe of galaxy entity the query needs a rsponse 
+                           for with either of 3 values: tool, dataset, workflow
+          entity_id(str) optional : The entity id
+
+    return: dictionary: {
+                        query: the users query message
+                        retrieved_content: galaxy information details for the entity
+                        response: Response for the users query message
+                        }
+    """
+
+    informer= GalaxyInformer(query_type)
+    galaxy_response= await informer.get_entity_info(search_query = query, entity_id = entity_id)
+    # print(galaxy_response)
+    return galaxy_response['response']
+
+# if __name__ == "__main__":
+#     # tools()
+#    import asyncio
+#    asyncio.run(get_galaxy_information(query="find me tools to convert bed file into gtf file", query_type='tool'))
