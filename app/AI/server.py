@@ -5,6 +5,7 @@ from typing import Any
 from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+import logging
 
 class Server:
     """Manages MCP server connections and tool execution."""
@@ -16,6 +17,7 @@ class Server:
         self.session: ClientSession | None = None
         self._cleanup_lock: asyncio.Lock = asyncio.Lock()
         self.exit_stack: AsyncExitStack = AsyncExitStack()
+        self.logger= logging.getLogger(__class__.__name__)
 
     async def initialize(self) -> None:
         """Initialize the server connection."""
@@ -35,6 +37,7 @@ class Server:
             else None,
         )
         try:
+            self.logger.info("Attempting connection")
             stdio_transport = await self.exit_stack.enter_async_context(
                 stdio_client(server_params)
             )
@@ -44,10 +47,11 @@ class Server:
             )
             await session.initialize()
             self.session = session
-            # logging.info(f"Server {self.name} initialized successfully.")
+            self.logger.info(f"Server {self.name} initialized successfully.")
+
         except Exception as e:
             # logging.error(f"Error initializing server {self.name}: {e}")
-            print(f"Error initializing server {self.name}: {e}")
+            self.logger.error(f"Error initializing server {self.name}: {e}")
             await self.cleanup()
             raise
 
@@ -58,20 +62,7 @@ class Server:
 
         # logging.debug("getting tools")
         tools_response = await self.session.list_tools()
-        # if not tools_response:
-        #     # logging.warning(f"No tools found for server {self.name}")
-        #     return []
-        # tools = []
-        # # logging.info(f"Raw tools response from {self.name}: {tools_response}")
-
-        # for item in tools_response:
-        #     if isinstance(item, tuple) and item[0] == "tools":
-        #         for tool in item[1]:
-        #             # logging.info(f"Server: {self.name}, Tool: {tool.name}, Description: {tool.description}")
-        #             tools.append(Tool(tool.name, tool.description, tool.inputSchema))
-        print("tools fetched")
-        # print(len(tools))
-        # return tools
+        self.logger.info("tools fetched")
         return tools_response
 
     async def execute_tool(
@@ -102,6 +93,7 @@ class Server:
         attempt = 0
         while attempt < retries:
             try:
+                self.logger.info(f"attempting tool execution: {tool_name}")
                 # logging.info(f"Executing {tool_name}...")
                 result = await self.session.call_tool(tool_name, arguments)
 
@@ -109,9 +101,6 @@ class Server:
 
             except Exception as e:
                 attempt += 1
-                # logging.warning(
-                #     f"Error executing tool: {e}. Attempt {attempt} of {retries}."
-                # )
                 if attempt < retries:
                     # logging.info(f"Retrying in {delay} seconds...")
                     await asyncio.sleep(delay)
