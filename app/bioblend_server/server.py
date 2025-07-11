@@ -1,102 +1,107 @@
+import os
+from fastmcp import FastMCP
 import logging
-import json # Import the json library
-import os   # Import os to construct file paths
-from typing import Dict, Any, Callable, Awaitable # Added Callable for type hinting
-import sys
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool, LoggingMessageNotification
-sys.path.append('.')
 
-# The information retreiver tool
-from app.bioblend_server.galaxy import get_galaxy_information
+# Import core logic from galaxy.py
+from app.bioblend_server.galaxy import get_galaxy_information, GalaxyClient
+from app.log_setup import configure_logging
 
-# --- Server Implementation ---
-async def serve():
-    logger = logging.getLogger("bioblend_server")
-    # Ensure logging is configured
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+configure_logging()
+logger = logging.getLogger("fastmcp_bioblend_server")
 
-    logger.info("Server is starting...")
-    server = Server("galaxyTools")
+# Initialize FastMCP server
+# You can set environment variables for Galaxy URL and API Key
+GALAXY_URL = os.environ.get("GALAXY_URL", "http://localhost:8080") # Provide a default or raise error if not set
+GALAXY_API_KEY = os.environ.get("GALAXY_API_KEY")
 
-    @server.list_tools()
-    async def list_tools():
-        return [
-                Tool(
-                        name="get_galaxy_information",
-                        description="Fetch detailed information about Galaxy entities "
-                                    "(tools, datasets, workflows and workflow invocation details) and answer questions based on entities from galaxy entities.",
-                        inputSchema={
-                            "type": "object",
-                            "properties": {
-                                "query": {"type": "string", "description": "The user's query, accompanied by full and detailed contextual information"},
-                                "query_type": {
-                                    "type": "string",
-                                    "enum": ["tool", "dataset", "workflow"],
-                                    "description": "Entity type, select workflow for workflow details and workflow invocation details as well"
-                                    },
-                                "entity_id": { 
-                                    "type":"string" ,
-                                    "description": "Optional parameter used only when the user's query explicitly includes an ID, allowing retrieval of information by that ID."
-                                    }
-                            }, 
-                            "required": ["query", "query_type"],
-                        },
+if not GALAXY_API_KEY:
+    logger.warning("GALAXY_API_KEY environment variable is not set. GalaxyClient functionality may fail.")
+
+
+galaxy_client_instance = GalaxyClient(GALAXY_URL, GALAXY_API_KEY)
+
+
+bioblend_app = FastMCP(
+                        name="galaxyTools",
+                        instructions="Provides tools and resources for interacting with Galaxy instances via BioBlend. "
+                                    "Tools allow querying Galaxy information and retrieving any sort of information on a galaxy instance "
+                                    "Make sure to specify 'tool', 'dataset', or 'workflow' for 'query_type'. "
+                                    "Use 'entity_id' only if the user explicitly provides an ID."
                     )
-                ]
-
-    @server.call_tool()
-    async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-        # print(f"Attempting to call tool: '{name}' with args: {arguments}", file=sys.stderr)
-        try:
-            result_text = None # Initialize result text
-
-            # --- Handle REAL BioBlend Tools ---
-            if name == "get_galaxy_information":
-                try:
-                    query = arguments.get("query")
-                    query_type=arguments.get("query_type")
-                    entity_id= arguments.get("entity_id", None)
-                    result_text = await get_galaxy_information(query=query, query_type=query_type, entity_id=entity_id)
-                    logger.info(f"Successfully executed REAL tool function: get_tools")
-                except Exception as e:
-                    logger.error(f"Error executing REAL tool function 'get_tools': {str(e)}", exc_info=True)
-                    return [TextContent(type="text", text=f"Error executing tool '{name}': {str(e)}")]
-
-            else:
-                logger.warning(f"Attempted to call unknown tool: {name}")
-                return [TextContent(type="text", text=f"Error: Unknown tool name '{name}' provided.")]
-
-            # --- Wrap result in TextContent if successful ---
-            if result_text is not None:
-                 return [TextContent(type="text", text=str(result_text))]
-            else:
-                 # Should only happen if a real tool returns None unexpectedly or error handling fails
-                 logger.error(f"Tool '{name}' matched but did not produce a result or handle error appropriately.")
-                 return [TextContent(type="text", text=f"Internal server error processing tool '{name}'.")]
-
-        except Exception as e:
-            # Catch unexpected errors during tool dispatch or mock function execution
-            logger.error(f"Unexpected error in call_tool dispatch for tool '{name}': {str(e)}", exc_info=True)
-            return [TextContent(type="text", text=f"An unexpected server error occurred while trying to execute tool '{name}'.")]
 
 
-    options = server.create_initialization_options()
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-                        read_stream,
-                        write_stream, 
-                        options, 
-                        raise_exceptions=True
-                          )
 
-# # Optional guard for direct execution (less useful now as it depends on the JSON)
-# if __name__ == "__main__":
-#     # import asyncio
-#     # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-#     # asyncio.run(serve())
+@bioblend_app.tool()
+async def get_galaxy_information_tool(
+    query: str,
+    query_type: str,
+    entity_id: str = None
+) -> dict:
+    """
+    Fetch detailed information on Galaxy tools, workflows, datasets, and invocations.
 
-#     x=TextContent(type="text", text=f"Internal server error processing tool.")
-#     print(type(x.text))
-#     print(x)
+    This tool handles all information requests about Galaxy entities, based on
+    the `query_type` (tool, workflow, dataset) and the user's `query`.
+    Use `entity_id` only when the user's query explicitly includes an ID.
+
+    Args:
+        query: The user's query message that needs a response, accompanied by full and detailed contextual information.
+        query_type: The type of Galaxy entity the query needs a response for, with one of three values: "tool", "dataset", or "workflow".
+                    Select "workflow" for general workflow details and specific workflow invocation details.
+        entity_id: Optional parameter. Provide this only when the user's query explicitly includes an ID,
+                   allowing retrieval of information by that specific entity ID.
+
+    Returns:
+        A string containing the detailed Galaxy information and the response to the user's query.
+    """
+    logger.info(f"Calling get_galaxy_information with query='{query}', query_type='{query_type}', entity_id='{entity_id}'")
+    # Directly call the original function from galaxy.py
+    try:
+        result = await get_galaxy_information(query=query, query_type=query_type, entity_id=entity_id)
+        return result
+    except Exception as e:
+        logger.error(f"Error in get_galaxy_information_tool: {e}", exc_info=True)
+        return f"An error occurred while fetching Galaxy information: {str(e)}"
+
+@bioblend_app.tool()
+def get_galaxy_available_tools(limit: int = 10, offset: int = 0) -> dict:
+    """
+    Retrieves a list of available tools from the Galaxy instance.
+
+    Args:
+        limit: The maximum number of tools to return. Defaults to 10.
+        offset: The starting index for retrieving tools. Defaults to 0.
+
+    Returns:
+        A dictionary containing the total count of tools and a list of tool dictionaries.
+    """
+    logger.info(f"Calling get_galaxy_available_tools with limit={limit}, offset={offset}")
+    try:
+        # Instantiate GalaxyClient here if it needs request-specific context or for safety
+        galaxy_client = GalaxyClient(GALAXY_URL, GALAXY_API_KEY)
+        total, tools = galaxy_client.get_tools(limit=limit, offset=offset)
+        if isinstance(tools, list):
+            # Return only essential info to avoid large payloads if not needed
+            simplified_tools = [{"id": t.get("id"), "name": t.get("name"), "title": t.get("tool_shed_repository", {}).get("name", None)} for t in tools if isinstance(t, dict)]
+        else:
+            simplified_tools = [] # Handle the "No tools found" string case
+            
+        return {"total_tools": total, "tools": simplified_tools}
+    except Exception as e:
+        logger.error(f"Error in get_galaxy_available_tools: {e}", exc_info=True)
+        return {"error": f"Failed to retrieve Galaxy tools: {str(e)}"}
+
+@bioblend_app.resource("galaxy://whoami")
+def get_galaxy_whoami() -> dict:
+    """
+    Retrieves the current user's details from the Galaxy instance.
+    """
+    logger.info("Calling get_galaxy_whoami")
+    try:
+        galaxy_client = GalaxyClient(GALAXY_URL, GALAXY_API_KEY)
+        return galaxy_client.whoami()
+    except Exception as e:
+        logger.error(f"Error in get_galaxy_whoami: {e}", exc_info=True)
+        return {"error": f"Failed to retrieve user details: {str(e)}"}

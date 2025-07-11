@@ -1,6 +1,6 @@
 from bioblend import galaxy
 from app.bioblend_server.informer.informer import GalaxyInformer
-from mcp.types import CallToolResult
+
 class GalaxyClient:
 
     def __init__(self, galaxy_url, galaxy_api_key):
@@ -50,7 +50,7 @@ class GalaxyClient:
         return (tool)
     
 # informer(information retriever) tool as a tool for the MCP server
-async def get_galaxy_information(query: str, query_type: str, entity_id: str =None)-> CallToolResult:
+async def get_galaxy_information(query: str, query_type: str, entity_id: str =None):
     """
     Fetch detailed information on Galaxy tools, workflows, datasets,
     and invocations—including their usage, current state, and any related 
@@ -71,8 +71,7 @@ async def get_galaxy_information(query: str, query_type: str, entity_id: str =No
 
     informer= GalaxyInformer(query_type)
     galaxy_response= await informer.get_entity_info(search_query = query, entity_id = entity_id)
-    # print(galaxy_response)
-    return galaxy_response['response']
+    return galaxy_response.get('response')
 
 # if __name__ == "__main__":
 #     # tools()
