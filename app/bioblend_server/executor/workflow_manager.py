@@ -1,9 +1,8 @@
-# tool_manager.py
 from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, List, Any, Tuple
+from typing import Union, List, Any, Tuple
 import os
 import json
 
@@ -16,7 +15,7 @@ from sys import path
 path.append('.')
 
 from app.bioblend_server.galaxy import GalaxyClient
-from bioblend.galaxy.objects.wrappers import Workflow, Invocation, History, Dataset, DatasetCollection, Step
+from bioblend.galaxy.objects.wrappers import Workflow, Invocation, History, Dataset, DatasetCollection
 from bioblend.galaxy.toolshed import ToolShedClient
 from app.bioblend_server.executor.data_manager import DataManager
 
@@ -33,6 +32,8 @@ class WorkflowManager:
         self.log = logging.getLogger(self.__class__.__name__)
 
     def upload_workflow(self, path: str)-> Workflow:
+        """Upload workflow from a ga file"""
+
         with open(path, 'r') as f:
             workflow_json = json.loads(f.read())
 
@@ -41,6 +42,8 @@ class WorkflowManager:
             if workflow_steps:
                 for step in workflow_steps:
                     self.tool_check_install(step)
+        # Reload the tool box after tools are installed
+        self.gi_object.gi.config.reload_toolbox()
         
         workflow: Workflow= self.gi_object.workflows.import_new(src=workflow_json, publish=False)
 
@@ -51,6 +54,8 @@ class WorkflowManager:
             return {'error': 'uploaded workflow is not runnable'}
     
     def get_worlflow_by_name(self, name: str, score_cutoff: int = 80) -> Workflow | None:
+        """Get tool by its name"""
+
         workflow_list= self.gi_object.gi.workflows.get_workflows()
 
         match = process.extractOne(
@@ -63,6 +68,8 @@ class WorkflowManager:
         return self.gi_object.workflows.get(match[0]['id']) if match else None
     
     def get_workflow_by_id(self, id: str)-> Workflow | None:
+        """Get tool by its id"""
+        
         try:
             workflow= self.gi_object.workflows.get(id)
             return workflow 
@@ -70,9 +77,8 @@ class WorkflowManager:
             return None
         
     def tool_exists(self, step: dict) -> bool:
-        """
-        Checks if a specific version of a tool is installed within the galaxy instance 
-        """
+        """Checks if a specific version of a tool is installed within the galaxy instance"""
+
         tool_id = step.get('tool_id')
         if not tool_id:
             return True
@@ -102,6 +108,8 @@ class WorkflowManager:
     # Function that installs tools missing in the galaxy instance for the workflow invocation
     # Need  administrator api        
     def tool_check_install(self, step: dict):
+        """Check and install if a tool in a workflow is missing"""
+
         # Recurse into subworkflow steps
         if step.get('type') == 'subworkflow':
             for sub_step in step['subworkflow']['steps'].values():
@@ -129,7 +137,8 @@ class WorkflowManager:
                     new_tool_panel_section_label=None
                 )
 
-                self.gi_object.gi.tools.reload(step['tool_id'])
+                # Since reloading specific tools is not working, gone with refreshing the full toolbox after all the tools are installed 
+                # self.gi_object.gi.tools.reload(step['tool_id'])
 
                 for repo_info in install_result:
                     status = repo_info.get('status', 'unknown')
@@ -148,8 +157,12 @@ class WorkflowManager:
         else:
             self.log.info(f"Tool found for step {step['id']}, skipping installation")
 
+    def get_workflow_io(self, workflow: Workflow)-> dict:
+        """get input structure of a workflow to be filled"""
+        
+        return dict.fromkeys(workflow.inputs.keys())
 
-    def _map_inputs_to_steps(self, inputs: dict, steps: dict) -> dict:
+    def _map_inputs_to_steps(self, name: str, inputs: dict, steps: dict) -> dict:
         """
         Map workflow inputs to their corresponding input steps.
 
@@ -160,7 +173,10 @@ class WorkflowManager:
         Returns:
             dict: A mapping of input labels to detailed step info.
         """
-        input_map = {}
+        
+        input_map = {
+            "name": name
+        }
 
         for input_id, input_info in inputs.items():
             step = steps.get(str(input_id))
@@ -175,7 +191,7 @@ class WorkflowManager:
 
         return input_map
 
-    def _build_html(self,mapped_workflows: list | dict, history: History) -> str:
+    def _build_html(self, mapped_workflows: list | dict, history: History) -> str:
         """
         Builds an HTML form from a list of mapped input dictionaries
         (each from map_inputs_to_steps).
@@ -187,18 +203,29 @@ class WorkflowManager:
         Returns:
             str: HTML string.
         """
+        
         if isinstance(mapped_workflows, dict):
             mapped_workflows=[mapped_workflows]
 
         # Get dataset and dataset collection for option
         datasets, collections = self.data_manager.list_contents(history=history)
-
-        html = ['<form method="POST" enctype="multipart/form-data">']
+        # TODO: Add Reference files here
+        reference_genomes = self.data_manager.list_genome()
+        options=[]
+        for reference in reference_genomes:
+            value = reference[1]
+            name = reference[0]
+            options.append(f'<option value="{value}">{name}</option>')
+        html = ['<form method="POST" enctype="multipart/form-data" class="galaxy-workflow-form">']
 
         for workflow_idx, workflow_inputs in enumerate(mapped_workflows):
-            html.append(f"<fieldset><legend>Workflow</legend>")
+            html.append(f'<fieldset class="workflow-fieldset" id="workflow-{workflow_idx}"><legend>{workflow_inputs["name"]}</legend>')
 
             for input_id, input_info in workflow_inputs.items():
+                if isinstance(input_info, str):
+                    ## exclude the name parameter
+                    continue
+
                 label = input_info.get("Label", f"Input {input_id}")
                 input_type = input_info.get("input_type", "")
                 annotation = input_info.get("annotation", "")
@@ -206,24 +233,27 @@ class WorkflowManager:
                 param_type = tool_inputs.get("parameter_type")
                 field_name = f"wf{workflow_idx}_step{input_info['step_id']}"
 
-                html.append(f'<div style="margin-bottom: 1em;">')
-                html.append(f'<label for="{field_name}"><strong>{label}</strong></label><br>')
+                html.append(f'<div class="form-field" style="margin-bottom: 1em;">')
+                html.append(f'<label for="{field_name}" class="form-label"><strong>{label}</strong></label><br>')
                 if annotation:
-                    html.append(f'<small>{annotation}</small><br>')
+                    html.append(f'<small class="form-annotation">{annotation}</small><br>')
 
                 # DATA INPUTS
                 if input_type == "data_input":
-                    html.append(f'<select name="{field_name}"  formatrequired>')
+                    html.append(f'<select class="form-select" name="{field_name}"  formatrequired>')
                     for option in datasets:
-                        html.append(f'<option value="{option['id']}">{option['name']}</option>')
+                        html.append(f'<option value="{option["id"]}">{option["name"]}</option>')
                     html.append('</select><br>')
 
-
+                elif input_type == "reference_genome":
+                    html.append(f'<select class="form-select" name="{field_name}" format=required')
+                    html.extend(options)
+                    html.append('</select><br>')
 
                 elif input_type == "data_collection_input":
-                    html.append(f'<select name="{field_name}"  required>')
+                    html.append(f'<select class="form-select" name="{field_name}"  required>')
                     for option in collections:
-                        html.append(f'<option value="{option['id']}">{option['name']}</option>')
+                        html.append(f'<option value="{option["id"]}">{option["name"]}</option>')
                     html.append('</select><br>')
 
                 # PARAMETER INPUTS
@@ -233,7 +263,7 @@ class WorkflowManager:
                     #  Boolean
                     if param_type == "boolean":
                         html.append(f'''
-                            <select name="{field_name}" {required}>
+                            <select class="form-select" name="{field_name}" {required}>
                                 <option value="true">True</option>
                                 <option value="false">False</option>
                             </select><br>
@@ -241,50 +271,59 @@ class WorkflowManager:
 
                     #  Restricted Choice / Enum
                     elif "restrictions" in tool_inputs:
-                        html.append(f'<select name="{field_name}" {required}>')
+                        html.append(f'<select class="form-select" name="{field_name}" {required}>')
                         for option in tool_inputs["restrictions"]:
                             html.append(f'<option value="{option}">{option}</option>')
                         html.append('</select><br>')
 
                     #  Default to Text
                     else:
-                        html.append(f'<input type="text" name="{field_name}" {required}><br>')
+                        html.append(f'<input type="text" class="form-input" name="{field_name}" {required}><br>')
 
                 # Unknown Input Type
                 else:
-                    html.append(f'<input type="text" name="{field_name}" placeholder="Unsupported input type"><br>')
+                    html.append(f'<input type="text" class="form-input" name="{field_name}" placeholder="Unsupported input type"><br>')
 
                 html.append('</div>')  # end of field
 
             html.append("</fieldset>")
 
-        html.append('<button type="submit">Run</button>')
+        html.append('<button type="submit" class="form-submit">Run</button>')
         html.append("</form>")
 
         return "\n".join(html)
 
-    def get_input(self, workflow: Workflow, history: History)-> str:
+    def build_input(self, workflow: Workflow, history: History)-> str:
         """builds workflow input html form from the workflow inputs and input steps"""
         # map inputs to input steps of the workflow to get information from both
         workflow= self.gi_object.gi.workflows.show_workflow(workflow_id=workflow.id)
-        mapped_input = self._map_inputs_to_steps(inputs=workflow['inputs'], steps=workflow['steps']) 
+        mapped_input = self._map_inputs_to_steps(name=workflow['name'], inputs=workflow['inputs'], steps=workflow['steps']) 
         # builds a html form from the mapped input payload
         html_form = self._build_html(mapped_workflows = mapped_input, history = history) 
         return html_form
-
-    def track_invocation(self, invocation: Invocation)-> List[Dataset]:
+    
+    def track_invocation(self, invocation: Invocation, base_extension: int = 10,initial_wait: int = 120)-> List[Union[Dataset, DatasetCollection]]:
         """Tracks invocation steps and waits for the invocation reaches a terminal state and returns with the invocation results""" 
+        
         completed_steps=set()
         error_occurred=False
         previous_states={}
-        invocation_outputs=[]
+        invocation_outputs=[] 
+
+        start_time = time.time()
+        deadline = start_time + initial_wait
+        max_extension = initial_wait // 2
+        num_steps = len(invocation.steps)
+        estimated_wait = 20 * num_steps  # assume 20s per step
+        initial_wait = min(estimated_wait, initial_wait)
 
         # estimate maxwait based on the number of steps in the workflow?
-        # How to dynamically set maxwait?? good enough to detect when the workflow has failed and when it has not
         while True:
             step_jobs = self.gi_object.gi.invocations.get_invocation_step_jobs_summary(invocation_id=invocation.id)
             all_ok = True
             step_index=0
+            progress_made = False
+
             for step in step_jobs:
                 step_id = step['id']
                 states = step['states']
@@ -304,6 +343,7 @@ class WorkflowManager:
                 if current_state != prev and current_state in ('running', 'ok', 'error'):
                     self.log.info(f"Step {step_index} with id {step_id} transitioned to {current_state}")
                     previous_states[step_id] = current_state
+                    progress_made = True
 
                 # Capture output exactly once when it first becomes ok
                 if current_state == 'ok' and step_id not in completed_steps:
@@ -330,6 +370,17 @@ class WorkflowManager:
                 break
             if all_ok:
                 self.log.info("All steps completed successfully.")
+                break
+            
+            now = time.time()
+            if progress_made:
+                # Extend deadline if progress was made, capped by hard max_wait
+                extension = min(base_extension, max_extension)
+                deadline = max(deadline + extension, start_time + initial_wait)
+
+            if now > deadline:
+                self.log.error(f"Invocation timed out after {int(now - start_time)} seconds.")
+                invocation.cancel()
                 break
 
             time.sleep(2)  # polling interval 
@@ -358,16 +409,16 @@ class WorkflowManager:
         
         return invocation
     
-    def _make_result(self, invocation: Invocation, outputs: list[Dataset], pdf_report: bool = False):
+    def _make_result(self, invocation: Invocation, outputs: list[Union[Dataset, DatasetCollection]], pdf_report: bool = False):
         """Result report of the workflow invocation"""
 
-        # TODO: output datasets should be handled as hidden and shown(i.e visible: True or False)
         if pdf_report:
             invocation_report = self.gi_object.gi.invocations.get_invocation_report_pdf(invocation.id) # Maybe get the report pdf here
         else:
             invocation_report = self.gi_object.gi.invocations.get_invocation_report(invocation.id) # Maybe get the report pdf here
         final_outputs=[]
         intermediate_outputs=[]
+
         # Classify the workflow invocation outputs as visible and hidden(i.e final outputs and intermediate step outputs)
         for output in outputs:
             if output.visible:
@@ -376,17 +427,19 @@ class WorkflowManager:
                 intermediate_outputs.append(output)
         return invocation_report, intermediate_outputs, final_outputs
         
-
-
-
-# if __name__ == "__main__":
-
-#     wm= WorkflowManager()
-
-#     workflow1= wm.get_workflow_by_id("f2db41e1fa331b3e")
-#     history= wm.gi_object.histories.get("4b187121143038ff")
-#     file_path = "app/bioblend_server/executor/form_demo.html"
-
-#     html_build = wm.get_input(workflow=workflow1, history=history)
-#     with open(file_path, 'wb') as f:
-#         f.write(html_build.encode('utf-8'))
+    def run_workflow(self, inputs: dict, workflow: Workflow , history: History):
+        """
+        Start a workflow invocation, 
+        track that invocation,
+        get intermediate and final outputs, 
+        and prepare a result
+        """
+        # start invocation
+        invocation = self.invoke_workflow(inputs, workflow, history) 
+        # track invocation steps and collect outputs
+        outputs=self.track_invocation(invocation) # can set base time extenstion and max_wait here
+        # prepare workflow invocation results
+        invocation_report, intermediate_outputs, final_outputs = self._make_result(invocation, outputs)
+        
+        # Return result of workflow invocation
+        return invocation_report, intermediate_outputs, final_outputs
