@@ -4,10 +4,11 @@ from __future__ import annotations
 import logging
 import os
 import time
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import List, Dict, Any, Union, Optional
+from typing import List, Union, Tuple
 
 
 from bioblend.galaxy.objects.wrappers import  History, Dataset, DatasetCollection
@@ -70,8 +71,9 @@ class DataManager:
                     self,
                     history: History,
                     collection_type: CollectionType,
-                    element_mappings: List[Dict[str, Any]],
+                    inputs: List[str], 
                     wait: bool = True,
+                    collection_name = None
                 ) -> UploadResult:
         """
         Build and upload a collection.
@@ -85,12 +87,47 @@ class DataManager:
             * LIST_PAIRED: each element must be another dict with nested
               'forward' / 'reverse' in the same format.
         """
-
+        if collection_name is None:
+            collection_name= f"{collection_type.value}_{int(time.time())}"
         # Maybe use LLMs here to congigure the element identifiers configurations
+        element_mappings=[]
+        # check what type of collection type it is
+        # for list collection
+        if collection_type.value == collection_type.LIST:
+            for _input in inputs:
+                dataset_new=self.upload_file(history = history, path = _input)
+                element_mappings.append({'name': dataset_new.name, 'src': 'hda', 'id': dataset_new.id})
+        
+        # for paired collection
+        elif collection_type.value == collection_type.PAIRED:
+            if len(inputs) == 2:
+                input_1 = self.upload_file(history=history, path=inputs[0])
+                input_2 = self.upload_file(history=history, path=inputs[1])
+                element_mappings=[
+                    {'name': 'forward', 'src': 'hda', 'id': input_1.id},
+                    {'name': 'reverse', 'src': 'hda', 'id': input_2.id}
+                    ]
+            else:
+                self.log.error('Invalid input !!')
+                return 
+        # for list:paired collections
+        elif collection_type.value == collection_type.LIST_PAIRED:
+            if isinstance(inputs, list) and all(isinstance(i, list) for i in inputs):
+                for _input in inputs:
+                    input_1 = self.upload_file(history=history, path=_input[0])
+                    input_2 = self.upload_file(history=history, path=_input[1])
+                    element_mappings.append([
+                        {'name': 'forward', 'src': 'hda', 'id': input_1.id},
+                        {'name': 'reverse', 'src': 'hda', 'id': input_2.id}
+                    ]) 
+            else:
+                self.log.error("invalid inputs !!")
+                return
+            
         payload = {
             "collection_type": collection_type.value,
             "element_identifiers": element_mappings,
-            "name": f"{collection_type.value}_{int(time.time())}",
+            "name": collection_name,
         }
         coll = history.create_dataset_collection(payload, wait=wait)
         return UploadResult(coll, coll.id, coll.name)
@@ -101,7 +138,7 @@ class DataManager:
         self,
         outputs: List[Union[Dataset, DatasetCollection]],
         dest_dir: Union[str, os.PathLike],
-        overwrite: bool = False,
+        overwrite: bool = True,
     ) -> List[Path]:
         """
         Download every dataset / collection to `dest_dir`.
@@ -116,22 +153,36 @@ class DataManager:
 
         for item in outputs:
             if isinstance(item, Dataset):
-
                 # to get the extenstion of the dataset to be downloaded
                 item_details= self.gi.gi.datasets.show_dataset(dataset_id=item.id)
-                target = dest_dir / f'{item_details['name']}.{item_details['extension']}'
+                name = re.sub(r'[\\/*?:"<>|]', '', item_details['name']).replace(' ', '_')
+                ext = re.sub(r'[\\/*?:"<>|]', '', item_details['extension']).replace(' ', '_')
+
+                item_name = f"{name}.{ext}"
+                target = dest_dir / item_name
                 if target.exists() and not overwrite:
                     raise FileExistsError(target)
-                with target.open("wb") as fh:
-                    item.download(fh)
-                downloaded.append(target)
+                
+                # Prefer display/download URL from Galaxy
+                download_url = item_details.get('download_url', None)
+                if download_url:
+                    full_url = f"{self.gi.gi.base_url}{download_url}"
+                    response = self.gi.gi.make_get_request(url = full_url, stream =True )
+                    with target.open("wb") as fh:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            fh.write(chunk)
+                else:
+                    # Fallback to direct download
+                    with target.open("wb") as fh:
+                        item.download(fh)
 
             elif isinstance(item, DatasetCollection):
 
                 archive = dest_dir / f"{item.name}.tar.gz"
                 if archive.exists() and not overwrite:
                     raise FileExistsError(archive)
-                # Use the procedural style bioblend to download dataset collection
+                
+                # Use the procedural style bioblend to download dataset collection since downloading collections is unavailable on the OOP bioblend
                 self.gi.gi.dataset_collections.download_dataset_collection(dataset_collection_id=item.id, file_path=archive )
                 downloaded.append(archive)
 
@@ -140,43 +191,32 @@ class DataManager:
 
         return downloaded
 
-    # HISTORY INTROSPECTION
-
     def list_contents(
         self, history: History, include_deleted: bool = False
-    ) -> List[Union[Dataset, DatasetCollection]]:
+    ) -> Tuple[List, List]:
         """Return every top-level item in the history."""
-        items = history.content_infos(include_deleted=include_deleted)
+        items=self.gi.gi.datasets.get_datasets(history_id=history.id)
         # Map info objects to actual wrappers
-        datasets = [self.gi.datasets.get(item["id"]) for item in items if item["history_content_type"] == "dataset"]
-        collections = [
-            self.gi.dataset_collections.get(item["id"])
-            for item in items
-            if item["history_content_type"] == "dataset_collection"
+        datasets = [
+            item
+            for item in items 
+            if item['history_content_type'] == "dataset" and (include_deleted or not item['deleted'])
         ]
-        return datasets + collections
+        
+        collections = [
+            item
+            for item in items 
+            if item['history_content_type'] == "dataset_collection" and (include_deleted or not item['deleted'])
+        ]
 
-
-## TESTING
-# if __name__== "__main__" : 
-#     dm = DataManager()
-#     hist = dm.gi.histories.create(name="DataManager-Demo")
-
-#     # 1. Upload two FASTQ files
-#     fwd = dm.upload_file(hist, "/data/sample_R1.fastq.gz")
-#     rev = dm.upload_file(hist, "/data/sample_R2.fastq.gz")
-
-#     # 2. Build a paired collection
-#     paired = dm.upload_collection(
-#         history=hist,
-#         collection_type=CollectionType.PAIRED,
-#         element_mappings=[
-#             {"name": "forward", "src": "hda", "id": fwd.id},
-#             {"name": "reverse", "src": "hda", "id": rev.id},
-#         ],
-#     )
-
-#     # 3. Later, download everything produced by a tool or workflow
-#     outputs = dm.list_contents(hist)
-#     local_paths = dm.download_outputs(outputs, dest_dir="downloads")
-#     print(local_paths)
+        return datasets, collections
+    
+    # TODO: how to select a data_table?? how to connect and map a data 
+    # table to the reference genome file installed?? STILL NEED WORK
+    def list_genome(self):
+        """List of reference genomes within a galaxy instance"""
+        return self.gi.gi.genomes.get_genomes()
+    
+    def list_data_tables(self):
+        """List of data tables of reference data in the galaxy instance"""
+        return self.gi.gi.tool_data.get_data_tables()
