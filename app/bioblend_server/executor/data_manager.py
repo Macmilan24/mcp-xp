@@ -87,50 +87,54 @@ class DataManager:
             * LIST_PAIRED: each element must be another dict with nested
               'forward' / 'reverse' in the same format.
         """
-        if collection_name is None:
-            collection_name= f"{collection_type.value}_{int(time.time())}"
-        # Maybe use LLMs here to congigure the element identifiers configurations
-        element_mappings=[]
-        # check what type of collection type it is
-        # for list collection
-        if collection_type.value == collection_type.LIST:
-            for _input in inputs:
-                dataset_new=self.upload_file(history = history, path = _input)
-                element_mappings.append({'name': dataset_new.name, 'src': 'hda', 'id': dataset_new.id})
-        
-        # for paired collection
-        elif collection_type.value == collection_type.PAIRED:
-            if len(inputs) == 2:
-                input_1 = self.upload_file(history=history, path=inputs[0])
-                input_2 = self.upload_file(history=history, path=inputs[1])
-                element_mappings=[
-                    {'name': 'forward', 'src': 'hda', 'id': input_1.id},
-                    {'name': 'reverse', 'src': 'hda', 'id': input_2.id}
-                    ]
-            else:
-                self.log.error('Invalid input !!')
-                return 
-        # for list:paired collections
-        elif collection_type.value == collection_type.LIST_PAIRED:
-            if isinstance(inputs, list) and all(isinstance(i, list) for i in inputs):
+        try:
+            if collection_name is None:
+                collection_name= f"{collection_type.value}_{int(time.time())}"
+            # Maybe use LLMs here to congigure the element identifiers configurations
+            element_mappings=[]
+            # check what type of collection type it is
+            # for list collection
+            if collection_type.value == collection_type.LIST:
                 for _input in inputs:
-                    input_1 = self.upload_file(history=history, path=_input[0])
-                    input_2 = self.upload_file(history=history, path=_input[1])
-                    element_mappings.append([
+                    dataset_new=self.upload_file(history = history, path = _input)
+                    element_mappings.append({'name': dataset_new.name, 'src': 'hda', 'id': dataset_new.id})
+            
+            # for paired collection
+            elif collection_type.value == collection_type.PAIRED:
+                if len(inputs) == 2:
+                    input_1 = self.upload_file(history=history, path=inputs[0])
+                    input_2 = self.upload_file(history=history, path=inputs[1])
+                    element_mappings=[
                         {'name': 'forward', 'src': 'hda', 'id': input_1.id},
                         {'name': 'reverse', 'src': 'hda', 'id': input_2.id}
-                    ]) 
-            else:
-                self.log.error("invalid inputs !!")
-                return
-            
-        payload = {
-            "collection_type": collection_type.value,
-            "element_identifiers": element_mappings,
-            "name": collection_name,
-        }
-        coll = history.create_dataset_collection(payload, wait=wait)
-        return UploadResult(coll, coll.id, coll.name)
+                        ]
+                else:
+                    self.log.error('Invalid input !!')
+                    return 
+            # for list:paired collections
+            elif collection_type.value == collection_type.LIST_PAIRED:
+                if isinstance(inputs, list) and all(isinstance(i, list) for i in inputs):
+                    for _input in inputs:
+                        input_1 = self.upload_file(history=history, path=_input[0])
+                        input_2 = self.upload_file(history=history, path=_input[1])
+                        element_mappings.append([
+                            {'name': 'forward', 'src': 'hda', 'id': input_1.id},
+                            {'name': 'reverse', 'src': 'hda', 'id': input_2.id}
+                        ]) 
+                else:
+                    self.log.error("invalid inputs !!")
+                    return
+                
+            payload = {
+                "collection_type": collection_type.value,
+                "element_identifiers": element_mappings,
+                "name": collection_name,
+            }
+            coll = self.gi.gi.histories.create_dataset_collection(history_id=history.id, collection_description=payload)
+            coll_obj = self.gi.dataset_collections.get(coll['id'])
+            return UploadResult(coll_obj, coll_obj.id, coll_obj.name)
+        except Exception as e:
+             raise Exception(f"Error during creating collection: {e}")
 
     
     # Output handling/ downloading datasets/collections
