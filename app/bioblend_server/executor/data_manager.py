@@ -177,8 +177,8 @@ class DataManager:
                         item.download(fh)
 
             elif isinstance(item, DatasetCollection):
-
-                archive = dest_dir / f"{item.name}.tar.gz"
+                name = re.sub(r'[\\/*?:"<>|]', '', item.name).replace(' ', '_')
+                archive = dest_dir / f"{name}.tar.gz"
                 if archive.exists() and not overwrite:
                     raise FileExistsError(archive)
                 
