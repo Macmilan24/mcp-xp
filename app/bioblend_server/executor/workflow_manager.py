@@ -409,13 +409,10 @@ class WorkflowManager:
         
         return invocation
     
-    def _make_result(self, invocation: Invocation, outputs: list[Union[Dataset, DatasetCollection]], pdf_report: bool = False):
+    def _make_result(self, invocation: Invocation, outputs: list[Union[Dataset, DatasetCollection]]):
         """Result report of the workflow invocation"""
-
-        if pdf_report:
-            invocation_report = self.gi_object.gi.invocations.get_invocation_report_pdf(invocation.id) # Maybe get the report pdf here
-        else:
-            invocation_report = self.gi_object.gi.invocations.get_invocation_report(invocation.id) # Maybe get the report pdf here
+        invocation_id = invocation.id
+        invocation_report = self.gi_object.gi.invocations.get_invocation_report(invocation.id)
         final_outputs=[]
         intermediate_outputs=[]
 
@@ -425,7 +422,7 @@ class WorkflowManager:
                 final_outputs.append(output)
             else:
                 intermediate_outputs.append(output)
-        return invocation_report, intermediate_outputs, final_outputs
+        return invocation_id, invocation_report, intermediate_outputs, final_outputs
         
     def run_workflow(self, inputs: dict, workflow: Workflow , history: History):
         """
@@ -439,7 +436,7 @@ class WorkflowManager:
         # track invocation steps and collect outputs
         outputs=self.track_invocation(invocation) # can set base time extenstion and max_wait here
         # prepare workflow invocation results
-        invocation_report, intermediate_outputs, final_outputs = self._make_result(invocation, outputs)
+        invocation_id, invocation_report, intermediate_outputs, final_outputs = self._make_result(invocation, outputs)
         
         # Return result of workflow invocation
-        return invocation_report, intermediate_outputs, final_outputs
+        return invocation_id, invocation_report, intermediate_outputs, final_outputs
