@@ -54,19 +54,24 @@ class WorkflowManager:
         else:
             return {'error': 'uploaded workflow is not runnable'}
     
-    def get_worlflow_by_name(self, name: str, score_cutoff: int = 80) -> Workflow | None:
-        """Get tool by its name"""
-
-        workflow_list= self.gi_object.gi.workflows.get_workflows()
+    def get_worlflow_by_name(self, name: str, score_cutoff: int = 70) -> Workflow | None:
+        """Get workflow by its name (fuzzy match)."""
+        workflow_list = self.gi_object.gi.workflows.get_workflows()
+        # Build a dict that maps each workflow name to the full dict
+        name_to_wf = {wf["name"]: wf for wf in workflow_list}
 
         match = process.extractOne(
             name,
-            workflow_list,
-            key=lambda w: w["name"],
+            name_to_wf.keys(),          # list of names
             scorer=fuzz.partial_ratio,
             score_cutoff=score_cutoff
         )
-        return self.gi_object.workflows.get(match[0]['id']) if match else None
+
+        if match is None:               # nothing above the cutoff
+            return None
+
+        wf_dict = name_to_wf[match[0]]
+        return self.gi_object.workflows.get(wf_dict["id"])
     
     def get_workflow_by_id(self, id: str)-> Workflow | None:
         """Get tool by its id"""
