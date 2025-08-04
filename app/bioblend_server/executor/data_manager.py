@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import List, Union, Tuple
+from pandas import DataFrame
+from rapidfuzz import process, fuzz
 
 
 from bioblend.galaxy.objects.wrappers import  History, Dataset, DatasetCollection
@@ -215,12 +217,20 @@ class DataManager:
 
         return datasets, collections
     
-    # TODO: how to select a data_table?? how to connect and map a data 
-    # table to the reference genome file installed?? STILL NEED WORK
-    def list_genome(self):
-        """List of reference genomes within a galaxy instance"""
-        return self.gi.gi.genomes.get_genomes()
-    
     def list_data_tables(self):
-        """List of data tables of reference data in the galaxy instance"""
-        return self.gi.gi.tool_data.get_data_tables()
+        """List of data tables names of reference data in the galaxy instance"""
+        data_tables = self.gi.gi.tool_data.get_data_tables()
+        return [data['name'] for data in data_tables]
+    
+    def get_data_table_elements(self, data_table_name: str) -> DataFrame:
+        """Get a list of elements of a data table"""
+        data_table_list = self.list_data_tables()
+        # Finding the best match for the data table in the galaxy instance
+        find_match = process.extractOne(
+            query= data_table_name,
+            choices= data_table_list,
+            scorer= fuzz.partial_ratio
+        )[0]
+        data_table = self.gi.gi.tool_data.show_data_table(find_match) 
+        
+        return DataFrame(data_table["fields"], columns = data_table["columns"])

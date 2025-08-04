@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 from dotenv import load_dotenv
+from typing import List
+
 load_dotenv()
 
 from sys import path
@@ -30,3 +32,7 @@ class HistoryManager:
 
     def delete(self, history: History):
         history.delete()
+    
+    def list_history(self)-> List[History]:
+        history = self.gi.histories.list()
+        return history 
