@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.endpoints import histories, workflows
+from app.api.endpoints import histories, tools, workflows
 
 api_router = APIRouter()
 
@@ -15,4 +15,11 @@ api_router.include_router(
     workflows.router,
     prefix="/workflows",
     tags=["Workflows"]
+)
+
+# Include the tools router with a prefix and tags
+api_router.include_router(
+    tools.router,
+    prefix="/tools",
+    tags=["Tools"]
 )
