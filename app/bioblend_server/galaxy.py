@@ -1,53 +1,28 @@
+import logging 
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from bioblend import galaxy
+from bioblend.galaxy.objects import GalaxyInstance
 from app.bioblend_server.informer.informer import GalaxyInformer
 
 class GalaxyClient:
 
-    def __init__(self, galaxy_url, galaxy_api_key):
-        self.galaxy_url = galaxy_url
-        self.galaxy_api_key = galaxy_api_key
-        self.gi = galaxy.GalaxyInstance(url=self.galaxy_url, key=self.galaxy_api_key)
+    def __init__(self):
+        self.galaxy_url = os.getenv('GALAXY_URL')
+        self.galaxy_api_key = os.getenv('GALAXY_API_KEY')
+        self.gi_object = GalaxyInstance(url=self.galaxy_url, api_key=self.galaxy_api_key)
+        self.gi_client= self.gi_object.gi
         self.limit = 2
         self.offset = 0
-        self.config_client = galaxy.config.ConfigClient(self.gi)
-        self.tool_client = galaxy.tools.ToolClient(self.gi)
+        self.config_client = galaxy.config.ConfigClient(self.gi_client)
+        self.tool_client = galaxy.tools.ToolClient(self.gi_client)
+        self.logger=logging.getLogger(__class__.__name__)
 
     def whoami(self):
         return self.config_client.whoami()
 
-    def get_tools(self, limit=None, offset=None):
-        """
-        Get a list of tools from the Galaxy instance with optional limit and offset.
-        
-        Args:
-            limit (int, optional): Number of tools to return. Defaults to self.limit.
-            offset (int, optional): Start index. Defaults to self.offset.
-
-        Returns:
-            tuple: (total_tool_count, list_of_tools)
-        """
-        limit = limit if limit is not None else self.limit
-        offset = offset if offset is not None else self.offset
-
-        all_tools = self.tool_client.get_tools()
-        
-        if not all_tools:
-            return [], []
-
-        total = len(all_tools)
-        tools = all_tools[offset:offset + limit]
-
-        if total > 0:
-            return total, tools
-        else:
-            return "No tools found for this Galaxy Instance"
-
-    def get_tool(self, tool_id):
-        """
-        Get a specific tool by its ID from the galaxy instance
-        """
-        tool = self.tools_client.show_tool(tool_id=tool_id)
-        return (tool)
     
 # informer(information retriever) tool as a tool for the MCP server
 async def get_galaxy_information(query: str, query_type: str, entity_id: str =None):

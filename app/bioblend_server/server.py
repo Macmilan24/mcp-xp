@@ -20,9 +20,6 @@ if not GALAXY_API_KEY:
     logger.warning("GALAXY_API_KEY environment variable is not set. GalaxyClient functionality may fail.")
 
 
-galaxy_client_instance = GalaxyClient(GALAXY_URL, GALAXY_API_KEY)
-
-
 bioblend_app = FastMCP(
                         name="galaxyTools",
                         instructions="Provides tools and resources for interacting with Galaxy instances via BioBlend. "
@@ -65,33 +62,6 @@ async def get_galaxy_information_tool(
         logger.error(f"Error in get_galaxy_information_tool: {e}", exc_info=True)
         return f"An error occurred while fetching Galaxy information: {str(e)}"
 
-@bioblend_app.tool()
-def get_galaxy_available_tools(limit: int = 10, offset: int = 0) -> dict:
-    """
-    Retrieves a list of available tools from the Galaxy instance.
-
-    Args:
-        limit: The maximum number of tools to return. Defaults to 10.
-        offset: The starting index for retrieving tools. Defaults to 0.
-
-    Returns:
-        A dictionary containing the total count of tools and a list of tool dictionaries.
-    """
-    logger.info(f"Calling get_galaxy_available_tools with limit={limit}, offset={offset}")
-    try:
-        # Instantiate GalaxyClient here if it needs request-specific context or for safety
-        galaxy_client = GalaxyClient(GALAXY_URL, GALAXY_API_KEY)
-        total, tools = galaxy_client.get_tools(limit=limit, offset=offset)
-        if isinstance(tools, list):
-            # Return only essential info to avoid large payloads if not needed
-            simplified_tools = [{"id": t.get("id"), "name": t.get("name"), "title": t.get("tool_shed_repository", {}).get("name", None)} for t in tools if isinstance(t, dict)]
-        else:
-            simplified_tools = [] # Handle the "No tools found" string case
-            
-        return {"total_tools": total, "tools": simplified_tools}
-    except Exception as e:
-        logger.error(f"Error in get_galaxy_available_tools: {e}", exc_info=True)
-        return {"error": f"Failed to retrieve Galaxy tools: {str(e)}"}
 
 @bioblend_app.resource("galaxy://whoami")
 def get_galaxy_whoami() -> dict:
@@ -100,8 +70,13 @@ def get_galaxy_whoami() -> dict:
     """
     logger.info("Calling get_galaxy_whoami")
     try:
-        galaxy_client = GalaxyClient(GALAXY_URL, GALAXY_API_KEY)
+        galaxy_client = GalaxyClient()
         return galaxy_client.whoami()
     except Exception as e:
         logger.error(f"Error in get_galaxy_whoami: {e}", exc_info=True)
         return {"error": f"Failed to retrieve user details: {str(e)}"}
+
+# TODO: Tool execution handler, lets start simple with just the tools
+#  For tools there needs to be a state input builder, that builds the state from the 
+# io_details of the tools and then use that structure to execute a file from that.
+# def execute_tool(): # Starting simple with the tool.
