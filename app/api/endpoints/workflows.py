@@ -1,14 +1,15 @@
 from sys import path
 path.append('.')
 import pathlib
-import tempfile, pathlib, shutil, re
+import tempfile, pathlib, shutil, re, os
 from anyio.to_thread import run_sync
 
-from fastapi import APIRouter, Path, Query, Form, Request, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.concurrency import run_in_threadpool
 from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
-
+import logging
+logger = logging.getLogger('workflow_endpoint')
 
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.api.schemas import workflow
@@ -16,6 +17,86 @@ from app.api.schemas import workflow
 router = APIRouter()
 workflow_manager = WorkflowManager()
 
+@router.get(
+    "/",
+    response_model=workflow.WorkflowList,
+    summary="List all workflows",
+    tags=["Workflows"]
+)
+async def list_workflows():
+    """
+    Retrieves a list of all workflows available in the Galaxy instance.
+    Returns basic information including workflow ID, name, and description.
+    """
+    try:
+        # Get all workflows from Galaxy instance with full details
+        workflows = await run_in_threadpool(
+            workflow_manager.gi_object.gi.workflows.get_workflows
+         )
+        
+        # Extract only the required fields
+        workflow_list = []
+        for wf in workflows:
+            # Get full workflow details to access annotations
+            full_workflow: dict = await run_in_threadpool(
+                workflow_manager.gi_object.gi.workflows.show_workflow,
+                workflow_id=wf['id']
+            )
+            
+            workflow_list.append(
+                workflow.WorkflowListItem(
+                    id=full_workflow["id"],
+                    name=full_workflow["name"],
+                    description=full_workflow.get("annotation", None)
+                )
+            )
+        
+        return workflow.WorkflowList(workflows=workflow_list)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list workflows: {e}")
+    
+@router.post(
+        "/upload-workflow",
+        response_model = workflow.WorkflowDetails,
+        summary = "Upload an external workflow ga file",
+        tags=["Workflows"]
+)
+async def upload_workflow(
+        file: UploadFile = File(..., description="The Workflow ga file to upload.")
+):
+    """Uploads an external workflow from a ga file into the galaxy instance."""
+
+    try:
+        # Use a temporary file to handle the upload
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file.filename) as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
+
+        # Upload the galaxt workflow into the instance
+        workflow = await run_in_threadpool(workflow_manager.upload_workflow, path = tmp_path)
+
+        os.remove(tmp_path) # Clean up the temporary file
+       
+        workflow_details  = await run_in_threadpool(workflow_manager.gi_object.gi.workflows.show_workflow, workflow.id)
+       
+        return {
+            "id": workflow_details.get("id"),
+            "tags": workflow_details.get("tags", None),
+            "create_time": workflow_details.get("create_time"),
+            "annotations": workflow_details.get("annotations", None),
+            "published": workflow_details.get("published"),
+            "license": workflow_details.get("license", None),
+            "galaxy_url": workflow_details.get("url"),
+            "creator": workflow_details.get("creator", None),
+            "steps": workflow_details.get("steps"),
+            "inputs": workflow_details.get("inputs"),
+        }
+    except Exception as e:
+        # Clean up in case of error
+        if 'tmp_path' in locals() and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+ 
 @router.get(
     "/{workflow_id}/form",
     response_class=HTMLResponse,
