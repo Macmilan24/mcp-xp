@@ -274,7 +274,7 @@ class WorkflowManager:
         html_form = form_generator._build_html()
         return html_form
     
-    def track_invocation(self, invocation: Invocation, base_extension: int = 10,initial_wait: int = 120)-> List[Union[Dataset, DatasetCollection]]:
+    def track_invocation(self, invocation: Invocation, base_extension: int = 30,initial_wait: int = 120)-> List[Union[Dataset, DatasetCollection]]:
         """Tracks invocation steps and waits for the invocation reaches a terminal state and returns with the invocation results""" 
         
         completed_steps=set()
@@ -287,10 +287,14 @@ class WorkflowManager:
         max_extension = initial_wait // 2
         num_steps = len(invocation.steps)
         estimated_wait = 20 * num_steps  # assume 20s per step
-        initial_wait = min(estimated_wait, initial_wait)
+        initial_wait = max(estimated_wait, initial_wait)
 
         # estimate maxwait based on the number of steps in the workflow?
         while True:
+            invocation_state = self.gi_object.gi.invocations.show_invocation(invocation_id = invocation.id)["state"]
+            if invocation_state in ("failed", "error"):
+                self.log.error("workflow invocation has failed.")
+                break
             step_jobs = self.gi_object.gi.invocations.get_invocation_step_jobs_summary(invocation_id=invocation.id)
             all_ok = True
             step_index=0
@@ -299,13 +303,12 @@ class WorkflowManager:
             for step in step_jobs:
                 step_id = step['id']
                 states = step['states']
-
                 # Simplified state
                 if states.get('running') == 1:
                     current_state = 'running'
                 elif states.get('ok') == 1:
                     current_state = 'ok'
-                elif states.get('error') == 1:
+                elif states.get('error') or states.get("failed") == 1:
                     current_state = 'error'
                 else:
                     current_state = 'other'

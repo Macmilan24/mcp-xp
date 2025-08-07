@@ -9,9 +9,8 @@ from app.bioblend_server.executor.data_manager import DataManager
 
 
 class ToolFormGenerator:
-    """
-    Parses a Galaxy tool's XML definition to generate an HTML form.
-    """
+    """Parses a Galaxy tool's XML definition to generate an HTML form."""
+    
     def __init__(self, xml_string: str, tool: Tool, history: History):
         self.root = ET.fromstring(xml_string)
         self.tool = tool
@@ -21,7 +20,9 @@ class ToolFormGenerator:
         self.tool_name = self.tool.name
         self.script_blocks = set()
         self.log = logging.getLogger(__class__.__name__)
-
+        self.upload_form_counter = 0 
+        self.has_upload_forms = False  # To flag to track if we have upload forms
+        
     def build_html(self) -> str:
         """Generates the full HTML form."""
 
@@ -30,8 +31,13 @@ class ToolFormGenerator:
         try:
             form_body = self._traverse(self.root.find('inputs'))
             script_content = "\n".join(self.script_blocks)
+            
+            # Add upload toggle script if we have upload forms
+            if self.has_upload_forms:
+                script_content += self._add_upload_toggle_script()
+            
             return f"""
-                    <form id="tool-form" class="galaxy-form" action="/api/tools/{escape(self.tool.id)}/histories/{escape(self.history.id)}/execute" method="POST">
+                    <form id="tool-form" class="galaxy-form" action="/api/tools/{self.tool.id}/histories/{self.history.id}/execute" method="POST">
                         {form_body}
                         <button class="galaxy-submit" type="submit">Run Tool</button>
                     </form>
@@ -46,6 +52,7 @@ class ToolFormGenerator:
 
     def _traverse(self, element) -> str:
         """Recursively traverses the XML tree and builds HTML."""
+
         html_parts = []
         for child in element:
             if child.tag == 'param':
@@ -57,38 +64,93 @@ class ToolFormGenerator:
             # Repeats are more complex and best handled with a frontend framework
             # but this provides a starting point.
         return "\n".join(html_parts)
-
+        
     def _build_param(self, param) -> str:
         """Builds HTML for a single <param> element."""
+
         param_type = param.get('type')
         name = param.get('name')
         arg_key = param.get('argument') or name
         label = param.get('label', name)
         help_text = param.find('help')
         help_html = f'<small class="form-help-text">{escape(help_text.text.strip())}</small>' if help_text is not None and help_text.text else ''
-
         input_html = ''
+        
         if param_type == 'data':
-            options = "".join([f'<option value="{ds["id"]}">{escape(f"{ds["hid"]}: {ds["name"]}")}</option>' for ds in self.datasets])
-            input_html = f'<select name="{arg_key}" class="form-control">{options}</select>'
+            # Generate select options for existing datasets
+            options = []
+            for ds in self.datasets:
+                label = f"{ds['hid']}: {ds['name']}"
+                option = f'<option value="{ds["id"]}">{escape(label)}</option>'
+                options.append(option)
+            options = "".join(options)
+            
+            # Create unique ID for this upload form
+            self.upload_form_counter += 1
+            unique_id = f"upload-file-form-{self.upload_form_counter}"
+            self.has_upload_forms = True
+            
+            # Create upload button and hidden form
+            upload_button = f'<button type="button" class="galaxy-upload-btn" data-target="{unique_id}">Upload File</button>'
+            upload_form = f"""
+            <div id="{unique_id}" class="upload-form" style="display:none;">
+                <form action="/api/histories/{self.history.id}/upload-file" method="POST" enctype="multipart/form-data">
+                    <input type="file" name="file" required>
+                    <button type="submit">Upload</button>
+                </form>
+            </div>
+            """
+            
+            input_html = f'<select name="{arg_key}" class="form-control">{options}</select>{upload_button}{upload_form}'
+            
         elif param_type == "data_collection":
-            options = "".join([f'<option value="{dsc["id"]}">{escape(f"{dsc["hid"]}: {dsc["name"]}")}</option>' for dsc in self.dataset_collections])
-            input_html = f'<select name="{arg_key}" class="form-control">{options}</select>'
+            # Generate select options for existing collections
+            options = []
+            for dsc in self.dataset_collections:
+                label = f"{dsc['hid']}: {dsc['name']}"
+                option = f'<option value="{dsc["id"]}">{escape(label)}</option>'
+                options.append(option)
+            options = "".join(options)
+            # Create unique ID for this upload form
+            self.upload_form_counter += 1
+            unique_id = f"upload-collection-form-{self.upload_form_counter}"
+            self.has_upload_forms = True
+            
+            # Create upload button and hidden form
+            upload_button = f'<button type="button" class="galaxy-upload-btn" data-target="{unique_id}">Upload Collection</button>'
+            upload_form = f"""
+            <div id="{unique_id}" class="upload-form" style="display:none;">
+                <form action="/api/histories/{self.history.id}/upload-collection" method="POST" enctype="multipart/form-data">
+                    <input type="file" name="files" multiple required>
+                    <select name="collection_type" required>
+                        <option value="list">List</option>
+                        <option value="paired">Paired</option>
+                        <option value="list:paired">List:Paired</option>
+                    </select>
+                    <input type="text" name="collection_name" placeholder="Collection name (optional)">
+                    <textarea name="structure" placeholder="For list:paired, specify structure as JSON (e.g., [[\"file1.fastq\", \"file2.fastq\"]])"></textarea>
+                    <button type="submit">Upload Collection</button>
+                </form>
+            </div>
+            """
+            
+            input_html = f'<select name="{arg_key}" class="form-control">{options}</select>{upload_button}{upload_form}'
+            
         elif param_type == 'text':
             value = param.get('value', '')
             input_html = f'<input type="text" name="{arg_key}" value="{escape(value)}" class="form-control">'
+            
         elif param_type in ('integer', 'float'):
             value = param.get('value', '')
             input_html = f'<input type="number" name="{arg_key}" value="{escape(value)}" class="form-control" {"step=any" if param_type == "float" else ""}>'
+            
         elif param_type == 'boolean':
             checked = param.get('checked', 'false').lower() == 'true'
-
-            # Note: A checkbox sends its value only if checked. We handle this on the server.
-            # Here we use a hidden input as a fallback.
             input_html = f"""
                         <input type="hidden" name="{arg_key}" value="false">
                         <input type="checkbox" name="{arg_key}" value="true" {'checked' if checked else ''} class="form-check-input">
                         """
+            
         elif param_type == 'select':
             param_options = param.find(".//options")
             if param_options is not None:
@@ -98,12 +160,23 @@ class ToolFormGenerator:
                             f'<option value="{escape(row["value"])}">{escape(row["name"])}</option>'
                             for _, row in self.data_manger.get_data_table_elements(data_table_name).iterrows()
                         )
+                else:
+                    # Handle static options within <options>
+                    options = "".join([
+                        f'<option value="{escape(opt.get("value"))}" {"selected" if opt.get("selected") else ""}>{escape(opt.text)}</option>'
+                        for opt in param_options.findall('option')
+                    ])
             else:
-                options = "".join([f'<option value="{escape(opt.get("value"))}" {"selected" if opt.get("selected") else ""}>{escape(opt.text)}</option>' for opt in param.findall('option')])
+                # Generate from direct <option> children
+                options = "".join([
+                    f'<option value="{escape(opt.get("value"))}" {"selected" if opt.get("selected") else ""}>{escape(opt.text)}</option>'
+                    for opt in param.findall('option')
+                ])
             input_html = f'<select name="{arg_key}" class="form-control">{options}</select>'
+            
         else:
             return f''
-
+            
         return f"""
                 <div class="form-field">
                     <label for="{arg_key}" class="form-label">{escape(label)}</label>
@@ -111,9 +184,10 @@ class ToolFormGenerator:
                     {help_html}
                 </div>
                  """
-
+                
     def _build_section(self, section) -> str:
         """Builds HTML for a <section> element."""
+
         title = section.get('title', 'Section')
         body = self._traverse(section)
         return f"""
@@ -122,24 +196,22 @@ class ToolFormGenerator:
                     {body}
                 </fieldset>
                 """
-
+                
     def _build_conditional(self, cond) -> str:
         """Builds HTML and JS for a <conditional> element."""
+
         cond_name = cond.get('name')
         test_param_xml = cond.find('param')
         test_param_html = self._build_param(test_param_xml)
         test_param_name = test_param_xml.get('name')
-
         cases_html = []
         for i, when in enumerate(cond.findall('when')):
             value = when.get('value')
             case_body = self._traverse(when)
             # Wrapper div for each case, hidden by default
             cases_html.append(f'<div id="case-{cond_name}-{value}" class="conditional-case" style="display: none;">{case_body}</div>')
-
         # Add JavaScript to control visibility
         self._add_conditional_script(cond_name, test_param_name)
-
         return f"""
                 <fieldset class="form-section">
                     <legend class="w-auto px-2">Conditional: {escape(cond_name)}</legend>
@@ -147,9 +219,27 @@ class ToolFormGenerator:
                     {''.join(cases_html)}
                 </fieldset>
                 """
+         
+    def _add_upload_toggle_script(self):
+        """Returns the JavaScript for toggling upload forms."""
 
+        return """
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('.galaxy-upload-btn').forEach(button => {
+                button.addEventListener('click', function() {
+                    const targetId = this.getAttribute('data-target');
+                    const form = document.getElementById(targetId);
+                    if (form) {
+                        form.style.display = form.style.display === 'none' ? 'block' : 'none';
+                    }
+                });
+            });
+        });
+        """
+    
     def _add_conditional_script(self, cond_name: str, test_param_name: str):
         """Adds a JavaScript block for handling conditional logic."""
+
         script = f"""
                 function handleConditional_{cond_name}() {{
                     const selector = document.querySelector('[name="{test_param_name}"]');
