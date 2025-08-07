@@ -28,7 +28,7 @@ class ChatSession:
         self.llm_client: LLMClient = llm_client
         self.memory = []
         self.system_message = None
-        self.messages = None
+        self.messages: list = None
         self.user_ip = user_ip
         self.tools = None 
         self.log_filename = f"chat_session_{self.user_ip}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -159,22 +159,33 @@ class ChatSession:
                                 content_text = result.content[0].text
                                 annotations = result.content[0].annotations
 
-                                self.logger.info(f" The return type: {content_type} Annotations: {annotations} Content : {content_text} ")
+                                self.logger.info(f" The return type: {content_type} Annotations: {annotations} Content : {content_text} type: {type(content_text)}")
+                            
+                                if isinstance(content_text, str):
+                                    try:
+                                        content_text = json.loads(content_text)
+                                        self.logger.info(f"Parsed JSON content, type: {type(content_text)}")
+                                    except json.JSONDecodeError:
+                                        self.logger.warning("Content is not valid JSON.")
 
-                                return f"""
-                                        You are required to respond **strictly and exclusively** based on the following Tool Execution Result:
-                                        **{content_text}**
+                                if isinstance(content_text, dict) and content_text.get("action_link"):
+                                    return content_text
 
-                                        **Instructions:**
-                                        1. If the Tool Execution Result is complete and directly answers the query, **return it exactly as-is**. Do **not** paraphrase, summarize, interpret, or alter it in any way.
-                                        2. If the Tool Execution Result is **incomplete, unclear, or insufficient**, respond only using the information it contains—**do not draw on external knowledge or assumptions**.
-                                        3. Your response must remain **self-contained**, with no reference to outside sources, general knowledge, or unrelated context.
-                                        4. If appropriate, you may suggest **guidance or next steps**, but only when clearly warranted by the Tool Execution Result, and only if they can be logically and explicitly **derived from the given context**.
-                                        5. Never introduce new information, explanations, or assumptions beyond what is directly stated in the Tool Execution Result.
+                                else:
+                                    return f"""
+                                            You are required to respond **strictly and exclusively** based on the following Tool Execution Result:
+                                            **{content_text}**
 
-                                        **Default behavior:**
-                                        Always return the Tool Execution Result **verbatim**, unless doing so would leave the query unresolved **based solely on the result itself**.
-                                        """
+                                            **Instructions:**
+                                            1. If the Tool Execution Result is complete and directly answers the query, **return it exactly as-is**. Do **not** paraphrase, summarize, interpret, or alter it in any way.
+                                            2. If the Tool Execution Result is **incomplete, unclear, or insufficient**, respond only using the information it contains—**do not draw on external knowledge or assumptions**.
+                                            3. Your response must remain **self-contained**, with no reference to outside sources, general knowledge, or unrelated context.
+                                            4. If appropriate, you may suggest **guidance or next steps**, but only when clearly warranted by the Tool Execution Result, and only if they can be logically and explicitly **derived from the given context**.
+                                            5. Never introduce new information, explanations, or assumptions beyond what is directly stated in the Tool Execution Result.
+
+                                            **Default behavior:**
+                                            Always return the Tool Execution Result **verbatim**, unless doing so would leave the query unresolved **based solely on the result itself**.
+                                            """
                             else:
                                 return "Tool execution result: No content returned."
                         except Exception as e:
@@ -190,8 +201,9 @@ class ChatSession:
     async def respond(self, model_id: str, user_input: str) -> str:
         """Handle a user input and return the assistant's response."""
         # Process user input
+
         try:
-            self.messages.extend(self.memory)
+            # self.messages.extend(self.memory)
             self.messages.append({"role": "user", "content": user_input})
             self.memory.append({"role": "user", "content": user_input})
             providers = self.llm_client.providers
@@ -209,12 +221,23 @@ class ChatSession:
             if result != llm_response:
                 # Tool was used; get a final response
                 self.messages.append({"role": "assistant", "content": f"{llm_response}"})
-                self.messages.append({"role": "user", "content": result})
+                if isinstance(result, dict):
+                    self.messages.append({"role": "user", "content":"\n".join(f"{key}: {value}" for key, value in result.items())})
+                else:
+                    self.messages.append({"role": "user", "content": result})
 
-                final_response = await providers[model_id].get_response(self.messages)
-
-                self.messages.append({"role": "assistant", "content": final_response})
-                self.memory.append({"role": "assistant", "content": final_response})
+                if isinstance(result, dict) and result.get("action_link"):
+                    final_response = result
+                    try:
+                        
+                        self.messages.append({"role": "assistant", "content": f"Generated form for {final_response['entity']} name: {final_response['name']}, return form link: {final_response['action_link']}"})
+                        self.memory.append({"role": "assistant", "content": f"Generated form for {final_response['entity']} name: {final_response['name']}, return form link: {final_response['action_link']}"})
+                    except Exception as e:
+                        raise                
+                else:
+                    final_response = await providers[model_id].get_response(self.messages)
+                    self.messages.append({"role": "assistant", "content": final_response})
+                    self.memory.append({"role": "assistant", "content": final_response})
                 # print(self.messages)
                 return final_response
             else:
