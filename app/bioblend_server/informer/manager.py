@@ -4,50 +4,16 @@ import pandas as pd
 import numpy as np
 import logging
 import random
-import uuid
+import json
+
 from qdrant_client import QdrantClient, models
 from dotenv import load_dotenv
 
 from app.AI.provider.gemini_provider import GeminiProvider
 from app.AI.llm_config._base_config import LLMModelConfig
-
-# ------------------- SETUP -------------------
-
-# def configure_logging():
-#     LOG_FILE_PATH='./app/bioblend_server/informer/informer_log.log'
-#     os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
-#     if not logging.getLogger().hasHandlers():
-#         logging.basicConfig(
-#             level=logging.DEBUG,
-#             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-#             filename= LOG_FILE_PATH,
-#             filemode='a'
-#         )
-#         logging.getLogger('first_log').info("         -----------------------------------------------------------------------------       ")
-
-def configure_logging():
-    LOG_FILE_PATH = './app/bioblend_server/informer/informer_log.log'
-    os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
-    root_logger = logging.getLogger()
-    if not root_logger.hasHandlers():
-        # File handler
-        file_handler = logging.FileHandler(LOG_FILE_PATH, mode='a')
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-
-        # Stream handler (CLI)
-        stream_handler = logging.StreamHandler()
-        stream_handler.setLevel(logging.DEBUG)
-        stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-
-        root_logger.setLevel(logging.DEBUG)
-        root_logger.addHandler(file_handler)
-        root_logger.addHandler(stream_handler)
-
-        logging.getLogger('first_log').info("         -----------------------------------------------------------------------------       ")
+from app.log_setup import configure_logging
 
 
-import json
 with open('app/AI/llm_config/llm_config.json', 'r') as f:
     model = json.load(f)
 
