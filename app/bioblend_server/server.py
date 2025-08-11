@@ -1,13 +1,16 @@
 import os
 from fastmcp import FastMCP
 import logging
-from pydantic import BaseModel, Field
-from typing import Literal, Optional
 
-# Import core logic from galaxy.py
-from app.bioblend_server.galaxy import get_galaxy_information, GalaxyClient
 from app.log_setup import configure_logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+from app.bioblend_server.utils import ExecutorToolResponse, ApiKeyMiddleware, current_api_key_server
+
+from app.bioblend_server.galaxy import GalaxyClient
+from app.bioblend_server.informer.informer import GalaxyInformer
+
+from app.bioblend_server.executor.tool_manager import ToolManager
+from app.bioblend_server.executor.workflow_manager import WorkflowManager
+
 
 configure_logging()
 logger = logging.getLogger("fastmcp_bioblend_server")
@@ -20,19 +23,13 @@ if not os.environ.get("GALAXY_API_KEY"):
 bioblend_app = FastMCP(
                         name="galaxyTools",
                         instructions="Provides tools and resources for interacting with Galaxy instances via BioBlend. "
-                                    "Tools allow querying Galaxy information and retrieving any sort of information on a galaxy instance "
+                                    "Tools that allow querying Galaxy information and retrieving any sort of information on a galaxy instance "
                                     "Tools that allow execution of a tools and workflows within a galaxy instance."
                                     "Make sure to specify 'tool', 'dataset', or 'workflow' for 'query_type'. "
-                                    "Use 'entity_id' only if the user explicitly provides an ID."
+                                    "Use 'entity_id' only if the user explicitly provides an ID.",
+                        middleware=[ApiKeyMiddleware()]
                     )
 
-# Structure for the executor tool to respond with.
-class ExecutorToolResponse(BaseModel):
-    entity: Literal["tool", "workflow"] = Field(..., title="Entity")
-    name: str = Field(..., title="Name")
-    id: str = Field(..., title="Id")
-    description: Optional[str] = Field(default=None, title="Description")
-    action_link: str = Field(..., title="Action Link")
 
 
 @bioblend_app.tool()
@@ -58,16 +55,25 @@ async def execute_galaxy_tool_workflow(
             - Description/annotation
             - Action link to the execution form endpoint
     """
-
-    from app.bioblend_server.executor.tool_manager import ToolManager
-    from app.bioblend_server.executor.workflow_manager import WorkflowManager
-
-    tool_manager=ToolManager()
-    workflow_manager= WorkflowManager()
+    logger.info(f"Calling execute_galaxy_tool_workflow with entity='{entity}', name='{name}', entity_id='{entity_id}'")
 
     if name is None and entity_id is  None:
         raise ValueError("Neither the name or the id is inputted for the execution")
     try:
+        # Get current user
+        user_api_key = current_api_key_server.get()
+        if user_api_key is None:
+            raise ValueError("current user api-key is missing")
+        
+        logger.info( f"current mcp user: ************{user_api_key[-4:]}")
+        
+        # Create galaxy instance
+        galaxy_client = GalaxyClient(user_api_key)
+
+        # Create tool and workflow manager objects
+        tool_manager=ToolManager(galaxy_client)
+        workflow_manager= WorkflowManager(galaxy_client)
+
         if entity== "workflow":
             if name:
                 workflow_result = workflow_manager.get_worlflow_by_name(name)
@@ -132,38 +138,24 @@ async def get_galaxy_information_tool(
         A string containing the detailed Galaxy information and the response to the user's query.
     """
     logger.info(f"Calling get_galaxy_information with query='{query}', query_type='{query_type}', entity_id='{entity_id}'")
-    # Directly call the original function from galaxy.py
     try:
-        result = await get_galaxy_information(query=query, query_type=query_type, entity_id=entity_id)
+        # Get current user
+        user_api_key = current_api_key_server.get()
+        if user_api_key is None:
+            raise ValueError("current user api-key is missing")
+        
+        logger.info( f"current mcp user: ************{user_api_key[-4:]}")
+
+        # Create galaxy instances
+        galaxy_client = GalaxyClient(user_api_key)
+
+        # Create GalaxyInformer object and execute informer
+        informer = await GalaxyInformer.create(galaxy_client=galaxy_client, entity_type=query_type)
+        galaxy_response= await informer.get_entity_info(search_query = query, entity_id = entity_id)
+
+        result= galaxy_response.get('response')
         return result
+    
     except Exception as e:
         logger.error(f"Error in get_galaxy_information_tool: {e}", exc_info=True)
         return f"An error occurred while fetching Galaxy information: {str(e)}"
-
-
-@bioblend_app.resource("galaxy://whoami")
-def get_galaxy_whoami() -> dict:
-    """
-    Retrieves the current user's details from the Galaxy instance.
-    """
-    logger.info("Calling get_galaxy_whoami")
-    try:
-        galaxy_client = GalaxyClient()
-        return galaxy_client.whoami()
-    except Exception as e:
-        logger.error(f"Error in get_galaxy_whoami: {e}", exc_info=True)
-        return {"error": f"Failed to retrieve user details: {str(e)}"}
-
-
-# TODO: Galaxy interaction should be based of off diffrent APIs.
-
-# How wwould multiple histories be handled if multiple user were to query this ar onece. 
-# If Diffrent having diffrent APIs and diffrent galaxy account???
-
-
-# TODO: IDEA
-# Pass APis to the MCP as env variable?
-# Take APIs as inputs as well.
-
-
-# TODO: Galaxy interface and galaxy integration issues???

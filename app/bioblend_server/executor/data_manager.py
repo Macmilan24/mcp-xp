@@ -41,8 +41,10 @@ class DataManager:
     * list / inspect history contents
     """
 
-    def __init__(self):
-        self.gi = GalaxyClient().gi_object 
+    def __init__(self, galaxy_client: GalaxyClient):
+        self.galaxy_client  = galaxy_client
+        self.gi = self.galaxy_client.gi_object
+
         self.log = logging.getLogger(self.__class__.__name__)
 
     # SINGLE DATASET UPLOAD
@@ -74,7 +76,6 @@ class DataManager:
                     history: History,
                     collection_type: CollectionType,
                     inputs: List[str], 
-                    wait: bool = True,
                     collection_name = None
                 ) -> UploadResult:
         """

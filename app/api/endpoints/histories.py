@@ -12,14 +12,14 @@ from anyio import to_thread
 from fastapi import APIRouter, UploadFile, responses, HTTPException, File, Form, Path, Body, Query, BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 import pathlib
-from tempfile import TemporaryDirectory
 import shutil
 
+from app.context import current_api_key
+from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.executor.data_manager import DataManager, CollectionType
 from app.api.schemas import dataset
 
 router = APIRouter()
-data_manager = DataManager() # Instantiate your service
 
 @router.post(
     "/{history_id}/upload-file",
@@ -35,6 +35,10 @@ async def upload_file_to_history(
     Uploads a single file to the specified Galaxy history.
     The file is saved temporarily on the server before being sent to Galaxy.
     """
+
+    galaxy_client = GalaxyClient(current_api_key.get())
+    data_manager = DataManager(galaxy_client)
+
     try:
         # Use a temporary file to handle the upload
         with tempfile.NamedTemporaryFile(delete=False, suffix=file.filename) as tmp:
@@ -86,6 +90,10 @@ async def upload_dataset_collection(
 
     Temporary files are cleaned up automatically after the request finishes.
     """
+
+    galaxy_client = GalaxyClient(current_api_key.get())
+    data_manager = DataManager(galaxy_client)
+
     tmpdir = tempfile.mkdtemp(prefix="galaxy_coll_")
     try:
         # Save all uploaded files to a temp directory and map filename to its path
@@ -161,6 +169,10 @@ async def list_history_contents(
     """
     Retrieves a list of all visible datasets and dataset collections in a history.
     """
+
+    galaxy_client = GalaxyClient(current_api_key.get())
+    data_manager = DataManager(galaxy_client)
+
     try:
         galaxy_history = await run_in_threadpool(data_manager.gi.histories.get, history_id)
         datasets, collections = await run_in_threadpool(data_manager.list_contents, history=galaxy_history)
@@ -172,8 +184,6 @@ async def list_history_contents(
         return {"datasets": datasets_info, "collections": collections_info}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list history contents: {e}")
-
-# TODO: Add pre-existing upload collection method functionality.
 
 @router.post(
     "/{history_id}/create_collection",
@@ -191,6 +201,10 @@ async def create_dataset_collection(
     **Note:** This endpoint assumes datasets have already been uploaded.
     The `element_identifiers` should contain the IDs of datasets already in Galaxy.
     """
+
+    galaxy_client = GalaxyClient(current_api_key.get())
+    data_manager = DataManager(galaxy_client)
+
     try:
         galaxy_history = await run_in_threadpool(data_manager.gi.histories.get, history_id)
         collection_type_enum = CollectionType(collection_details.collection_type)
@@ -231,6 +245,9 @@ async def download_files(
     dataset_ids: List[str] = Query(default=[]),
     collection_ids: List[str] = Query(default=[]),
 ):
+
+    galaxy_client = GalaxyClient(current_api_key.get())
+    data_manager = DataManager(galaxy_client)
    
     if not dataset_ids and not collection_ids:
         raise HTTPException(status_code=400, detail="No dataset or collection IDs provided")
