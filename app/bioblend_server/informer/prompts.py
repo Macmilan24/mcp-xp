@@ -17,7 +17,6 @@ Given the user **input query** and a list of Galaxy tools, workflows, or dataset
   - Or a **dictionary** with numeric keys (`"0"`, `"1"`, `"2"`, etc.), where each value is a dictionary containing fields like `name`, `description`, `tool_id`, etc.
 
 ---
-SS
 **Selection and Extraction Rules**:
 - **Step 1**: If the input query is empty, immediately return an empty dictionary `{{}}`.
 - **Step 2**: Filter out items that are **not semantically relevant** to the input query.

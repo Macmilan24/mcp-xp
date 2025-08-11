@@ -11,11 +11,11 @@ from app.bioblend_server.executor.data_manager import DataManager
 class ToolFormGenerator:
     """Parses a Galaxy tool's XML definition to generate an HTML form."""
     
-    def __init__(self, xml_string: str, tool: Tool, history: History):
+    def __init__(self, xml_string: str, data_manager: DataManager, tool: Tool, history: History):
         self.root = ET.fromstring(xml_string)
         self.tool = tool
         self.history = history
-        self.data_manger = DataManager()
+        self.data_manger = data_manager
         self.datasets, self.dataset_collections = self.data_manger.list_contents(self.history)
         self.tool_name = self.tool.name
         self.script_blocks = set()
@@ -264,11 +264,11 @@ class ToolFormGenerator:
 class WorkflowFormGenerator:
     """Workflow html form generator for a galaxy workflow"""
 
-    def __init__ (self, mapped_workflow: Union[List, Dict], history: History, workflow: Workflow):
+    def __init__ (self, mapped_workflow: Union[List, Dict], data_manager: DataManager, history: History, workflow: Workflow):
         self.mapped_workflow = mapped_workflow
         self.workflow = workflow
         self.history = history
-        self.data_manager = DataManager()
+        self.data_manager = data_manager
 
     def _build_html(self) -> str:
         """

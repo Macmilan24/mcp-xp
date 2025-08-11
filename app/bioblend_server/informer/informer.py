@@ -1,9 +1,6 @@
-import os
 import re
 import ast
 from rapidfuzz import process, fuzz
-from bioblend.galaxy import GalaxyInstance
-from dotenv import load_dotenv
 import json
 import numpy as np
 import logging
@@ -12,18 +9,12 @@ import requests
 import sys
 sys.path.append('.')
 
-from app.bioblend_server.informer.manager import InformerManager, configure_logging 
+from app.log_setup import configure_logging
+from app.bioblend_server.galaxy import GalaxyClient
 from app.AI.provider.gemini_provider import GeminiProvider
 from app.bioblend_server.informer.prompts import RETRIEVE_PROMPT, SELECTION_PROMPT, INVOCATION_PROMPT
 from app.AI.llm_config._base_config import LLMModelConfig
 
-
-
-configure_logging()
-
-
-with open('app/AI/llm_config/llm_config.json', 'r') as f:
-    model = json.load(f)
 
 class GalaxyInformer:
     """
@@ -31,25 +22,17 @@ class GalaxyInformer:
     entities (tools, workflows, datasets) using a combination of bioblend based API calls,
     caching, fuzzy search, and Retrieval-Augmented Generation (RAG).
     """
-    def __init__(self, entity_type):
-        """
-        Initializes the GalaxyInformer for a specific entity type.
-        """
-        load_dotenv()
-        configure_logging()
+    def __init__(self, galaxy_client: GalaxyClient, entity_type: str):
+        """Initializes the GalaxyInformer with non-blocking assignments."""
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.info(f'Initializing the galaxy informer for entity type: {entity_type}')
         self.entity_type = entity_type.lower()
-        
-        # Initialize API connections and handlers
-        self.gi = GalaxyInstance(url=os.getenv("GALAXY_URL"), key=os.getenv("GALAXY_API_KEY"))
-        # Wrap gemini provider configuration with LLMModelConfig
-        gemini_cfg = LLMModelConfig(model['providers']['gemini'])
-        self.llm = GeminiProvider(model_config=gemini_cfg)
-        self.redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-        self.manager = InformerManager()
-        
-        # Configuration mapping for different entity types
+        self.galaxy_client = galaxy_client
+        self.gi_user = self.galaxy_client.gi_client
+        self.gi_admin = self.galaxy_client.gi_admin
+        self.user_info = self.galaxy_client.whoami()
+        self.llm = None
+        self.redis_client = None
+        self.manager = None
         self._entity_config = {
             'dataset': {
                 'get_method': self._get_datasets,
@@ -67,6 +50,26 @@ class GalaxyInformer:
                 'id_field': 'workflow_id'
             }
         }
+        self.logger.info(f'Initializing the galaxy informer for entity type: {entity_type} for user {self.user_info["id"]}')
+
+    @classmethod
+    async def create(cls, galaxy_client: GalaxyClient, entity_type: str):
+        """Asynchronous factory to create and fully initialize a GalaxyInformer instance."""
+
+        from app.bioblend_server.informer.manager import InformerManager 
+        
+        self = cls(galaxy_client, entity_type)
+
+        configure_logging()
+        
+        with open('app/AI/llm_config/llm_config.json', 'r') as f:
+            model_config_data = json.load(f)
+
+        gemini_cfg = LLMModelConfig(model_config_data['providers']['gemini'])
+        self.llm = GeminiProvider(model_config=gemini_cfg)
+        self.redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+        self.manager = await InformerManager.create()
+        return self
 
     async def get_embedding_model(self, input):
         return await self.llm.gemini_embedding_model(input)
@@ -92,9 +95,9 @@ class GalaxyInformer:
         dataset_list = []
         self.logger.info('Gathering datasets from libraries...')
         try:
-            libraries = self.gi.libraries.get_libraries()
+            libraries = self.gi_user.libraries.get_libraries()
             for library in libraries:
-                library_details = self.gi.libraries.show_library(library['id'], contents=True)
+                library_details = self.gi_user.libraries.show_library(library['id'], contents=True)
                 for lib in library_details:
                     if lib['type'] == 'file':
                         name = self.extract_filename(lib['name'])
@@ -117,7 +120,7 @@ class GalaxyInformer:
         self.logger.info('Gathering datasets from histories...')
         try:
             # Note: get_datasets() can be slow. Consider filtering if possible.
-            for data in self.gi.datasets.get_datasets(deleted=False, state='ok'):
+            for data in self.gi_user.datasets.get_datasets(deleted=False, state='ok'):
                 if data['type'] == 'file':
                     dataset_list.append({
                         "dataset_id": data['id'],
@@ -165,7 +168,7 @@ class GalaxyInformer:
    
         tools=[]
         self.logger.info('Gathering all available tools...')
-        for tool in self.gi.tools.get_tools():
+        for tool in self.gi_user.tools.get_tools():
             tool_type="data manager" if is_data_manager_tool(tool) else "Regular"
             tool_info={
                     'description': tool.get('description', None),
@@ -194,7 +197,7 @@ class GalaxyInformer:
         """
         self.logger.info('Gathering all published workflows...')
         workflows = []
-        for wf in self.gi.workflows.get_workflows(published=True):
+        for wf in self.gi_user.workflows.get_workflows(published=True):
              desc = str(wf.get('annotations') or wf.get('description') or 'No description available.')
              workflows.append({
                 'description': desc,
@@ -335,11 +338,16 @@ class GalaxyInformer:
         """
         self.logger.info(f'No valid cache found for {self.entity_type}, fetching fresh data.')
         entities = self.get_all_entities()
-        collection_name = f'Galaxy_{self.entity_type}'
+
+        # If Nothing is found in the galaxy return the emoty result
+        if not entities:
+            return None
+        
+        collection_name = f'Galaxy_{self.entity_type}_{self.user_info["id"]}'
         
         # Cache in Redis with a 10-hour TTL
         try:
-            self.redis_client.setex(f"{self.entity_type}_entities", 36000, json.dumps(entities))
+            self.redis_client.setex(collection_name, 36000, json.dumps(entities))
             self.logger.info(f'Saved {self.entity_type} entities to Redis.')
         except redis.RedisError as e:
             self.logger.error(f'Failed to save entities to Redis: {e}')
@@ -364,7 +372,7 @@ class GalaxyInformer:
         fresh data if the cache is empty or invalid.
         """
         try:
-            entities_str = self.redis_client.get(f"{self.entity_type}_entities")
+            entities_str = self.redis_client.get(f'Galaxy_{self.entity_type}_{self.user_info["id"]}')
             if entities_str:
                 self.logger.info(f'Retrieved cached {self.entity_type} entities from Redis.')
                 return json.loads(entities_str)
@@ -379,6 +387,9 @@ class GalaxyInformer:
         then uses an LLM to select and rank the best results.
         """
         entities = await self.get_cached_or_fresh_entities()
+
+        if not entities:
+            return None
         
         # 1. Fuzzy Search
         keywords = await self._extract_fuzzy_search_keywords(query)
@@ -389,7 +400,7 @@ class GalaxyInformer:
         unique_fuzzy_results = list({item[f'{self._entity_config[self.entity_type]["id_field"]}']: item for item, score in fuzzy_results}.values())
 
         # 2. Semantic Search
-        collection_name = f'Galaxy_{self.entity_type}'
+        collection_name = f'Galaxy_{self.entity_type}_{self.user_info["id"]}'
         semantic_results = await self._semantic_search(query=query, collection_name=collection_name)
         
         # 3. LLM-based Re-ranking and Selection
@@ -413,9 +424,9 @@ class GalaxyInformer:
         Replacement for bioblends show_tool function for richer information retrieval, 
         making direct get http request to the galaxy api
         """
-        headers = {'x-api-key' : os.getenv('GALAXY_API_KEY')}
-        url = f'{os.getenv('GALAXY_URL')}/api/tools/{tool_id}/build'
-        params= {'history_id': self.gi.histories.get_histories()[-1]['id']}
+        headers = {'x-api-key' : self.galaxy_client.user_api_key}
+        url = f'{self.galaxy_client.galaxy_url}/api/tools/{tool_id}/build'
+        params= {'history_id': self.gi_user.histories.get_histories()[-1]['id']}
 
         try:
             response= requests.get(url=url,headers=headers,params=params)
@@ -432,9 +443,9 @@ class GalaxyInformer:
         """
 
         detail_methods = {
-            'dataset': self.gi.datasets.show_dataset,
+            'dataset': self.gi_user.datasets.show_dataset,
             'tool': lambda id: self._show_tool(tool_id=id),
-            'workflow': self.gi.workflows.show_workflow
+            'workflow': self.gi_user.workflows.show_workflow
         }
         
         try:
@@ -469,9 +480,9 @@ class GalaxyInformer:
             if is_close_to_invocation(query=query):
                 self.logger.info('Extracting invocation information')
                 if workflow_id:
-                    invocations=self.gi.invocations.get_invocations(workflow_id=workflow_id)
+                    invocations=self.gi_user.invocations.get_invocations(workflow_id=workflow_id)
                 else:
-                    invocations=self.gi.invocations.get_invocations()
+                    invocations=self.gi_user.invocations.get_invocations()
 
                 # Prompt LLM to select the correct match for invocation.
                 prompt=INVOCATION_PROMPT.format(query=query, invocations=invocations)
@@ -485,8 +496,8 @@ class GalaxyInformer:
 
                     # Extract and structure essential parts of invocation information
 
-                    invocation_detail= self.gi.invocations.show_invocation(invocation_id=response)
-                    invocation_report= self.gi.invocations.get_invocation_report(invocation_id=response)
+                    invocation_detail= self.gi_user.invocations.show_invocation(invocation_id=response)
+                    invocation_report= self.gi_user.invocations.get_invocation_report(invocation_id=response)
                     invocation_report['messages']= invocation_detail['messages']
                     invocation_steps= [{
                                         'update_time': step.get('update_time', None),
@@ -589,8 +600,10 @@ class GalaxyInformer:
 if __name__ == "__main__":
     import asyncio
     async def main():
-        informer = GalaxyInformer('workflow')
-        input_query = """Tell me about the generic variant analysis workflow, and about the last successful invocation of this workflow """
+        user_api_key = "2b80f888032970d458302d74f6bff8ef" # demo galaxty api key
+        galaxy_client = GalaxyClient(user_api_key)
+        informer = await GalaxyInformer.create(galaxy_client, "tool")
+        input_query = """Find a tool to convert gff files to bed"""
         information = await informer.get_entity_info(search_query=input_query)
                                                     #   entity_id='toolshed.g2.bx.psu.edu/repos/iuc/rgrnastar/rna_star/2.7.11a+galaxy1')
 

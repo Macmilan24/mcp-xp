@@ -33,11 +33,11 @@ class ToolManager:
     - Return outputs & diagnostics
     """
 
-    def __init__(self):
-        self.galaxy_client = GalaxyClient()
+    def __init__(self, galaxy_client: GalaxyClient):
+        self.galaxy_client = galaxy_client
         self.gi_object=self.galaxy_client.gi_object
         self.log = logging.getLogger(self.__class__.__name__)
-        self.data_manager = DataManager()
+        self.data_manager = DataManager(galaxy_client= self.galaxy_client)
         self.poll_interval = 2
 
     def get_tool_by_name(self, name: str, score_cutoff: int = 70) -> Tool| None:
@@ -76,8 +76,9 @@ class ToolManager:
     def get_tool_xml(self, tool_id: str) -> str:
             """Retrieve tool XML to build dynamic HTML form for tool execution by making a direct api call."""
             try:
-                api_key = os.getenv("GALAXY_API_KEY")
-                base_url = os.getenv("GALAXY_URL")
+                api_key = self.galaxy_client.user_api_key
+                base_url = self.galaxy_client.galaxy_url
+                
                 if not base_url or not api_key:
                     raise ValueError("Galaxy environment variables are not set")
 
@@ -304,7 +305,7 @@ class ToolManager:
             raise
 
         # We only want active, visible datasets
-        generator = ToolFormGenerator(xml_str, tool, history)
+        generator = ToolFormGenerator(xml_str, self.data_manager, tool, history)
         html =  generator.build_html()
         return html
     

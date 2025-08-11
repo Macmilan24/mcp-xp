@@ -25,11 +25,15 @@ from app.bioblend_server.executor.form_generator import WorkflowFormGenerator
 class WorkflowManager:
     """Workflow manager class for managing Galaxy workflows"""
 
-    def __init__(self):
-        self.galaxy_client = GalaxyClient()
-        self.gi_object=self.galaxy_client.gi_object    # galaxy objects instance
-        self.toolshed=ToolShedClient(self.gi_object.gi)    # Toolshed instance
-        self.tool_manager = ToolManager()
+    def __init__(self, galaxy_client: GalaxyClient):
+        self.galaxy_client = galaxy_client
+
+        self.gi_object=self.galaxy_client.gi_object 
+        self.gi_admin = self.galaxy_client.gi_admin # For administrative functionalitites like toolshed instantiation and tool installing
+        self.toolshed=ToolShedClient(self.gi_admin.gi)    # Toolshed instance
+
+        self.tool_manager = ToolManager(galaxy_client = self.galaxy_client)
+        self.data_manager = self.tool_manager.data_manager
         self.log = logging.getLogger(self.__class__.__name__)
 
     def upload_workflow(self, path: str)-> Workflow:
@@ -44,7 +48,7 @@ class WorkflowManager:
                 for step in workflow_steps:
                     self.tool_check_install(step)
         # Reload the tool box after tools are installed
-        self.gi_object.gi.config.reload_toolbox()
+        self.gi_admin.gi.config.reload_toolbox()
         
         workflow: Workflow= self.gi_object.workflows.import_new(src=workflow_json, publish=False)
 
@@ -90,7 +94,7 @@ class WorkflowManager:
             return True
 
         try:
-            tool = self.gi_object.gi.tools.show_tool(tool_id)
+            tool = self.gi_admin.gi.tools.show_tool(tool_id)
         except Exception:
             return False
         if not tool:
@@ -270,7 +274,7 @@ class WorkflowManager:
 
         # builds a html form from the mapped input payload and validate it
         mapped_input = self.validate_input_to_tool(mapped_input, workflow)
-        form_generator = WorkflowFormGenerator(mapped_workflow= mapped_input, workflow=workflow, history=history)
+        form_generator = WorkflowFormGenerator(mapped_workflow= mapped_input, data_manager= self.data_manager, workflow= workflow, history= history)
         html_form = form_generator._build_html()
         return html_form
     

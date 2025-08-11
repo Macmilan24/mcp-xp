@@ -14,8 +14,7 @@ from app.AI.llm_config._base_config import LLMModelConfig
 from app.log_setup import configure_logging
 
 
-with open('app/AI/llm_config/llm_config.json', 'r') as f:
-    model = json.load(f)
+
 
 load_dotenv()
 
@@ -27,23 +26,34 @@ class InformerManager:
     _logging_configured = False
 
     def __init__(self):
+        # This init should be lightweight and non-blocking.
+        self.client = None
+        self.llm = None
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.embedding_size = 768  # Gemini embedding vector size
+
+    @classmethod
+    async def create(cls):
+        """Asynchronous factory to create and initialize an InformerManager instance."""
+        self = cls()
         load_dotenv()
         configure_logging()
-        self.logger = logging.getLogger(self.__class__.__name__)
         try:
-            # Initialize Qdrant client
+            self.logger.info("Qdrant client")
+            # Initialize Qdrant client asynchronously if possible, or run in executor
             self.client = QdrantClient(os.environ.get('QDRANT_CLIENT', 'http://localhost:6333'))
-       
+            self.logger.info("initialized")
+
+            with open('app/AI/llm_config/llm_config.json', 'r') as f:
+                model = json.load(f)
             gemini_cfg = LLMModelConfig(model['providers']['gemini'])
             self.llm = GeminiProvider(model_config=gemini_cfg)
             
-            self.logger.info("InformerVectorManager connected to Qdrant successfully.")
+            self.logger.info("InformerManager connected to Qdrant successfully.")
         except Exception as e:
             self.logger.exception(f"Qdrant connection failed: {e}")
             raise
-            
-
-        self.embedding_size = 768  # Gemini embedding vector size
+        return self
    
     async def get_embedding_model(self, input):
         return await self.llm.gemini_embedding_model(input)
@@ -61,7 +71,7 @@ class InformerManager:
                     collection_name,
                     vectors_config=models.VectorParams(
                         size=self.embedding_size,
-                        distance=models.Distance.DOT
+                        distance=models.Distance.COSINE
                     )
                 )
                 self.logger.info(f"Collection '{collection_name}' created successfully.")
