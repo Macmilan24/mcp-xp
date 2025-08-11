@@ -4,7 +4,9 @@ from pydantic import BaseModel
 from fastapi import FastAPI, Request
 from app.AI.chatbot import ChatSession, initialize_session
 import logging
+
 from app.log_setup import configure_logging
+from app.api.middleware import GalaxyAPIKeyMiddleware
 from app.api.api import api_router 
 
 configure_logging()
@@ -20,6 +22,9 @@ app = FastAPI(
     title="Galaxy API",
     description="An API to dynamically interact with Galaxy and Galaxy agent",
 )
+
+# Add middleware
+app.add_middleware(GalaxyAPIKeyMiddleware)
 
 # Include the API router
 app.include_router(api_router, prefix="/api")
@@ -49,6 +54,8 @@ async def get_chat_history(request: Request):
 @app.post("/send_message")
 async def send_message(request: Request, message: MessageRequest):
     """Conversate with the Galaxy Agent"""
+    from app.context import current_api_key
+    logger.info(f"Current user api: ******{current_api_key.get()[-4:]}")
 
     user_ip = request.client.host
     if user_ip not in sessions:
