@@ -1,12 +1,13 @@
-# tool_manager.py
 from __future__ import annotations
-
 import logging
 import time
 from typing import Dict, List, Any, Optional
 import os
-from pprint import pprint
 from dotenv import load_dotenv
+from rapidfuzz import process, fuzz
+import requests
+import re
+
 load_dotenv()
 
 from sys import path
@@ -15,6 +16,8 @@ path.append('.')
 from app.bioblend_server.galaxy import GalaxyClient
 from bioblend.galaxy.objects.wrappers import Job, History, Tool, Dataset
 
+from app.bioblend_server.executor.form_generator import ToolFormGenerator
+from app.bioblend_server.executor.data_manager import DataManager
 
 
 
@@ -24,7 +27,7 @@ class ToolManager:
     Responsibilities
     ----------------
     - Discover tools
-    - Build correct input payloads
+    - Build correct input payloads and generate html form for execution UI
     - Execute
     - Wait until done
     - Return outputs & diagnostics
@@ -34,145 +37,312 @@ class ToolManager:
         self.galaxy_client = GalaxyClient()
         self.gi_object=self.galaxy_client.gi_object
         self.log = logging.getLogger(self.__class__.__name__)
+        self.data_manager = DataManager()
         self.poll_interval = 2
 
-    # Discovery helpers (optional but handy)
+    def get_tool_by_name(self, name: str, score_cutoff: int = 70) -> Tool| None:
+        """Get workflow by its name (fuzzy match)."""
+        tool_list = self.gi_object.gi.tools.get_tools()
+        name_to_tool = {tool["name"]: tool for tool in tool_list}
 
-    def list_tools(self, name_filter: str = "") -> List[Dict[str, Any]]:
-        """Return all tools whose *name* contains `name_filter`."""
-        tools = self.gi_object.gi.tools.get_tools()
-        if name_filter:
-            tools = [t for t in tools if name_filter.lower() in t["name"].lower()]
-        return tools
+        match = process.extractOne(
+            name,
+            name_to_tool.keys(),          # list of names
+            scorer=fuzz.partial_ratio,
+            score_cutoff=score_cutoff
+        )
+
+        if match is None:               # nothing above the cutoff
+            return None
+
+        tool_dict = name_to_tool[match[0]]
+        return self.gi_object.tools.get(tool_dict["id"])
     
+    def get_tool_by_id(self, id: str) -> Tool | None:
+        """
+        Return the Tool instance for the given Galaxy tool ID, or None if it does not exist.
+        """
+        try:
+            return self.gi_object.tools.get(id)
+        except Exception as e:
+            self.log.info(f"Error occured: {e}")    
+            return None
+        
     def get_tool_io (self, tool_id):
         """Get tool i/o details"""
         tool= self.gi_object.gi.tools.show_tool(tool_id=tool_id, io_details=True)
         return tool['inputs']
     
-    def generate_state(self, inputs):
-        def handle_input(param):
-            mclass = param.get("model_class")
-            ptype = param.get("type")
+    def get_tool_xml(self, tool_id: str) -> str:
+            """Retrieve tool XML to build dynamic HTML form for tool execution by making a direct api call."""
+            try:
+                api_key = os.getenv("GALAXY_API_KEY")
+                base_url = os.getenv("GALAXY_URL")
+                if not base_url or not api_key:
+                    raise ValueError("Galaxy environment variables are not set")
 
-            if mclass == "DataToolParameter":
-                # set a dummy dataset value to later be replaced
-                return {"src": "hda", "id": "2a4bf9d66c01414a"}  # Id parameter needs to be added to be validated and accepted by the build function.
+                _url = f"{base_url.rstrip('/')}/api/tools/{tool_id}/raw_tool_source"
+                _headers = {"x-api-key":api_key}
 
-            elif mclass == "BooleanToolParameter": # A true or false option
-                value = param.get('value', None)
-                if value:
-                    value=bool(value)
-                return value
-
-            elif mclass == "TextToolParameter": # A string input
-                return param.get("value", "")
-
-            elif mclass == "SelectToolParameter": # A switch case(select one from options)
-                options = param.get("options", [])
-                if options:
-                    return options[0][1] 
-                return ""
-            
-            elif mclass == "IntegerToolParameter": # Integer inputs
-                value = param.get('value', None)
-                if value:
-                    value=int(value)
-                return value
-            
-            elif mclass == "FloatToolParameter": # Float inputs
-                value = param.get('value', None)
-                if value:
-                    value=float(value)
-                return value
-            
-            elif mclass == "FileToolParameter": # File inputs(Uploaded files as input)
-                return param.get('value', None)
-
-            elif mclass == "Conditional": # Conditional inputs if else /when
-                test_param = param["test_param"]
-                selector_value = test_param.get("value", param["cases"][0]["value"])
-                current_case_idx = next(
-                    (i for i, c in enumerate(param["cases"]) if c["value"] == selector_value),
-                    0
-                )
-
-                case_inputs = param["cases"][current_case_idx]["inputs"]
-                conditional_state = {
-                    test_param["name"]: selector_value,
-                    "__current_case__": current_case_idx
-                }
-
-                for sub_param in case_inputs:
-                    conditional_state[sub_param["name"]] = handle_input(sub_param)
-
-                return conditional_state
-
-            elif mclass == "Repeat":
-                
-                return [self.generate_state(param["inputs"])]
-
-            elif mclass == "Section":
-                return self.generate_state(param["inputs"])
-
-            else:
-                print(f"[!] Unhandled param type: {mclass}")
+                response = requests.get(url= _url, headers= _headers)
+                response.raise_for_status()
+                return response.text  # Return raw XML, not JSON
+            except Exception as e:
+                self.log.error(f"Error getting tool XML: {e}")
                 return None
-
-        state = {}
-        for param in inputs:
-            state[param["name"]] = handle_input(param)
             
-        return state
-
-    # Core executor
-
-    def run(
-        self,
-        tool_id: str,
-        history: History,
-        inputs: Optional[Dict[str, Any]] = None,
-        ) -> Dict[str, Any]:
+    def remove_dash(self, param_dict: Dict):
+        """Remove the "--" sign from galaxy tool arguments to get the correct input parameter key"""
+        return {re.sub(r'^--', '', k): v for k, v in param_dict.items()}
+    
+    def transform_form_data(self, form_data, tool_id):
         """
-        Run a tool and return a structured result.
+        Transform HTML form data into bioblend-compatible input structure.
+        
+        Args:
+            form_data: MultiDict from FastAPI form submission
+            tool_id: Galaxy tool ID
+            tool_manager: ToolManager instance
+            
+        Returns:
+            dict: Bioblend-compatible input structure
+        """       
+        # Get tool details to understand input structure
+        tool_details = self.gi_object.gi.tools.show_tool(tool_id, io_details=True)
+        inputs_structure = tool_details['inputs']
+        # from pprint import pprint
+        # pprint(f"input strucutre: {inputs_structure}")
+        # Convert form data to regular dict, handling multiple values
+        form_dict = {}
 
+        for key in form_data:
+            value = form_data[key]
+            if isinstance(value, list):
+                form_dict[key] = value[-1]
+            else:
+                form_dict[key] = value
+
+        
+        # Process boolean fields (checkboxes)
+        for key, value in form_dict.items():
+            if value == 'true':
+                form_dict[key] = True
+            elif value == 'false':
+                form_dict[key] = False
+        
+        # Build bioblend inputs structure
+        bioblend_inputs = {}
+        
+        # Process each input parameter
+        for param in inputs_structure:
+            param_name = param.get("argument") or param.get('name')
+            param_type = param.get('type')
+            model_class = param.get('model_class')
+            
+            # Skip if not in form data (optional parameter)
+            if param_name not in form_dict:
+                continue
+                
+            # Handle different parameter types
+            if model_class == 'DataToolParameter':
+                # Dataset reference
+                bioblend_inputs[param_name] = {
+                    'src': 'hda',
+                    'id': form_dict[param_name]
+                }
+            elif model_class == 'DataCollectionToolParameter':
+                # Dataset collection reference
+                bioblend_inputs[param_name] = {
+                    'src': 'hdca',
+                    'id': form_dict[param_name]
+                }
+            elif model_class == 'Conditional':
+                # Conditional parameter
+                bioblend_inputs[param_name] = self.process_conditional_param(
+                    param, form_dict, param_name
+                )
+            elif model_class == 'Repeat':
+                # Repeat parameter
+                bioblend_inputs[param_name] = self.process_repeat_param(
+                    param, form_dict, param_name
+                )
+            else:
+                # Simple parameter types
+                if param_type in ('integer', 'float'):
+                    try:
+                        bioblend_inputs[param_name] = float(form_dict[param_name]) if param_type == 'float' else int(form_dict[param_name])
+                    except (ValueError, TypeError):
+                        # Use default if conversion fails
+                        bioblend_inputs[param_name] = param.get('value', 0)
+                else:
+                    bioblend_inputs[param_name] = form_dict[param_name]
+        
+        # Remove the dash("--") from the the input dictionary keys 
+        bioblend_inputs = self.remove_dash(bioblend_inputs)
+
+        return bioblend_inputs
+
+    def process_conditional_param(self, param, form_dict, param_name):
         """
-        inputs = inputs or {}
-        # Build the tool payload 
-        # (validation step to convert name: value pairs from the io details into state input)
+        Process conditional parameters from form data.
+        
+        Args:
+            param: Conditional parameter definition
+            form_dict: Form data dictionary
+            param_name: Name of the conditional parameter
+            
+        Returns:
+            dict: Conditional parameter structure
+        """
+        conditional = {}
+        
+        # Get test parameter
+        test_param = param.get('test_param')
+        test_name = test_param.get('argument') or test_param.get('name')
+        test_value = form_dict.get(f"{param_name}|{test_name}", test_param.get('value'))
+        
+        # Add test parameter to conditional
+        conditional[test_name] = test_value
+        
+        # Find the active case
+        active_case = None
+        for case in param.get('cases', []):
+            if case.get('value') == test_value:
+                active_case = case
+                break
+        
+        # Default to first case if no match found
+        if active_case is None:
+            active_case = param.get('cases', [{}])[0]
+        
+        # Process inputs from the active case
+        for case_param in active_case.get('inputs', []):
+            case_param_name = case_param.get('name')
+            full_name = f"{param_name}|{test_value}|{case_param_name}"
+            
+            if full_name in form_dict:
+                # Handle different case parameter types
+                if case_param.get('model_class') == 'DataToolParameter':
+                    conditional[case_param_name] = {
+                        'src': 'hda',
+                        'id': form_dict[full_name]
+                    }
+                elif case_param.get('model_class') == 'DataCollectionToolParameter':
+                    conditional[case_param_name] = {
+                        'src': 'hdca',
+                        'id': form_dict[full_name]
+                    }
+                else:
+                    conditional[case_param_name] = form_dict[full_name]
 
-        tool_payload = self._build_payload(tool_id, history, inputs)
-        pprint(tool_payload)
-        # Run
-        tool: Tool= self.gi_object.tools.get(tool_id, io_details= True)
-        tool_execution= self.gi_object.gi.tools.run_tool(tool_id= tool.id, history_id=history.id, tool_inputs = tool_payload )
-        pprint(tool_execution)
-        # The job id
-        job_id = tool_execution['jobs'][0]['id']
-        outputs = tool_execution['outputs']
+        # Remove the dash("--") from the the input dictionary keys 
+        conditional = self.remove_dash(conditional)
+        return conditional
 
-        output_datasets: list[Dataset] = []
+    def process_repeat_param(self, param, form_dict, param_name):
+        """
+        Process repeat parameters from form data.
+        
+        Args:
+            param: Repeat parameter definition
+            form_dict: Form data dictionary
+            param_name: Name of the repeat parameter
+            
+        Returns:
+            list: List of repeat instances
+        """
+        repeats = []
+        
+        # Find all repeat instances in form data
+        repeat_instances = {}
+        for key, value in form_dict.items():
+            if key.startswith(f"{param_name}|"):
+                parts = key.split('|')
+                if len(parts) >= 3:
+                    instance_id = parts[1]
+                    param_key = parts[2]
+                    
+                    if instance_id not in repeat_instances:
+                        repeat_instances[instance_id] = {}
+                    repeat_instances[instance_id][param_key] = value
+        
+        # Convert instances to bioblend format
+        for instance_id, instance_data in repeat_instances.items():
+            instance = {}
+            
+            for param_def in param.get('inputs', []):
+                param_name = param_def.get('argument') or param_def.get('name')
+                if param_name in instance_data:
+                    # Handle different parameter types
+                    if param_def.get('model_class') == 'DataToolParameter':
+                        instance[param_name] = {
+                            'src': 'hda',
+                            'id': instance_data[param_name]
+                        }
+                    elif param_def.get('model_class') == 'DataCollectionToolParameter':
+                        instance[param_name] = {
+                            'src': 'hdca',
+                            'id': instance_data[param_name]
+                        }
+                    else:
+                        instance[param_name] = instance_data[param_name]
+            
+            repeats.append(instance)
 
-        for output in outputs:
-            dataset =  self.gi_object.datasets.get(output['id'])
-            output_datasets.append(dataset)
+        # Remove the dash("--") from the the input dictionary keys 
+        repeats = [self.remove_dash(inst) for inst in repeats]
+        return repeats
 
-        self.log.info(f"Started job {job_id} for tool {tool_id!r}")
+        # Build tool html form from the tools xml.
+    def build_html_form(self, tool: Tool, history: History) -> str | None:
+        """
+        Builds a dynamic HTML form from the tool's XML definition.
+        """
+        xml_str = self.get_tool_xml(tool_id= tool.id) # Get tool xml 
+        if not xml_str:
+            self.log.error(f"Could not retrieve XML for tool {tool.id}")
+            raise
 
-        job=self.wait(job_id) # Wait for job to complete before making result
-        return self._make_result(job, output_datasets)
+        # We only want active, visible datasets
+        generator = ToolFormGenerator(xml_str, tool, history)
+        html =  generator.build_html()
+        return html
+    
+    def wait(self, job_id, initial_wait: int = 60 , base_extension: int = 20):
+        """Waits for a Galaxy job to finish, with dynamic timeout and progress tracking."""
 
-    def wait(self, job_id):
-        counter = 0 
+        previous_state = None
+        start_time = time.time()
+        deadline = start_time + initial_wait
+        max_extension = initial_wait // 2
+
         while True:
             job = self.gi_object.jobs.get(job_id)
-            counter +=1
-            if job.state in {'ok', 'error', 'cancelled'}:
-                print(f'checked {counter} times and resulted {job.state}')
+            current_state = job.state
+
+            if current_state != previous_state:
+                self.log.info(f"Job {job_id} transitioned to {current_state}")
+                previous_state = current_state
+                # Extend deadline slightly when progress is detected
+                extension = min(base_extension, max_extension)
+                deadline = max(deadline + extension, start_time + initial_wait)
+
+            if current_state in {'ok', 'error', 'cancelled'}:
                 break
-            time.sleep(3) # set polling interval
+
+            if time.time() > deadline:
+                self.log.error(f"Job {job_id} timed out after {int(time.time() - start_time)} seconds.")
+                try:
+                    self.gi_object.gi.jobs.cancel_job(job_id=job_id)
+                    self.log.warning(f"Job {job_id} cancelled due to timeout.")
+                except Exception as e:
+                    self.log.warning(f"Failed to cancel job {job_id}: {e}")
+                break
+
+            time.sleep(3)  # polling interval
+
         return job
- 
+
     # Internal helpers
     def _build_payload(
         self,
@@ -185,7 +355,6 @@ class ToolManager:
         the parameter tree.
 
         """
-        
         # The low-level client is needed for the build endpoint
         payload = self.gi_object.gi.tools.build(
             tool_id=tool_id,
@@ -199,37 +368,45 @@ class ToolManager:
         job_details= self.gi_object.gi.jobs.show_job(job_id= job.id, full_details=True)
         
         return {
-            "dataset": [{d.name, d.id} for d in datasets],
+            "dataset": datasets,
             "state": job.state,
             "stdout": job_details.get("stdout", None),
             "stderr": job_details.get("stderr", None),
             "error": job_details.get("error_message") if job.state == "error" else None,
         }
+    
+    # Core executor
+    def run( 
+        self,
+        tool_id: str,
+        history: History,
+        inputs: Optional[Dict[str, Any]] = None,
+        ):
+        """
+        Run a tool and return a structured result.
+        """
+        inputs = inputs or {}
+        # Build the tool payload 
+        # (validation step to convert name: value pairs from the io details into state input)
 
+        tool_payload = self._build_payload(tool_id, history, inputs)
+        # pprint(tool_payload)
+        # Run
+        tool: Tool= self.gi_object.tools.get(tool_id, io_details= True)
+        tool_execution= self.gi_object.gi.tools.run_tool(tool_id= tool.id, history_id=history.id, tool_inputs = tool_payload )
+        # pprint(tool_execution)
+        # The job id
+        job_id = tool_execution['jobs'][0]['id']
+        outputs = tool_execution['outputs']
 
-# if __name__ == '__main__':
-#     # Existing connection
-#     gi = GalaxyClient().gi_object
-#     history = gi.histories.get(id_="52e496b945151ee8")
-#     dataset=  gi.datasets.get('2a4bf9d66c01414a')
-#     tool_id="fastqc"
+        output_datasets: List[Dataset] = []
 
-#     tm = ToolManager()
-#     inputs={"input_file": {'id': dataset.id , 'src': 'hda'}}
-#     # Upload first if you need input
+        for output in outputs:
+            dataset =  self.gi_object.datasets.get(output['id'])
+            output_datasets.append(dataset)
 
-#     # Run FastQC
-#     result = tm.run(
-#         tool_id=tool_id,
-#         history=history,
-#         inputs=inputs
-#     )
+        self.log.info(f"Started job {job_id} for tool {tool_id!r}")
 
-#     pprint(result)
-
-#     # inputs = gi.gi.tools.show_tool(tool_id, io_details=True)['inputs']
-#     # pprint(inputs)
-#     # io_state = tm.generate_state(inputs)
-#     # pprint(io_state)
-#     # # build = tm._build_payload(tool_id, history, inputs=io_state)
-#     # # pprint(build)
+        job=self.wait(job_id) # Wait for job to complete before making result
+        return self._make_result(job, output_datasets)
+  

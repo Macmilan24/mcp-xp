@@ -1,22 +1,19 @@
 import os
 from fastmcp import FastMCP
 import logging
+from pydantic import BaseModel, Field
+from typing import Literal, Optional
 
 # Import core logic from galaxy.py
 from app.bioblend_server.galaxy import get_galaxy_information, GalaxyClient
 from app.log_setup import configure_logging
-
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
 configure_logging()
 logger = logging.getLogger("fastmcp_bioblend_server")
 
-# Initialize FastMCP server
-# You can set environment variables for Galaxy URL and API Key
-GALAXY_URL = os.environ.get("GALAXY_URL", "http://localhost:8080") # Provide a default or raise error if not set
-GALAXY_API_KEY = os.environ.get("GALAXY_API_KEY")
 
-if not GALAXY_API_KEY:
+if not os.environ.get("GALAXY_API_KEY"):
     logger.warning("GALAXY_API_KEY environment variable is not set. GalaxyClient functionality may fail.")
 
 
@@ -24,18 +21,99 @@ bioblend_app = FastMCP(
                         name="galaxyTools",
                         instructions="Provides tools and resources for interacting with Galaxy instances via BioBlend. "
                                     "Tools allow querying Galaxy information and retrieving any sort of information on a galaxy instance "
+                                    "Tools that allow execution of a tools and workflows within a galaxy instance."
                                     "Make sure to specify 'tool', 'dataset', or 'workflow' for 'query_type'. "
                                     "Use 'entity_id' only if the user explicitly provides an ID."
                     )
 
+# Structure for the executor tool to respond with.
+class ExecutorToolResponse(BaseModel):
+    entity: Literal["tool", "workflow"] = Field(..., title="Entity")
+    name: str = Field(..., title="Name")
+    id: str = Field(..., title="Id")
+    description: Optional[str] = Field(default=None, title="Description")
+    action_link: str = Field(..., title="Action Link")
 
+
+@bioblend_app.tool()
+async def execute_galaxy_tool_workflow(
+    entity: str,
+    name: str = None,
+    entity_id: str = None
+)-> ExecutorToolResponse : 
+    """
+    Execute a Galaxy tool or workflow and return its metadata.
+
+    Args:
+        entity(str): The type of Galaxy entity to execute. Must be either `"tool"` or `"workflow"`.
+        name(str, optional): The human-readable name of the tool or workflow. Used to locate the entity if `entity_id` is not provided.
+        entity_id(str, optional): The unique Galaxy ID of the tool or workflow. Used to locate the entity if `name` is not provided.
+
+    Returns:
+        ExecutorToolResponse
+            A structured response containing:
+            - Entity type (`tool` or `workflow`)
+            - Name
+            - Galaxy ID
+            - Description/annotation
+            - Action link to the execution form endpoint
+    """
+
+    from app.bioblend_server.executor.tool_manager import ToolManager
+    from app.bioblend_server.executor.workflow_manager import WorkflowManager
+
+    tool_manager=ToolManager()
+    workflow_manager= WorkflowManager()
+
+    if name is None and entity_id is  None:
+        raise ValueError("Neither the name or the id is inputted for the execution")
+    try:
+        if entity== "workflow":
+            if name:
+                workflow_result = workflow_manager.get_worlflow_by_name(name)
+            elif entity_id:
+                workflow_result = workflow_manager.get_workflow_by_id(entity_id)
+
+            workflow = workflow_manager.gi_object.gi.workflows.show_workflow(workflow_result.id)
+
+            return ExecutorToolResponse(
+                entity= "workflow",
+                name = workflow.get("name"),
+                id = workflow.get("id"),
+                description = workflow.get("annotation") or workflow.get("description"),
+                action_link = f"/api/workflows/{workflow.get('id')}/form"
+            )
+
+
+        elif entity == "tool":
+            if name:
+                tool_result = tool_manager.get_tool_by_name(name)
+            elif entity_id:
+                tool_result = tool_manager.get_tool_by_id(entity_id)
+
+            tool = tool_manager.gi_object.gi.tools.show_tool(tool_result.id)
+
+            return ExecutorToolResponse(
+                entity= "tool",
+                name = tool.get("name"),
+                id = tool.get("id"),
+                description = tool.get("description") or tool.get("annotation"),
+                action_link = f"/api/tools/{tool.get('id')}/form"
+            )
+
+        else:
+            raise ValueError(f"Invalid entity type: {entity}")
+    except Exception as e:
+        logger.error(f"error occured when executing execute_galaxy_tool_workflow: {e}")
+        raise RuntimeError(f"Failed to execute Galaxy {entity}: {e}")
+    
 
 @bioblend_app.tool()
 async def get_galaxy_information_tool(
     query: str,
     query_type: str,
     entity_id: str = None
-) -> dict:
+) -> str:
     """
     Fetch detailed information on Galaxy tools, workflows, datasets, and invocations.
 
@@ -76,7 +154,16 @@ def get_galaxy_whoami() -> dict:
         logger.error(f"Error in get_galaxy_whoami: {e}", exc_info=True)
         return {"error": f"Failed to retrieve user details: {str(e)}"}
 
-# TODO: Tool execution handler, lets start simple with just the tools
-#  For tools there needs to be a state input builder, that builds the state from the 
-# io_details of the tools and then use that structure to execute a file from that.
-# def execute_tool(): # Starting simple with the tool.
+
+# TODO: Galaxy interaction should be based of off diffrent APIs.
+
+# How wwould multiple histories be handled if multiple user were to query this ar onece. 
+# If Diffrent having diffrent APIs and diffrent galaxy account???
+
+
+# TODO: IDEA
+# Pass APis to the MCP as env variable?
+# Take APIs as inputs as well.
+
+
+# TODO: Galaxy interface and galaxy integration issues???

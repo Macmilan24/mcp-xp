@@ -7,6 +7,8 @@ import logging
 from app.log_setup import configure_logging
 from app.api.api import api_router 
 
+configure_logging()
+
 logger= logging.getLogger('main')
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # Optional: Add project root to Python path
 sessions = {}
@@ -35,7 +37,6 @@ async def read_root():
 async def get_chat_history(request: Request):
     """Conversation history in a session"""
 
-    configure_logging()
     user_ip = request.client.host
     if user_ip not in sessions:
         chat_session = await initialize_session(user_ip)
@@ -49,7 +50,6 @@ async def get_chat_history(request: Request):
 async def send_message(request: Request, message: MessageRequest):
     """Conversate with the Galaxy Agent"""
 
-    configure_logging()
     user_ip = request.client.host
     if user_ip not in sessions:
             chat_session: ChatSession = await initialize_session(user_ip)
@@ -65,7 +65,6 @@ async def send_message(request: Request, message: MessageRequest):
 async def list_tools(request: Request):
     """List MCP server tools available for the LLM"""
 
-    configure_logging()
     logger.info("listing tools")
     
     user_ip = request.client.host
@@ -78,6 +77,6 @@ async def list_tools(request: Request):
     for server in chat_session.servers:
         logger.info(f"server {server.name}")
         tools = await server.list_tools()   
-        logger.info(f'found tools: {tools.tools[0].name}')
+        logger.info(f'found tools: {[tool.name for tool in tools.tools]}')
         all_tools.extend([tool for tool in tools.tools])
     return {"tools": all_tools}

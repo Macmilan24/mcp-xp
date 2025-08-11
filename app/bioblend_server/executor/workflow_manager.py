@@ -2,40 +2,41 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Union, List, Any, Tuple
-import os
+from typing import Union, List
 import json
 
 from rapidfuzz import process, fuzz
-from pprint import pprint
 from dotenv import load_dotenv
+import xml.etree.ElementTree as ET
+
 load_dotenv()
 
 from sys import path
 path.append('.')
 
-from app.bioblend_server.galaxy import GalaxyClient
 from bioblend.galaxy.objects.wrappers import Workflow, Invocation, History, Dataset, DatasetCollection
 from bioblend.galaxy.toolshed import ToolShedClient
-from app.bioblend_server.executor.data_manager import DataManager
+
+from app.bioblend_server.galaxy import GalaxyClient
+from app.bioblend_server.executor.tool_manager import ToolManager
+from app.bioblend_server.executor.form_generator import WorkflowFormGenerator
+
 
 class WorkflowManager:
+    """Workflow manager class for managing Galaxy workflows"""
 
     def __init__(self):
         self.galaxy_client = GalaxyClient()
-
-        # galaxy objects instance
-        self.gi_object=self.galaxy_client.gi_object
-        self.data_manager=DataManager()
-        # Toolshed instance
-        self.toolshed=ToolShedClient(self.gi_object.gi) 
+        self.gi_object=self.galaxy_client.gi_object    # galaxy objects instance
+        self.toolshed=ToolShedClient(self.gi_object.gi)    # Toolshed instance
+        self.tool_manager = ToolManager()
         self.log = logging.getLogger(self.__class__.__name__)
 
     def upload_workflow(self, path: str)-> Workflow:
         """Upload workflow from a ga file"""
 
         with open(path, 'r') as f:
-            workflow_json = json.loads(f.read())
+            workflow_json: dict= json.loads(f.read())
 
            # Check if the tools are installed and install all missing tools
             workflow_steps=workflow_json.get('steps', None)
@@ -53,19 +54,24 @@ class WorkflowManager:
         else:
             return {'error': 'uploaded workflow is not runnable'}
     
-    def get_worlflow_by_name(self, name: str, score_cutoff: int = 80) -> Workflow | None:
-        """Get tool by its name"""
-
-        workflow_list= self.gi_object.gi.workflows.get_workflows()
+    def get_worlflow_by_name(self, name: str, score_cutoff: int = 70) -> Workflow | None:
+        """Get workflow by its name (fuzzy match)."""
+        workflow_list = self.gi_object.gi.workflows.get_workflows()
+        # Build a dict that maps each workflow name to the full dict
+        name_to_wf = {wf["name"]: wf for wf in workflow_list}
 
         match = process.extractOne(
             name,
-            workflow_list,
-            key=lambda w: w["name"],
+            name_to_wf.keys(),          # list of names
             scorer=fuzz.partial_ratio,
             score_cutoff=score_cutoff
         )
-        return self.gi_object.workflows.get(match[0]['id']) if match else None
+
+        if match is None:               # nothing above the cutoff
+            return None
+
+        wf_dict = name_to_wf[match[0]]
+        return self.gi_object.workflows.get(wf_dict["id"])
     
     def get_workflow_by_id(self, id: str)-> Workflow | None:
         """Get tool by its id"""
@@ -190,119 +196,85 @@ class WorkflowManager:
             }
 
         return input_map
+    
+    ## TODO : VALIDATION STEP needs improvement.
+    def validate_input_to_tool(self, mapped_input: dict, workflow: dict) -> dict:
+        """Validate the input HTML form against the first tool it is connected to."""
+        steps = workflow.get("steps", {})
+        input_tools = set()
+        tool_xml_cache = {}
 
-    def _build_html(self, mapped_workflows: list | dict, history: History) -> str:
-        """
-        Builds an HTML form from a list of mapped input dictionaries
-        (each from map_inputs_to_steps).
+        # Map source step ID to connected tool params and tool IDs
+        input_connections_map = {}  # {source_step_id: [(tool_id, param_name)]}
 
-        Args:
-            mapped_workflows (list)
-            history (History): history to select datasets and dataset collections from
-        
-        Returns:
-            str: HTML string.
-        """
-        
-        if isinstance(mapped_workflows, dict):
-            mapped_workflows=[mapped_workflows]
+        for step in steps.values():
+            tool_id = step.get("tool_id")
+            if not tool_id:
+                continue
 
-        # Get dataset and dataset collection for option
-        datasets, collections = self.data_manager.list_contents(history=history)
-        # TODO: Add Reference files here
-        reference_genomes = self.data_manager.list_genome()
-        options=[]
-        for reference in reference_genomes:
-            value = reference[1]
-            name = reference[0]
-            options.append(f'<option value="{value}">{name}</option>')
-        html = ['<form method="POST" enctype="multipart/form-data" class="galaxy-workflow-form">']
+            input_steps = step.get("input_steps", {})
+            for param_name, conn_info in input_steps.items():
+                source_step = str(conn_info.get("source_step"))
+                input_connections_map.setdefault(source_step, []).append((tool_id, param_name))
+                input_tools.add(tool_id)
 
-        for workflow_idx, workflow_inputs in enumerate(mapped_workflows):
-            html.append(f'<fieldset class="workflow-fieldset" id="workflow-{workflow_idx}"><legend>{workflow_inputs["name"]}</legend>')
+        self.log.info(f"Tools that directly take input from workflow inputs are: {input_tools}")
+        self.log.info("Collecting tool XML for workflow mapped input")
 
-            for input_id, input_info in workflow_inputs.items():
-                if isinstance(input_info, str):
-                    ## exclude the name parameter
+        # Pre-fetch XML definitions for all involved tools
+        for tool_id in input_tools:
+            try:
+                xml = self.tool_manager.get_tool_xml(tool_id)
+                if xml:
+                    tool_xml_cache[tool_id] = ET.fromstring(xml)
+                else:
+                    self.log.warning(f"Could not retrieve XML for tool_id: {tool_id}")
+            except ET.ParseError as e:
+                self.log.error(f"Failed to parse XML for tool {tool_id}: {e}")
+
+        # Perform validation for each mapped input
+        for input_id, input_details in mapped_input.items():
+            if input_id == "name":
+                continue
+
+            connections = input_connections_map.get(str(input_id), [])
+            for tool_id, param_name in connections:
+                root = tool_xml_cache.get(tool_id)
+                if root is None:
                     continue
 
-                label = input_info.get("Label", f"Input {input_id}")
-                input_type = input_info.get("input_type", "")
-                annotation = input_info.get("annotation", "")
-                tool_inputs = input_info.get("tool_inputs", {})
-                param_type = tool_inputs.get("parameter_type")
-                field_name = f"wf{workflow_idx}_step{input_info['step_id']}"
+                param_node = root.find(f".//inputs/param[@name='{param_name}']")
+                if param_node is not None:
+                    validation_info = {
+                        "tool_id": tool_id,
+                        "tool_param_name": param_name,
+                        "type": param_node.get("type"),
+                        "format": param_node.get("format", "data"),
+                        "label": param_node.get("label"),
+                        "help": (param_node.findtext("help") or "").strip(),
+                    }
 
-                html.append(f'<div class="form-field" style="margin-bottom: 1em;">')
-                html.append(f'<label for="{field_name}" class="form-label"><strong>{label}</strong></label><br>')
-                if annotation:
-                    html.append(f'<small class="form-annotation">{annotation}</small><br>')
-
-                # DATA INPUTS
-                if input_type == "data_input":
-                    html.append(f'<select class="form-select" name="{field_name}"  formatrequired>')
-                    for option in datasets:
-                        html.append(f'<option value="{option["id"]}">{option["name"]}</option>')
-                    html.append('</select><br>')
-
-                elif input_type == "reference_genome":
-                    html.append(f'<select class="form-select" name="{field_name}" format=required')
-                    html.extend(options)
-                    html.append('</select><br>')
-
-                elif input_type == "data_collection_input":
-                    html.append(f'<select class="form-select" name="{field_name}"  required>')
-                    for option in collections:
-                        html.append(f'<option value="{option["id"]}">{option["name"]}</option>')
-                    html.append('</select><br>')
-
-                # PARAMETER INPUTS
-                elif input_type == "parameter_input":
-                    required = "" if tool_inputs.get("optional", False) else "required"
-
-                    #  Boolean
-                    if param_type == "boolean":
-                        html.append(f'''
-                            <select class="form-select" name="{field_name}" {required}>
-                                <option value="true">True</option>
-                                <option value="false">False</option>
-                            </select><br>
-                        ''')
-
-                    #  Restricted Choice / Enum
-                    elif "restrictions" in tool_inputs:
-                        html.append(f'<select class="form-select" name="{field_name}" {required}>')
-                        for option in tool_inputs["restrictions"]:
-                            html.append(f'<option value="{option}">{option}</option>')
-                        html.append('</select><br>')
-
-                    #  Default to Text
-                    else:
-                        html.append(f'<input type="text" class="form-input" name="{field_name}" {required}><br>')
-
-                # Unknown Input Type
+                    input_details.setdefault("validation", []).append(validation_info)
+                    self.log.info(f"Validated input '{input_id}' against tool '{tool_id}' param '{param_name}'")
                 else:
-                    html.append(f'<input type="text" class="form-input" name="{field_name}" placeholder="Unsupported input type"><br>')
+                    self.log.warning(f"Could not find param '{param_name}' in tool XML for tool_id '{tool_id}'")
 
-                html.append('</div>')  # end of field
-
-            html.append("</fieldset>")
-
-        html.append('<button type="submit" class="form-submit">Run</button>')
-        html.append("</form>")
-
-        return "\n".join(html)
+        return mapped_input
 
     def build_input(self, workflow: Workflow, history: History)-> str:
         """builds workflow input html form from the workflow inputs and input steps"""
         # map inputs to input steps of the workflow to get information from both
         workflow= self.gi_object.gi.workflows.show_workflow(workflow_id=workflow.id)
-        mapped_input = self._map_inputs_to_steps(name=workflow['name'], inputs=workflow['inputs'], steps=workflow['steps']) 
-        # builds a html form from the mapped input payload
-        html_form = self._build_html(mapped_workflows = mapped_input, history = history) 
+        
+        mapped_input = self._map_inputs_to_steps(name=workflow['name'], inputs=workflow['inputs'], steps=workflow['steps'])
+
+        # builds a html form from the mapped input payload and validate it
+        mapped_input = self.validate_input_to_tool(mapped_input, workflow)
+        form_generator = WorkflowFormGenerator(mapped_workflow= mapped_input, workflow=workflow, history=history)
+        html_form = form_generator._build_html()
         return html_form
     
-    def track_invocation(self, invocation: Invocation, base_extension: int = 10,initial_wait: int = 120)-> List[Union[Dataset, DatasetCollection]]:
+    def track_invocation(self, invocation: Invocation, base_extension: int = 30,initial_wait: int = 120)-> List[Union[Dataset, DatasetCollection]]:
         """Tracks invocation steps and waits for the invocation reaches a terminal state and returns with the invocation results""" 
         
         completed_steps=set()
@@ -315,10 +287,14 @@ class WorkflowManager:
         max_extension = initial_wait // 2
         num_steps = len(invocation.steps)
         estimated_wait = 20 * num_steps  # assume 20s per step
-        initial_wait = min(estimated_wait, initial_wait)
+        initial_wait = max(estimated_wait, initial_wait)
 
         # estimate maxwait based on the number of steps in the workflow?
         while True:
+            invocation_state = self.gi_object.gi.invocations.show_invocation(invocation_id = invocation.id)["state"]
+            if invocation_state in ("failed", "error"):
+                self.log.error("workflow invocation has failed.")
+                break
             step_jobs = self.gi_object.gi.invocations.get_invocation_step_jobs_summary(invocation_id=invocation.id)
             all_ok = True
             step_index=0
@@ -327,13 +303,12 @@ class WorkflowManager:
             for step in step_jobs:
                 step_id = step['id']
                 states = step['states']
-
                 # Simplified state
                 if states.get('running') == 1:
                     current_state = 'running'
                 elif states.get('ok') == 1:
                     current_state = 'ok'
-                elif states.get('error') == 1:
+                elif states.get('error') or states.get("failed") == 1:
                     current_state = 'error'
                 else:
                     current_state = 'other'
