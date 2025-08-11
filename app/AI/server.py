@@ -7,6 +7,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 import logging
 
+from app.context import current_api_key
+
 class Server:
     """Manages MCP server connections and tool execution."""
 
@@ -95,7 +97,8 @@ class Server:
             try:
                 self.logger.info(f"attempting tool execution: {tool_name}")
                 # logging.info(f"Executing {tool_name}...")
-                result = await self.session.call_tool(tool_name, arguments)
+                exec_arguments = {**arguments, 'api_key': current_api_key.get()}
+                result = await self.session.call_tool(tool_name, exec_arguments)
 
                 return result
 
