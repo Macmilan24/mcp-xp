@@ -4,6 +4,8 @@ import logging
 import time
 from typing import Union, List
 import json
+import asyncio
+import traceback
 
 from rapidfuzz import process, fuzz
 from dotenv import load_dotenv
@@ -21,6 +23,7 @@ from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.executor.tool_manager import ToolManager
 from app.bioblend_server.executor.form_generator import WorkflowFormGenerator
 
+from app.api.socket_manager import SocketManager
 
 class WorkflowManager:
     """Workflow manager class for managing Galaxy workflows"""
@@ -36,24 +39,59 @@ class WorkflowManager:
         self.data_manager = self.tool_manager.data_manager
         self.log = logging.getLogger(self.__class__.__name__)
 
-    def upload_workflow(self, path: str)-> Workflow:
+    async def upload_workflow(self, path: str, ws_manager: SocketManager, tracker_id: str)-> Workflow:
         """Upload workflow from a ga file"""
 
         with open(path, 'r') as f:
             workflow_json: dict= json.loads(f.read())
 
-           # Check if the tools are installed and install all missing tools
+        await ws_manager.broadcast(
+            event = "workflow_upload",
+            data = {
+                "type": "UPLOAD_WORKFLOW",
+                "payload": {"message": "Workflow upload started, checking and installing missing tools."}
+                },
+            tracker_id=tracker_id
+        )
+        self.log.info("Workflow upload started, checking and installing missing tools.")
+        # Check if the tools are installed and install all missing tools
+        try:
             workflow_steps=workflow_json.get('steps', None)
             if workflow_steps:
-                for step in workflow_steps:
-                    self.tool_check_install(step)
+                for step in workflow_steps.values():
+                    await self.tool_check_install(step, ws_manager, tracker_id)
+        except Exception as e:
+            await ws_manager.broadcast(
+                event = "workflow_upload",
+                data = {
+                    "type": "UPLOAD_FAILURE",
+                    "payload": {"message": f"Error installing missing tools in the uploaded workflow: {e}"}
+                    },
+                tracker_id=tracker_id
+            )
+            self.log.error(f"Error installing missing tools in the uploaded workflow: {e} traceback:{traceback.format_exc()}")
+            
+            # return {"error": f"Error installing missing tools in the uploaded workflow: {e}"}
+            
         # Reload the tool box after tools are installed
-        self.gi_admin.gi.config.reload_toolbox()
-        
-        workflow: Workflow= self.gi_object.workflows.import_new(src=workflow_json, publish=False)
+        await asyncio.to_thread(self.gi_admin.gi.config.reload_toolbox)
+
+        workflow = await asyncio.to_thread(
+            self.gi_object.workflows.import_new, 
+            src=workflow_json, 
+            publish=False
+            )
 
         # Check if the workflow is considered runnable by the instance
         if workflow.is_runnable:
+            await ws_manager.broadcast(
+                event = "workflow_upload",
+                data = {
+                    "type": "UPLOAD_COMPLETE",
+                    "payload": {"message": "Workflow successfully uploaded."}
+                    },
+                tracker_id=tracker_id
+                )
             return workflow
         else:
             return {'error': 'uploaded workflow is not runnable'}
@@ -117,13 +155,13 @@ class WorkflowManager:
 
     # Function that installs tools missing in the galaxy instance for the workflow invocation
     # Need  administrator api        
-    def tool_check_install(self, step: dict):
+    async def tool_check_install(self, step: dict, ws_manager: SocketManager, tracker_id: str):
         """Check and install if a tool in a workflow is missing"""
 
         # Recurse into subworkflow steps
         if step.get('type') == 'subworkflow':
             for sub_step in step['subworkflow']['steps'].values():
-                self.tool_check_install(sub_step)
+                await self.tool_check_install(sub_step, ws_manager, tracker_id)
             return  # Skip install for subworkflow container itself
 
         # Skip steps without a tool_id
@@ -150,20 +188,45 @@ class WorkflowManager:
                 # Since reloading specific tools is not working, gone with refreshing the full toolbox after all the tools are installed 
                 # self.gi_object.gi.tools.reload(step['tool_id'])
 
-                for repo_info in install_result:
-                    status = repo_info.get('status', 'unknown')
-                    error_msg = repo_info.get('error_message', 'None') if status != 'installed' else 'None'
-
-                    self.log.info(
-                        f"Tool install result - Name: {repo_info.get('name', 'N/A')}, "
-                        f"Owner: {repo_info.get('owner', 'N/A')}, "
-                        f"Status: {status}, "
-                        f"Error: {error_msg}"
+                if isinstance(dict, install_result):
+                    self.log.info(f"status: {install_result.get('status')}, message: {install_result.get('message')}")
+                    await ws_manager.broadcast(
+                        event= "workflow_upload",
+                        data = {
+                            "type": "TOOL_INSTALL",
+                            "payload": {"message": f"{install_result.get("message")}"}
+                        },
+                        tracker_id = tracker_id
                     )
 
+                elif isinstance(list, install_result):
+                    for repo_info in install_result:
+                        status = repo_info.get('status', 'unknown')
+                        error_msg = repo_info.get('error_message', 'None') if status != 'installed' else 'None'
+
+                        self.log.info(
+                            f"Tool install result - Name: {repo_info.get('name', 'N/A')}, "
+                            f"Owner: {repo_info.get('owner', 'N/A')}, "
+                            f"Status: {status}, "
+                            f"Error: {error_msg}"
+                        )
+                        await ws_manager.broadcast(
+                            event="workflow_upload",
+                            data = {
+                                "type" : "TOOL_INSTALL",
+                                "payload" : {
+                                    "name": repo_info.get('name', 'N/A'),
+                                    "owner": repo_info.get('owner', 'N/A'),
+                                    "status": status,
+                                    "error" : error_msg
+                                            }
+                            },
+                            tracker_id = tracker_id
+                            )
 
             except Exception as e:
-                self.log.error(f"Failed to install tool '{toolshed_info['name']}': {str(e)}")
+                self.log.error(f"Failed to install tool '{toolshed_info['name']}': {str(e)}  traceback:{traceback.format_exc()}")
+                raise
         else:
             self.log.info(f"Tool found for step {step['id']}, skipping installation")
 
@@ -278,7 +341,12 @@ class WorkflowManager:
         html_form = form_generator._build_html()
         return html_form
     
-    def track_invocation(self, invocation: Invocation, base_extension: int = 30,initial_wait: int = 120)-> List[Union[Dataset, DatasetCollection]]:
+    async def track_invocation(self, invocation: Invocation,
+                         tracker_id: str,
+                         ws_manager: SocketManager, 
+                         base_extension: int = 30,
+                         initial_wait: int = 120
+                         )-> List[Union[Dataset, DatasetCollection]]:
         """Tracks invocation steps and waits for the invocation reaches a terminal state and returns with the invocation results""" 
         
         completed_steps=set()
@@ -287,19 +355,39 @@ class WorkflowManager:
         invocation_outputs=[] 
 
         start_time = time.time()
+        num_steps = len(invocation.steps)
+        estimated_wait = 20 * num_steps  # assume ~20s per step
+        initial_wait = max(estimated_wait, initial_wait)
         deadline = start_time + initial_wait
         max_extension = initial_wait // 2
-        num_steps = len(invocation.steps)
-        estimated_wait = 20 * num_steps  # assume 20s per step
-        initial_wait = max(estimated_wait, initial_wait)
+        poll_interval = 1
 
         # estimate maxwait based on the number of steps in the workflow?
         while True:
-            invocation_state = self.gi_object.gi.invocations.show_invocation(invocation_id = invocation.id)["state"]
+            inv = await asyncio.to_thread(
+                self.gi_object.gi.invocations.show_invocation, invocation_id = invocation.id
+            )
+            invocation_state= inv["state"]
+
             if invocation_state in ("failed", "error"):
                 self.log.error("workflow invocation has failed.")
+                ws_data = {
+                    "type" : "INVOCATION_FAILURE",
+                    "payload": {"message" : "Invocation failed or has error"}
+                }
+
+                await ws_manager.broadcast(
+                    event = "workflow_execute", 
+                    data = ws_data, 
+                    tracker_id = tracker_id
+                    )
+                
                 break
-            step_jobs = self.gi_object.gi.invocations.get_invocation_step_jobs_summary(invocation_id=invocation.id)
+            
+            step_jobs = await asyncio.to_thread(
+                self.gi_object.gi.invocations.get_invocation_step_jobs_summary, invocation_id = invocation.id
+            )
+
             all_ok = True
             step_index=0
             progress_made = False
@@ -318,26 +406,59 @@ class WorkflowManager:
                     current_state = 'other'
 
                 # Log only on transitions to running, ok, or error
+                # Since that the step_id is a job id.
                 prev = previous_states.get(step_id)
                 if current_state != prev and current_state in ('running', 'ok', 'error'):
                     self.log.info(f"Step {step_index} with id {step_id} transitioned to {current_state}")
                     previous_states[step_id] = current_state
                     progress_made = True
 
+                    ws_data = {
+                        "type" : "INVOCATION_STEP_UPDATE",
+                        "payload" : {
+                            "step_index" : step_index,
+                            "step_id" : step_id,
+                            "status" : current_state 
+                        }
+                    }
+
+                    await ws_manager.broadcast(
+                        event="workflow_execute",
+                        data = ws_data,
+                        tracker_id = tracker_id
+                        )
+
                 # Capture output exactly once when it first becomes ok
                 if current_state == 'ok' and step_id not in completed_steps:
-                    job = self.gi_object.gi.jobs.show_job(step_id)
+                    job = await asyncio.to_thread(
+                        self.gi_object.gi.jobs.show_job, job_id = step_id
+                        )
                     outputs = job.get('outputs', {})
+                    
                     if outputs:
                         first_output = next(iter(outputs.values()))
-                        output_dataset=self.gi_object.datasets.get(first_output['id'])
+                        output_dataset= await asyncio.to_thread(
+                            self.gi_object.datasets.get, first_output["id"]
+                            )
                         invocation_outputs.append(output_dataset)
                     completed_steps.add(step_id)
 
                 # Handle errors by logging, cancelling, and breaking out
                 if current_state == 'error':
                     self.log.error(f"Step {step_index} with id {step_id} failed; cancelling invocation")
-                    invocation.cancel()
+
+                    ws_data = {
+                            "type" : "INVOCATION_FAILURE",
+                            "payload": {"message" : "Invocation failed or has error"}
+                        }
+
+                    await ws_manager.broadcast(
+                        event = "workflow_execute", 
+                        data = ws_data, 
+                        tracker_id = tracker_id
+                        )
+                    
+                    await asyncio.to_thread(invocation.cancel)
                     error_occurred = True
                     break
 
@@ -349,6 +470,18 @@ class WorkflowManager:
                 break
             if all_ok:
                 self.log.info("All steps completed successfully.")
+                
+                ws_data = {
+                    "type" : "INVOCATION_COMPLETE",
+                    "payload" : {"message" : "All steps completed successfully"}
+                }
+
+                await ws_manager.broadcast(
+                    event = "workflow_execute",
+                    data = ws_data,
+                    tracker_id = tracker_id
+                    )
+                
                 break
             
             now = time.time()
@@ -359,10 +492,27 @@ class WorkflowManager:
 
             if now > deadline:
                 self.log.error(f"Invocation timed out after {int(now - start_time)} seconds.")
-                invocation.cancel()
-                break
+                ws_data = {
+                        "type" : "INVOCATION_FAILURE",
+                        "payload": {"message" : "Invocation timed out"}
+                    }
 
-            time.sleep(2)  # polling interval 
+                await ws_manager.broadcast(
+                    event = "workflow_execute", 
+                    data = ws_data, 
+                    tracker_id = tracker_id
+                    )
+                
+                await asyncio.to_thread(invocation.cancel)
+                break
+            
+            # Adaptive polling interval based on progress made
+            if progress_made:
+                poll_interval = 1
+            else:
+                min(10, poll_interval + 1)
+
+            await asyncio.sleep(poll_interval) 
 
         return invocation_outputs
 
@@ -403,7 +553,7 @@ class WorkflowManager:
                 intermediate_outputs.append(output)
         return invocation_id, invocation_report, intermediate_outputs, final_outputs
         
-    def run_workflow(self, inputs: dict, workflow: Workflow , history: History):
+    async def run_track_workflow(self, inputs: dict, workflow: Workflow , history: History, ws_manager: SocketManager, tracker_id: str):
         """
         Start a workflow invocation, 
         track that invocation,
@@ -411,9 +561,11 @@ class WorkflowManager:
         and prepare a result
         """
         # start invocation
-        invocation = self.invoke_workflow(inputs, workflow, history) 
+        invocation = await asyncio.to_thread(
+            self.invoke_workflow, inputs = inputs, workflow = workflow, history = history
+            )
         # track invocation steps and collect outputs
-        outputs=self.track_invocation(invocation) # can set base time extenstion and max_wait here
+        outputs= await self.track_invocation(invocation, tracker_id, ws_manager) # can set base time extenstion and max_wait here
         # prepare workflow invocation results
         invocation_id, invocation_report, intermediate_outputs, final_outputs = self._make_result(invocation, outputs)
         
