@@ -1,13 +1,15 @@
 import os
 import sys
-from pydantic import BaseModel
-from fastapi import FastAPI, Request
-from app.AI.chatbot import ChatSession, initialize_session
+import asyncio
 import logging
+from pydantic import BaseModel
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from app.AI.chatbot import ChatSession, initialize_session
 
 from app.log_setup import configure_logging
 from app.api.middleware import GalaxyAPIKeyMiddleware
 from app.api.api import api_router 
+from app.api.socket_manager import ws_manager
 
 configure_logging()
 
@@ -28,7 +30,6 @@ app.add_middleware(GalaxyAPIKeyMiddleware)
 
 # Include the API router
 app.include_router(api_router, prefix="/api")
-
 
 
 @app.get("/", tags=["Root"])
@@ -87,3 +88,49 @@ async def list_tools(request: Request):
         logger.info(f'found tools: {[tool.name for tool in tools.tools]}')
         all_tools.extend([tool for tool in tools.tools])
     return {"tools": all_tools}
+
+
+@app.websocket("/ws/{tracker_id}")
+async def websocket_endpoint(websocket: WebSocket, tracker_id: str):
+    # Accept and register socket in the tracker room
+    await ws_manager.connect(websocket, tracker_id)
+    
+    # Background keepalive pinger
+    async def ping_loop():
+        try:
+            while True:
+                await asyncio.sleep(30)  
+                # Keeping shape consisitent
+                await ws_manager.broadcast( 
+                    event="ping",
+                    data={},
+                    tracker_id=tracker_id
+                )
+        except WebSocketDisconnect:
+            # Exit silently
+            pass
+        except Exception as e:
+            logger.error(f"error in websocket pinging: {e}")
+            pass
+
+    ping_task = asyncio.create_task(ping_loop())
+
+    try:
+        # Block until the client disconnects (close frame)
+        while True:
+            try:
+                # keeps the connection open
+                await websocket.receive_json()  
+            except WebSocketDisconnect:
+                break
+            except RuntimeError as e:
+                logger.info(f"RuntimeError error caused: {e} ")
+                break
+    finally:
+        ping_task.cancel()
+        try:
+            await ping_task
+        except asyncio.CancelledError as e:
+            logger.error(f"asyncio CancelledError error: {e}")
+            pass
+        await ws_manager.disconnect(websocket, tracker_id)

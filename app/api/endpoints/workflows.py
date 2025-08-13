@@ -4,8 +4,9 @@ import pathlib
 import tempfile, pathlib, shutil, re, os
 from anyio.to_thread import run_sync
 import logging
+import uuid
 
-from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.concurrency import run_in_threadpool
 from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
@@ -14,6 +15,7 @@ from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.api.schemas import workflow
+from app.api.socket_manager import ws_manager
 
 logger = logging.getLogger('workflow_endpoint')
 router = APIRouter()
@@ -68,12 +70,14 @@ async def list_workflows():
         tags=["Workflows"]
 )
 async def upload_workflow(
-        file: UploadFile = File(..., description="The Workflow ga file to upload.")
+        file: UploadFile = File(..., description="The Workflow ga file to upload."),
+        tracker_id: str | None = Query(None, description="Client-supplied tracker ID for WebSocket updates"),
 ):
     """Uploads an external workflow from a ga file into the galaxy instance."""
 
     galaxy_client = GalaxyClient(current_api_key.get())
     workflow_manager = WorkflowManager(galaxy_client)
+    tracker_id = tracker_id or str(uuid.uuid4())
 
     try:
         # Use a temporary file to handle the upload
@@ -82,8 +86,10 @@ async def upload_workflow(
             tmp_path = tmp.name
 
         # Upload the galaxt workflow into the instance
-        workflow = await run_in_threadpool(workflow_manager.upload_workflow, path = tmp_path)
-
+        workflow = await workflow_manager.upload_workflow(path = tmp_path,
+                                                          ws_manager = ws_manager, 
+                                                          tracker_id = tracker_id
+                                                          )
         os.remove(tmp_path) # Clean up the temporary file
        
         workflow_details  = await run_in_threadpool(workflow_manager.gi_object.gi.workflows.show_workflow, workflow.id)
@@ -149,7 +155,8 @@ async def execute_workflow(
     request: Request,
     dummy_input: str = Form(None, description="Dummy input to force form rendering the form input for the galaxy execution"), # Adding dummy form value to input request form.
     workflow_id: str = Path(..., description="The ID of the Galaxy workflow to execute."),
-    history_id: str = Path(..., description="The ID of the history for execution.")
+    history_id: str = Path(..., description="The ID of the history for execution."),
+    tracker_id: str | None = Query(None, description="Client-supplied tracker ID for WebSocket updates"),
 ):
     """
     Executes a workflow using input data submitted via a form.
@@ -160,8 +167,16 @@ async def execute_workflow(
 
     galaxy_client = GalaxyClient(current_api_key.get())
     workflow_manager = WorkflowManager(galaxy_client)
+    tracker_id = tracker_id or str(uuid.uuid4())
 
     try:
+        await ws_manager.broadcast(event = "workflow_execute",
+                             data = {
+                                 "type": "WORKFLOW_EXECUTE",
+                                 "payload": {"message" : "Execution started."}   
+                                },
+                             tracker_id=tracker_id
+        )
         form_data = await request.form()
         workflow_obj = await run_in_threadpool(workflow_manager.gi_object.workflows.get, workflow_id)
         history_obj = await run_in_threadpool(workflow_manager.gi_object.histories.get, history_id)
@@ -169,7 +184,7 @@ async def execute_workflow(
 
         # Reconstruct the 'inputs' dictionary for BioBlend
         inputs = {}
-        steps = workflow_details['steps']
+        steps: dict = workflow_details['steps']
         for step_id, step_details in steps.items():
 
             # Check if this step is an input step and is in the form data
@@ -186,12 +201,13 @@ async def execute_workflow(
                 inputs[step_id] = form_value
 
         # Run the entire synchronous workflow execution and tracking in a thread pool
-        invocation_id, report, intermediate_outputs, final_outputs = await run_in_threadpool(
-            workflow_manager.run_workflow,
+        invocation_id, report, intermediate_outputs, final_outputs = await workflow_manager.run_track_workflow(
             inputs=inputs,
             workflow=workflow_obj,
-            history=history_obj
-        )
+            history=history_obj,
+            ws_manager = ws_manager,
+            tracker_id = tracker_id
+            )
 
         # Format the outputs using Pydantic schemas
         intermediate_outputs_formatted = []
@@ -201,6 +217,7 @@ async def execute_workflow(
             if isinstance(ds, HistoryDatasetAssociation):
                 final_outputs_formatted.append(
                             {
+                            "type" : "dataset",
                             "id": ds.id,
                             "name": ds.name,
                             "visible": ds.visible,
@@ -211,6 +228,7 @@ async def execute_workflow(
             elif isinstance(ds, HistoryDatasetCollectionAssociation):
                 final_outputs_formatted.append(
                         {
+                            "type" : "collection",
                             "id": ds.id,
                             "name": ds.name,
                             "visible": ds.visible,
@@ -269,6 +287,14 @@ async def execute_workflow(
                 "intermediate_outputs": intermediate_outputs_formatted
             }
     except Exception as e:
+        await ws_manager.broadcast(
+            event= "workflow_execute",
+            data = {
+                "type": "WORKFLOW_FAILURE",
+                "payload" : f"Workflow execution failed: {e}"
+            },
+            tracker_id = tracker_id
+        )
         # Provide a detailed error message for debugging
         raise HTTPException(status_code=500, detail=f"Workflow execution failed: {e}")
     
