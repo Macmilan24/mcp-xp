@@ -27,6 +27,11 @@ class GalaxyAPIKeyMiddleware(BaseHTTPMiddleware):
 
 
     async def dispatch(self, request: Request, call_next):
+        
+        public_paths = {"/docs", "/redoc", "/openapi.json"}
+        if request.url.path in public_paths or request.url.path.startswith("/static/"):
+            return await call_next(request)
+        
         api_key = request.headers.get("USER-API-KEY")
         if not api_key:
             self.log.error("missing USER_API_KEY header")
