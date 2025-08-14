@@ -194,7 +194,7 @@ class WorkflowManager:
                         event= "workflow_upload",
                         data = {
                             "type": "TOOL_INSTALL",
-                            "payload": {"message": f"{install_result.get("message")}"}
+                            "payload": {"message": f"{install_result.get('message')}"}
                         },
                         tracker_id = tracker_id
                     )
