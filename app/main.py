@@ -9,7 +9,7 @@ from app.AI.chatbot import ChatSession, initialize_session
 from app.log_setup import configure_logging
 from app.api.middleware import GalaxyAPIKeyMiddleware
 from app.api.api import api_router 
-from app.api.socket_manager import ws_manager
+from app.api.socket_manager import ws_manager, SocketMessageEvent
 
 configure_logging()
 
@@ -102,7 +102,7 @@ async def websocket_endpoint(websocket: WebSocket, tracker_id: str):
                 await asyncio.sleep(30)  
                 # Keeping shape consisitent
                 await ws_manager.broadcast( 
-                    event="ping",
+                    event=SocketMessageEvent.ping,
                     data={},
                     tracker_id=tracker_id
                 )

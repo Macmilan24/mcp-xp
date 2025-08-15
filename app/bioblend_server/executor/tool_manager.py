@@ -20,7 +20,7 @@ from bioblend.galaxy.objects.wrappers import Job, History, Tool, Dataset
 
 from app.bioblend_server.executor.form_generator import ToolFormGenerator
 from app.bioblend_server.executor.data_manager import DataManager
-from app.api.socket_manager import SocketManager
+from app.api.socket_manager import SocketManager, SocketMessageEvent, SocketMessageType
 
 class ToolManager:
     """
@@ -336,8 +336,8 @@ class ToolManager:
                 self.log.info(f"Job {job_id} transitioned to {current_state}")
                 
                 await ws_manager.broadcast(
-                    event = "tool_execute",
-                    data = {"type": "JOB_UPDATE",
+                    event = SocketMessageEvent.tool_execute,
+                    data = {"type": SocketMessageType.JOB_UPDATE,
                         "payload" : {
                             "job_id": job_id,
                             "status" : current_state
@@ -354,9 +354,9 @@ class ToolManager:
             if current_state == "ok":
                 self.log.info("Job execution complete.")
                 await ws_manager.broadcast(
-                    event = "tool_execute",
+                    event = SocketMessageEvent.tool_execute,
                     data = {
-                        "type": "JOB_COMPLETE",
+                        "type": SocketMessageType.JOB_COMPLETE,
                         "data" : {"message": "Job execution complete." }
                     },
                     tracker_id=tracker_id
@@ -366,9 +366,9 @@ class ToolManager:
 
             if current_state in {'error', 'cancelled'}:
                 await ws_manager.broadcast(
-                    event = "tool_execute",
+                    event = SocketMessageEvent.tool_execute,
                     data = {
-                        "type": "JOB_FAILURE",
+                        "type": SocketMessageType.JOB_FAILURE,
                         "data" : {"message": "Job execution cancelled or failed." }
                     },
                     tracker_id=tracker_id
@@ -385,9 +385,9 @@ class ToolManager:
                     
                     self.log.warning(f"Job {job_id} cancelled due to timeout.")
                     await ws_manager.broadcast(
-                        event = "tool_execute",
+                        event = SocketMessageEvent.tool_execute,
                         data = {
-                        "type": "JOB_FAILURE",
+                        "type": SocketMessageType.JOB_FAILURE,
                         "data" : {"message": "Job cancelled due to timeout." }
                         },
                         tracker_id=tracker_id
@@ -396,9 +396,9 @@ class ToolManager:
                 except Exception as e:
                     self.log.warning(f"Failed to cancel job {job_id}: {e}")
                     await ws_manager.broadcast(
-                        event = "tool_execute",
+                        event = SocketMessageEvent.tool_execute,
                         data = {
-                        "type": "JOB_FAILURE",
+                        "type": SocketMessageType.JOB_FAILURE,
                         "data" : {"message": f"Job execution failed: {e}"}
                         },
                         tracker_id=tracker_id
@@ -475,9 +475,9 @@ class ToolManager:
 
         self.log.info(f"Started job {job_id} for tool {tool_id!r}")
         await ws_manager.broadcast(
-            event = "tool_execute",
+            event = SocketMessageEvent.tool_execute,
             data = {
-                "type": "TOOL_EXECUTE",
+                "type": SocketMessageType.TOOL_EXECUTE,
                 "payload": {"message": "Execution started."}
             },
             tracker_id = tracker_id

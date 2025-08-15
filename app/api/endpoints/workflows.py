@@ -15,7 +15,7 @@ from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.api.schemas import workflow
-from app.api.socket_manager import ws_manager
+from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessageType
 
 logger = logging.getLogger('workflow_endpoint')
 router = APIRouter()
@@ -170,9 +170,9 @@ async def execute_workflow(
     tracker_id = tracker_id or str(uuid.uuid4())
 
     try:
-        await ws_manager.broadcast(event = "workflow_execute",
+        await ws_manager.broadcast(event = SocketMessageEvent.workflow_execute,
                              data = {
-                                 "type": "WORKFLOW_EXECUTE",
+                                 "type": SocketMessageType.WORKFLOW_EXECUTE,
                                  "payload": {"message" : "Execution started."}   
                                 },
                              tracker_id=tracker_id
@@ -288,9 +288,9 @@ async def execute_workflow(
             }
     except Exception as e:
         await ws_manager.broadcast(
-            event= "workflow_execute",
+            event= SocketMessageEvent.workflow_execute,
             data = {
-                "type": "WORKFLOW_FAILURE",
+                "type": SocketMessageType.WORKFLOW_FAILURE,
                 "payload" : f"Workflow execution failed: {e}"
             },
             tracker_id = tracker_id
