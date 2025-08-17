@@ -435,13 +435,16 @@ class ToolManager:
         job_details= await asyncio.to_thread(
             self.gi_object.gi.jobs.show_job, job_id= job.id, full_details=True
             )
-        
+        message = {
+            "stdout": job_details.get("stdout", None),
+            "stderr": job_details.get("stderr", None),
+            "error": job_details.get("error_message", None) if job.state == "error" else None,
+        }
+
         return {
             "dataset": datasets,
             "state": job.state,
-            "stdout": job_details.get("stdout", None),
-            "stderr": job_details.get("stderr", None),
-            "error": job_details.get("error_message") if job.state == "error" else None,
+            "message": {k: v for k, v in message.items() if v},  # Ignore empty ones
         }
     
     # Core executor

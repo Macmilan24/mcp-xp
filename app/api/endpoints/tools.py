@@ -143,9 +143,7 @@ async def execute_tool(
         return ToolExecutionResponse(
                     state = result["state"],
                     outputs = output_datasets,
-                    stdout = result["stdout"],
-                    stderr = result["stderr"],
-                    error_message = result["error"]
+                    message = result["message"]
                     )
     
     except Exception as e:
