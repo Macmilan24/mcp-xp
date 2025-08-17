@@ -416,6 +416,7 @@ class WorkflowManager:
                     ws_data = {
                         "type" : SocketMessageType.INVOCATION_STEP_UPDATE,
                         "payload" : {
+                            "workflow_steps": num_steps,
                             "step_index" : step_index,
                             "step_id" : step_id,
                             "status" : current_state 
