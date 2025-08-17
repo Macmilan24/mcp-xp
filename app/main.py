@@ -4,6 +4,7 @@ import asyncio
 import logging
 from pydantic import BaseModel
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.openapi.utils import get_openapi
 from app.AI.chatbot import ChatSession, initialize_session
 
 from app.log_setup import configure_logging
@@ -20,16 +21,54 @@ sessions = {}
 class MessageRequest(BaseModel):
     message: str
 
-app = FastAPI(
-    title="Galaxy API",
-    description="An API to dynamically interact with Galaxy and Galaxy agent",
-)
+APP_DESCRIPTION = """
+This FastAPI application provides a RESTful API for dynamically interacting with the Galaxy platform and the Galaxy Agent.
+It supports operations such as executing Galaxy tools and workflows, managing history and datasets, and coordinating tasks through the agent.
+
+All requests to this API require authentication via the USER-API-KEY header.
+This key uniquely identifies the user and ensures secure access to Galaxy resources.
+Requests without a valid key will be rejected.
+"""
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    # Generate default schema
+    openapi_schema = get_openapi(
+        title="Galaxy API",
+        version="1.0.0",
+        description= APP_DESCRIPTION,
+        routes=app.routes,
+    )
+
+    # Add global security scheme for API key in header
+    openapi_schema["components"]["securitySchemes"] = {
+        "APIKeyHeader": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "USER-API-KEY",
+        }
+    }
+
+    # Apply this scheme globally, every endpoint in docs will require it
+    openapi_schema["security"] = [{"APIKeyHeader": []}]
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app = FastAPI()
+
 
 # Add middleware
 app.add_middleware(GalaxyAPIKeyMiddleware)
 
 # Include the API router
 app.include_router(api_router, prefix="/api")
+
+# Override FastAPI’s OpenAPI generator
+app.openapi = custom_openapi
 
 
 @app.get("/", tags=["Root"])
