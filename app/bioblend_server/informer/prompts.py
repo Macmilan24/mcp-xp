@@ -190,3 +190,12 @@ No matches
 **Invocations**: {invocations}
 
 """
+
+EXTRACT_KEY_WORD="""
+Extract the main keywords from the following query for a fuzzy search in a Galaxy platform(tool/workflow/dataset/invocation) database. 
+Return a single Python list of a combination of keywords that can potentially be used to get search results for to the inputed query.
+
+Input query: "{query}"
+
+Output (Python list of keywords): []
+"""
