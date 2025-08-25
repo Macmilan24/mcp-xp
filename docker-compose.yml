@@ -1,0 +1,45 @@
+services:
+  app:
+    build: 
+      context: .
+    platform: linux/amd64
+    container_name: mcp-app
+    env_file:
+      - .env
+    environment:
+      - REDIS_PORT=${REDIS_PORT:-6389}
+      - QDRANT_CLIENT=${QDRANT_CLIENT:-http://localhost:6555}
+    ports:
+      - "${PORT:-8000}:8000"
+    depends_on:
+      - redis
+      - qdrant
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    platform: linux/amd64
+    container_name: redis
+    command: ["redis-server", "--port", "6389"]
+    ports:
+      - "6389:6389"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant
+    platform: linux/amd64
+    container_name: qdrant
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6555
+      - QDRANT__SERVICE__GRPC_PORT=6556
+    ports:
+      - "6555:6555"  # HTTP
+      - "6556:6556"  # gRPC
+    volumes:
+      - vectordata:/qdrant/storage
+    restart: unless-stopped
+volumes:
+  vectordata:
+  redis_data:
