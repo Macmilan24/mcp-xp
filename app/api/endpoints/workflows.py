@@ -1,12 +1,11 @@
 from sys import path
 path.append('.')
-import pathlib
 import tempfile, pathlib, shutil, re, os
 from anyio.to_thread import run_sync
 import logging
 import uuid
 
-from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.concurrency import run_in_threadpool
 from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
@@ -200,6 +199,8 @@ async def execute_workflow(
             elif step_details['type'] == 'parameter_input':
                 inputs[step_id] = form_value
 
+        logger.info(f"inputs applied: {inputs}")
+
         # Run the entire synchronous workflow execution and tracking in a thread pool
         invocation_id, report, intermediate_outputs, final_outputs = await workflow_manager.run_track_workflow(
             inputs=inputs,
@@ -216,7 +217,7 @@ async def execute_workflow(
         for ds in final_outputs:
             if isinstance(ds, HistoryDatasetAssociation):
                 final_outputs_formatted.append(
-                            {
+                        {
                             "type" : "dataset",
                             "id": ds.id,
                             "name": ds.name,
@@ -250,7 +251,8 @@ async def execute_workflow(
         for ds in intermediate_outputs:
             if isinstance(ds, HistoryDatasetAssociation):
                 intermediate_outputs_formatted.append(
-                            {
+                        {
+                            "type" : "dataset",
                             "id": ds.id,
                             "name": ds.name,
                             "visible": ds.visible,
@@ -261,6 +263,7 @@ async def execute_workflow(
             elif isinstance(ds, HistoryDatasetCollectionAssociation):
                 intermediate_outputs_formatted.append(
                         {
+                            "type" : "collection",
                             "id": ds.id,
                             "name": ds.name,
                             "visible": ds.visible,
@@ -334,52 +337,3 @@ async def get_workflow_details(
     except Exception as e:
         # detailed error responses
         raise HTTPException(status_code = 500 , detail= f'Show workflow failed {e}')
-
-
-def _rmtree_sync(path: pathlib.Path):
-    shutil.rmtree(path, ignore_errors=True)
-
-# TODO: this needs an installation on galaxy instance side, to support pdf downloads
-@router.get(
-    "/{workflow_id}/invocation_pdf",
-    response_class = FileResponse,
-    summary= "Get invocation pdf report",
-    tags=["Invocation", "Workflows"]
-)
-async def invocation_report_pdf(
-    workflow_id: str = Path(..., description="The ID of the Galaxy workflow."),
-    invocation_id: str = Query(..., description="The ID of the invocation from a certain workflow")
-):
-
-    galaxy_client = GalaxyClient(current_api_key.get())
-    workflow_manager = WorkflowManager(galaxy_client)
-
-    tmpdir = tempfile.mkdtemp(prefix="galaxy_pdf_")
-    tmpdir_path = pathlib.Path(tmpdir)
-    try:
-        # get workflow object 
-        workflow_obj = await run_in_threadpool(
-            workflow_manager.gi_object.workflows.get, workflow_id
-        )
-
-        pdf_report_name = re.sub(r'[\\/*?:"<>|]', '', f"{workflow_obj.name}_invocation_report.pdf")
-        pdf_path = tmpdir_path / pdf_report_name
-
-        await run_in_threadpool(
-            workflow_manager.gi_object.gi.invocations.get_invocation_report_pdf,
-            invocation_id=invocation_id,
-            file_path=str(pdf_path)
-        )
-        background = BackgroundTasks()
-        background.add_task(run_sync, _rmtree_sync, tmpdir)
-
-        return FileResponse(
-            path=pdf_path,
-            filename=pdf_report_name,
-            media_type="application/octet-stream",
-            background=background
-        )
-    except Exception as exc:
-        # Clean up immediately on error
-        await run_sync(_rmtree_sync, tmpdir)
-        raise HTTPException(status_code=500, detail=f"Failed to get PDF invocation report: {exc}")

@@ -188,7 +188,7 @@ class WorkflowManager:
                 # Since reloading specific tools is not working, gone with refreshing the full toolbox after all the tools are installed 
                 # self.gi_object.gi.tools.reload(step['tool_id'])
 
-                if isinstance(dict, install_result):
+                if isinstance(install_result, dict):
                     self.log.info(f"status: {install_result.get('status')}, message: {install_result.get('message')}")
                     await ws_manager.broadcast(
                         event= SocketMessageEvent.workflow_upload,
@@ -199,7 +199,7 @@ class WorkflowManager:
                         tracker_id = tracker_id
                     )
 
-                elif isinstance(list, install_result):
+                elif isinstance(install_result, list):
                     for repo_info in install_result:
                         status = repo_info.get('status', 'unknown')
                         error_msg = repo_info.get('error_message', 'None') if status != 'installed' else 'None'
@@ -291,7 +291,7 @@ class WorkflowManager:
         # Pre-fetch XML definitions for all involved tools
         for tool_id in input_tools:
             try:
-                xml = self.tool_manager.get_tool_xml(tool_id)
+                xml = asyncio.run(self.tool_manager.get_tool_xml(tool_id))
                 if xml:
                     tool_xml_cache[tool_id] = ET.fromstring(xml)
                 else:
