@@ -291,7 +291,8 @@ class GalaxyInformer:
         try:
             keywords_str = await self.get_response(prompt)
             self.logger.info("Extracted keywords for fuzzy search.")
-            return self._parse_list_from_llm(keywords_str)
+            result_list = keywords_str if isinstance(keywords_str, list) else self._parse_list_from_llm(keywords_str)
+            return result_list
         except Exception as e:
             self.logger.error(f"Failed to generate keywords from LLM: {e}")
             return [query] # Fallback to the original query
@@ -613,20 +614,3 @@ class GalaxyInformer:
                 response_details[f'found {self.entity_type} {i}'] = details
         
         return await self.generate_final_response(search_query, response_details)
-
-
-
-# To test the information retriever tool separetly.
-if __name__ == "__main__":
-    import asyncio
-    async def main():
-        user_api_key = "2b80f888032970d458302d74f6bff8ef" # demo galaxty api key
-        galaxy_client = GalaxyClient(user_api_key)
-        informer = await GalaxyInformer.create(galaxy_client, "tool")
-        input_query = """Find a tool to convert gff files to bed"""
-        information = await informer.get_entity_info(search_query=input_query)
-                                                    #   entity_id='toolshed.g2.bx.psu.edu/repos/iuc/rgrnastar/rna_star/2.7.11a+galaxy1')
-
-        print("--- Final Response ---")
-        print(information['response'])      
-    asyncio.run(main())

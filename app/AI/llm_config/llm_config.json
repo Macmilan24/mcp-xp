@@ -29,7 +29,7 @@
         },
         "gemini": {
             "base_url": "https://generativelanguage.googleapis.com/v1beta/models",
-            "model": "gemini-2.0-flash:generateContent",
+            "model": "gemini-2.0-flash",
             "embedding_model": "embedding-001",
             "provider": "gemini",
             "temperature": 0.7,
