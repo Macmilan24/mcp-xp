@@ -17,9 +17,62 @@ import shutil
 from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.executor.data_manager import DataManager, CollectionType
-from app.api.schemas import dataset
+from app.bioblend_server.executor.history_manager import HistoryManager
+from app.api.schemas import dataset, history
 
 router = APIRouter()
+
+@router.get(
+    "/",
+    response_model = List[history.HistoryResponse],
+    summary="List all Galaxy histories",
+    tags=["Histories & Data"]
+)
+async def list_histories():
+    """
+    Retrieve a list of all Galaxy histories for the current API key.
+    """
+    galaxy_client = GalaxyClient(current_api_key.get())
+    history_manager = HistoryManager(galaxy_client)
+
+    try:
+        histories = await run_in_threadpool(history_manager.list_history)
+        return [
+                history.HistoryResponse(
+                    id= h.id,
+                    name= h.name,
+                    )
+            for h in histories
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list histories: {e}")
+
+
+@router.post(
+    "/create",
+    response_model = history.HistoryResponse,
+    summary="Create a new Galaxy history",
+    tags=["Histories & Data"]
+)
+async def create_history(
+    name: str | None = Query(None, description="Name of the new history")
+):
+    """
+    Create a new Galaxy history.
+    """
+    galaxy_client = GalaxyClient(current_api_key.get())
+    history_manager = HistoryManager(galaxy_client)
+
+    try:
+        new_history = await run_in_threadpool(
+            history_manager.create, name
+        )
+        return history.HistoryResponse(
+            id= new_history.id,
+            name = new_history.name
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create history: {e}")
 
 @router.post(
     "/{history_id}/upload-file",

@@ -39,10 +39,9 @@ class InformerManager:
         load_dotenv()
         configure_logging()
         try:
-            self.logger.info("Qdrant client")
             # Initialize Qdrant client asynchronously if possible, or run in executor
-            self.client = QdrantClient(os.environ.get('QDRANT_CLIENT', 'http://localhost:6333'))
-            self.logger.info("initialized")
+            self.client = QdrantClient(os.getenv('QDRANT_CLIENT'))
+            self.logger.info("Qdrant Client initialized")
 
             with open('app/AI/llm_config/llm_config.json', 'r') as f:
                 model = json.load(f)

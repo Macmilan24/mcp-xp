@@ -5,21 +5,22 @@ from typing import Dict, List, Any, Optional
 import os
 from dotenv import load_dotenv
 from rapidfuzz import process, fuzz
-import requests
+import httpx
 import re
+import asyncio
 
 load_dotenv()
 
 from sys import path
 path.append('.')
 
+from starlette.datastructures import FormData
 from app.bioblend_server.galaxy import GalaxyClient
 from bioblend.galaxy.objects.wrappers import Job, History, Tool, Dataset
 
 from app.bioblend_server.executor.form_generator import ToolFormGenerator
 from app.bioblend_server.executor.data_manager import DataManager
-
-
+from app.api.socket_manager import SocketManager, SocketMessageEvent, SocketMessageType
 
 class ToolManager:
     """
@@ -73,7 +74,7 @@ class ToolManager:
         tool= self.gi_object.gi.tools.show_tool(tool_id=tool_id, io_details=True)
         return tool['inputs']
     
-    def get_tool_xml(self, tool_id: str) -> str:
+    async def get_tool_xml(self, tool_id: str) -> str:
             """Retrieve tool XML to build dynamic HTML form for tool execution by making a direct api call."""
             try:
                 api_key = self.galaxy_client.user_api_key
@@ -85,9 +86,10 @@ class ToolManager:
                 _url = f"{base_url.rstrip('/')}/api/tools/{tool_id}/raw_tool_source"
                 _headers = {"x-api-key":api_key}
 
-                response = requests.get(url= _url, headers= _headers)
-                response.raise_for_status()
-                return response.text  # Return raw XML, not JSON
+                async with httpx.AsyncClient(timeout=10) as client:
+                    response = await client.get(url=_url, headers=_headers)
+                    response.raise_for_status()
+                    return response.text  # Return raw XML, not JSON
             except Exception as e:
                 self.log.error(f"Error getting tool XML: {e}")
                 return None
@@ -95,8 +97,8 @@ class ToolManager:
     def remove_dash(self, param_dict: Dict):
         """Remove the "--" sign from galaxy tool arguments to get the correct input parameter key"""
         return {re.sub(r'^--', '', k): v for k, v in param_dict.items()}
-    
-    def transform_form_data(self, form_data, tool_id):
+   
+    def transform_form_data(self, form_data: FormData, tool_id: str):
         """
         Transform HTML form data into bioblend-compatible input structure.
         
@@ -295,11 +297,11 @@ class ToolManager:
         return repeats
 
         # Build tool html form from the tools xml.
-    def build_html_form(self, tool: Tool, history: History) -> str | None:
+    async def build_html_form(self, tool: Tool, history: History) -> str | None:
         """
         Builds a dynamic HTML form from the tool's XML definition.
         """
-        xml_str = self.get_tool_xml(tool_id= tool.id) # Get tool xml 
+        xml_str = await self.get_tool_xml(tool_id= tool.id) # Get tool xml 
         if not xml_str:
             self.log.error(f"Could not retrieve XML for tool {tool.id}")
             raise
@@ -309,38 +311,102 @@ class ToolManager:
         html =  generator.build_html()
         return html
     
-    def wait(self, job_id, initial_wait: int = 60 , base_extension: int = 20):
+    async def wait(self, 
+            job_id: str,
+            ws_manager: SocketManager,
+            tracker_id: str,
+            initial_wait: int = 60,
+            base_extension: int = 20
+            )-> Job:
         """Waits for a Galaxy job to finish, with dynamic timeout and progress tracking."""
 
         previous_state = None
         start_time = time.time()
         deadline = start_time + initial_wait
         max_extension = initial_wait // 2
+        polling_interval = 3
 
         while True:
-            job = self.gi_object.jobs.get(job_id)
+            job: Job = await asyncio.to_thread(
+                self.gi_object.jobs.get, id_ = job_id
+                )
             current_state = job.state
 
             if current_state != previous_state:
                 self.log.info(f"Job {job_id} transitioned to {current_state}")
+                
+                await ws_manager.broadcast(
+                    event = SocketMessageEvent.tool_execute,
+                    data = {"type": SocketMessageType.JOB_UPDATE,
+                        "payload" : {
+                            "job_id": job_id,
+                            "status" : current_state
+                        }
+                    },
+                    tracker_id = tracker_id
+                    )
+                
                 previous_state = current_state
                 # Extend deadline slightly when progress is detected
                 extension = min(base_extension, max_extension)
                 deadline = max(deadline + extension, start_time + initial_wait)
 
-            if current_state in {'ok', 'error', 'cancelled'}:
+            if current_state == "ok":
+                self.log.info("Job execution complete.")
+                await ws_manager.broadcast(
+                    event = SocketMessageEvent.tool_execute,
+                    data = {
+                        "type": SocketMessageType.JOB_COMPLETE,
+                        "data" : {"message": "Job execution complete." }
+                    },
+                    tracker_id=tracker_id
+                    )
+                     
+                break
+
+            if current_state in {'error', 'cancelled'}:
+                await ws_manager.broadcast(
+                    event = SocketMessageEvent.tool_execute,
+                    data = {
+                        "type": SocketMessageType.JOB_FAILURE,
+                        "data" : {"message": "Job execution cancelled or failed." }
+                    },
+                    tracker_id=tracker_id
+                    )
+                
                 break
 
             if time.time() > deadline:
                 self.log.error(f"Job {job_id} timed out after {int(time.time() - start_time)} seconds.")
                 try:
-                    self.gi_object.gi.jobs.cancel_job(job_id=job_id)
+                    await asyncio.to_thread(
+                        self.gi_object.gi.jobs.cancel_job, job_id = job_id
+                        )
+                    
                     self.log.warning(f"Job {job_id} cancelled due to timeout.")
+                    await ws_manager.broadcast(
+                        event = SocketMessageEvent.tool_execute,
+                        data = {
+                        "type": SocketMessageType.JOB_FAILURE,
+                        "data" : {"message": "Job cancelled due to timeout." }
+                        },
+                        tracker_id=tracker_id
+                    )
+
                 except Exception as e:
                     self.log.warning(f"Failed to cancel job {job_id}: {e}")
-                break
+                    await ws_manager.broadcast(
+                        event = SocketMessageEvent.tool_execute,
+                        data = {
+                        "type": SocketMessageType.JOB_FAILURE,
+                        "data" : {"message": f"Job execution failed: {e}"}
+                        },
+                        tracker_id=tracker_id
+                    )
 
-            time.sleep(3)  # polling interval
+                break
+            
+            await asyncio.sleep(polling_interval)  # polling interval
 
         return job
 
@@ -364,50 +430,73 @@ class ToolManager:
         )
         return payload['state_inputs']
 
-    def _make_result(self, job: Job, datasets: list[Dataset]) -> Dict[str, Any]:
+    async def _make_result(self, job: Job, datasets: list[Dataset]) -> Dict[str, Any]:
 
-        job_details= self.gi_object.gi.jobs.show_job(job_id= job.id, full_details=True)
-        
+        job_details= await asyncio.to_thread(
+            self.gi_object.gi.jobs.show_job, job_id= job.id, full_details=True
+            )
+        message = {
+            "stdout": job_details.get("stdout", None),
+            "stderr": job_details.get("stderr", None),
+            "error": job_details.get("error_message", None) if job.state == "error" else None,
+        }
+
         return {
             "dataset": datasets,
             "state": job.state,
-            "stdout": job_details.get("stdout", None),
-            "stderr": job_details.get("stderr", None),
-            "error": job_details.get("error_message") if job.state == "error" else None,
+            "message": {k: v for k, v in message.items() if v},  # Ignore empty ones
         }
     
     # Core executor
-    def run( 
+    async def run( 
         self,
         tool_id: str,
         history: History,
-        inputs: Optional[Dict[str, Any]] = None,
+        inputs: Dict[str, Any],
+        ws_manager: SocketManager,
+        tracker_id:str
         ):
         """
         Run a tool and return a structured result.
         """
         inputs = inputs or {}
+
         # Build the tool payload 
         # (validation step to convert name: value pairs from the io details into state input)
+        tool_payload = await asyncio.to_thread(
+            self._build_payload, tool_id=tool_id, history = history, inputs = inputs
+            )
+        
+        #  Run
+        tool_execution= await asyncio.to_thread(
+            self.gi_object.gi.tools.run_tool, tool_id= tool_id, history_id=history.id, tool_inputs = tool_payload
+            )
 
-        tool_payload = self._build_payload(tool_id, history, inputs)
-        # pprint(tool_payload)
-        # Run
-        tool: Tool= self.gi_object.tools.get(tool_id, io_details= True)
-        tool_execution= self.gi_object.gi.tools.run_tool(tool_id= tool.id, history_id=history.id, tool_inputs = tool_payload )
-        # pprint(tool_execution)
         # The job id
         job_id = tool_execution['jobs'][0]['id']
         outputs = tool_execution['outputs']
 
+        self.log.info(f"Started job {job_id} for tool {tool_id!r}")
+        await ws_manager.broadcast(
+            event = SocketMessageEvent.tool_execute,
+            data = {
+                "type": SocketMessageType.TOOL_EXECUTE,
+                "payload": {"message": "Execution started."}
+            },
+            tracker_id = tracker_id
+        )
+
+        # Track job until it complete before making result
+        job= await self.wait(job_id, ws_manager=ws_manager, tracker_id=tracker_id) 
+
         output_datasets: List[Dataset] = []
 
         for output in outputs:
-            dataset =  self.gi_object.datasets.get(output['id'])
+            dataset =  await asyncio.to_thread(
+                self.gi_object.datasets.get, id_ = output['id']
+                )
             output_datasets.append(dataset)
 
-        self.log.info(f"Started job {job_id} for tool {tool_id!r}")
+        final_result = await self._make_result(job, output_datasets)
 
-        job=self.wait(job_id) # Wait for job to complete before making result
-        return self._make_result(job, output_datasets)
-  
+        return final_result

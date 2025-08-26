@@ -1,18 +1,22 @@
 import re
+import os
 import ast
 from rapidfuzz import process, fuzz
 import json
 import numpy as np
 import logging
 import redis
-import requests
+import httpx
+from dotenv import load_dotenv
 import sys
+
+load_dotenv()
 sys.path.append('.')
 
 from app.log_setup import configure_logging
 from app.bioblend_server.galaxy import GalaxyClient
 from app.AI.provider.gemini_provider import GeminiProvider
-from app.bioblend_server.informer.prompts import RETRIEVE_PROMPT, SELECTION_PROMPT, INVOCATION_PROMPT
+from app.bioblend_server.informer.prompts import RETRIEVE_PROMPT, SELECTION_PROMPT, INVOCATION_PROMPT, EXTRACT_KEY_WORD
 from app.AI.llm_config._base_config import LLMModelConfig
 
 
@@ -67,7 +71,7 @@ class GalaxyInformer:
 
         gemini_cfg = LLMModelConfig(model_config_data['providers']['gemini'])
         self.llm = GeminiProvider(model_config=gemini_cfg)
-        self.redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+        self.redis_client = redis.Redis(host='localhost', port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
         self.manager = await InformerManager.create()
         return self
 
@@ -79,6 +83,30 @@ class GalaxyInformer:
         if isinstance(message, str):
             message = [{"role": "user", "content": message}]
         return await self.llm.get_response(message)
+    
+    async def run_get_request(self, url, headers, params):
+        """
+        Sends an asynchronous HTTP GET request to the specified URL with the given headers and query parameters.
+        """
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url=url, headers=headers, params=params)
+            response.raise_for_status()
+        return response.json()
+    
+    async def run_post_request(self, url, headers=None, data=None, json_data=None, params=None):
+        """
+        Makes an asynchronous HTTP POST request using httpx.
+        """
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                url=url,
+                headers=headers,
+                data=data,
+                json=json_data,
+                params=params
+            )
+            response.raise_for_status()
+            return response.json()
     
     def extract_filename(self, path: str) -> str:
         """
@@ -259,14 +287,7 @@ class GalaxyInformer:
         """
         Uses an LLM to extract relevant keywords for a fuzzy search.
         """
-        prompt = f"""
-        Extract the main keywords from the following query for a fuzzy search in a Galaxy platform(tool/workflow/dataset/invocation) database. 
-        Return a single Python list of a combination of keywords that can potentially be used to get search results for to the inputed query.
-        
-        Input query: "{query}"
-        
-        Output (Python list of keywords): []
-        """
+        prompt = EXTRACT_KEY_WORD.format(query = query)
         try:
             keywords_str = await self.get_response(prompt)
             self.logger.info("Extracted keywords for fuzzy search.")
@@ -418,7 +439,7 @@ class GalaxyInformer:
             for item in unique_fuzzy_results:
                 combined[item[self._entity_config[self.entity_type]['id_field']]] = item
             return dict(list(combined.items())[:3])
-
+        
     def _show_tool(self, tool_id):
         """
         Replacement for bioblends show_tool function for richer information retrieval, 
@@ -429,8 +450,7 @@ class GalaxyInformer:
         params= {'history_id': self.gi_user.histories.get_histories()[-1]['id']}
 
         try:
-            response= requests.get(url=url,headers=headers,params=params)
-            tool=response.json()
+            tool = asyncio.run(self.run_get_request(url=url, headers=headers, params=params))
         except Exception as e:
             self.logger.error(f'error fetching toolds via direct api call: {e}')
             raise 
