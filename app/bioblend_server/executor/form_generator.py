@@ -10,32 +10,36 @@ from app.bioblend_server.executor.data_manager import DataManager
 
 class ToolFormGenerator:
     """Parses a Galaxy tool's XML definition to generate an HTML form."""
-    
-    def __init__(self, xml_string: str, data_manager: DataManager, tool: Tool, history: History):
+
+    def __init__(
+        self, xml_string: str, data_manager: DataManager, tool: Tool, history: History
+    ):
         self.root = ET.fromstring(xml_string)
         self.tool = tool
         self.history = history
         self.data_manger = data_manager
-        self.datasets, self.dataset_collections = self.data_manger.list_contents(self.history)
+        self.datasets, self.dataset_collections = self.data_manger.list_contents(
+            self.history
+        )
         self.tool_name = self.tool.name
         self.script_blocks = set()
         self.log = logging.getLogger(__class__.__name__)
-        self.upload_form_counter = 0 
+        self.upload_form_counter = 0
         self.has_upload_forms = False  # To flag to track if we have upload forms
-        
+
     def build_html(self) -> str:
         """Generates the full HTML form."""
 
         self.log.info(f"building html form for tool: {self.tool_name}")
-        
+
         try:
-            form_body = self._traverse(self.root.find('inputs'))
+            form_body = self._traverse(self.root.find("inputs"))
             script_content = "\n".join(self.script_blocks)
-            
+
             # Add upload toggle script if we have upload forms
             if self.has_upload_forms:
                 script_content += self._add_upload_toggle_script()
-            
+
             return f"""
                     <form id="tool-form" class="galaxy-form" action="/api/tools/{self.tool.id}/histories/{self.history.id}/execute" method="POST">
                         {form_body}
@@ -55,28 +59,32 @@ class ToolFormGenerator:
 
         html_parts = []
         for child in element:
-            if child.tag == 'param':
+            if child.tag == "param":
                 html_parts.append(self._build_param(child))
-            elif child.tag == 'section':
+            elif child.tag == "section":
                 html_parts.append(self._build_section(child))
-            elif child.tag == 'conditional':
+            elif child.tag == "conditional":
                 html_parts.append(self._build_conditional(child))
             # Repeats are more complex and best handled with a frontend framework
             # but this provides a starting point.
         return "\n".join(html_parts)
-        
+
     def _build_param(self, param) -> str:
         """Builds HTML for a single <param> element."""
 
-        param_type = param.get('type')
-        name = param.get('name')
-        arg_key = param.get('argument') or name
-        label = param.get('label', name)
-        help_text = param.find('help')
-        help_html = f'<small class="form-help-text">{escape(help_text.text.strip())}</small>' if help_text is not None and help_text.text else ''
-        input_html = ''
-        
-        if param_type == 'data':
+        param_type = param.get("type")
+        name = param.get("name")
+        arg_key = param.get("argument") or name
+        label = param.get("label", name)
+        help_text = param.find("help")
+        help_html = (
+            f'<small class="form-help-text">{escape(help_text.text.strip())}</small>'
+            if help_text is not None and help_text.text
+            else ""
+        )
+        input_html = ""
+
+        if param_type == "data":
             # Generate select options for existing datasets
             options = []
             for ds in self.datasets:
@@ -84,12 +92,12 @@ class ToolFormGenerator:
                 option = f'<option value="{ds["id"]}">{escape(label)}</option>'
                 options.append(option)
             options = "".join(options)
-            
+
             # Create unique ID for this upload form
             self.upload_form_counter += 1
             unique_id = f"upload-file-form-{self.upload_form_counter}"
             self.has_upload_forms = True
-            
+
             # Create upload button and hidden form
             upload_button = f'<button type="button" class="galaxy-upload-btn" data-target="{unique_id}">Upload File</button>'
             upload_form = f"""
@@ -100,9 +108,9 @@ class ToolFormGenerator:
                 </form>
             </div>
             """
-            
+
             input_html = f'<select name="{arg_key}" class="form-control">{options}</select>{upload_button}{upload_form}'
-            
+
         elif param_type == "data_collection":
             # Generate select options for existing collections
             options = []
@@ -115,7 +123,7 @@ class ToolFormGenerator:
             self.upload_form_counter += 1
             unique_id = f"upload-collection-form-{self.upload_form_counter}"
             self.has_upload_forms = True
-            
+
             # Create upload button and hidden form
             upload_button = f'<button type="button" class="galaxy-upload-btn" data-target="{unique_id}">Upload Collection</button>'
             upload_form = f"""
@@ -133,50 +141,58 @@ class ToolFormGenerator:
                 </form>
             </div>
             """
-            
+
             input_html = f'<select name="{arg_key}" class="form-control">{options}</select>{upload_button}{upload_form}'
-            
-        elif param_type == 'text':
-            value = param.get('value', '')
+
+        elif param_type == "text":
+            value = param.get("value", "")
             input_html = f'<input type="text" name="{arg_key}" value="{escape(value)}" class="form-control">'
-            
-        elif param_type in ('integer', 'float'):
-            value = param.get('value', '')
+
+        elif param_type in ("integer", "float"):
+            value = param.get("value", "")
             input_html = f'<input type="number" name="{arg_key}" value="{escape(value)}" class="form-control" {"step=any" if param_type == "float" else ""}>'
-            
-        elif param_type == 'boolean':
-            checked = param.get('checked', 'false').lower() == 'true'
+
+        elif param_type == "boolean":
+            checked = param.get("checked", "false").lower() == "true"
             input_html = f"""
                         <input type="hidden" name="{arg_key}" value="false">
                         <input type="checkbox" name="{arg_key}" value="true" {'checked' if checked else ''} class="form-check-input">
                         """
-            
-        elif param_type == 'select':
+
+        elif param_type == "select":
             param_options = param.find(".//options")
             if param_options is not None:
-                data_table_name = param_options.get('from_data_table')
+                data_table_name = param_options.get("from_data_table")
                 if data_table_name:
                     options = "".join(
-                            f'<option value="{escape(row["value"])}">{escape(row["name"])}</option>'
-                            for _, row in self.data_manger.get_data_table_elements(data_table_name).iterrows()
-                        )
+                        f'<option value="{escape(row["value"])}">{escape(row["name"])}</option>'
+                        for _, row in self.data_manger.get_data_table_elements(
+                            data_table_name
+                        ).iterrows()
+                    )
                 else:
                     # Handle static options within <options>
-                    options = "".join([
-                        f'<option value="{escape(opt.get("value"))}" {"selected" if opt.get("selected") else ""}>{escape(opt.text)}</option>'
-                        for opt in param_options.findall('option')
-                    ])
+                    options = "".join(
+                        [
+                            f'<option value="{escape(opt.get("value"))}" {"selected" if opt.get("selected") else ""}>{escape(opt.text)}</option>'
+                            for opt in param_options.findall("option")
+                        ]
+                    )
             else:
                 # Generate from direct <option> children
-                options = "".join([
-                    f'<option value="{escape(opt.get("value"))}" {"selected" if opt.get("selected") else ""}>{escape(opt.text)}</option>'
-                    for opt in param.findall('option')
-                ])
-            input_html = f'<select name="{arg_key}" class="form-control">{options}</select>'
-            
+                options = "".join(
+                    [
+                        f'<option value="{escape(opt.get("value"))}" {"selected" if opt.get("selected") else ""}>{escape(opt.text)}</option>'
+                        for opt in param.findall("option")
+                    ]
+                )
+            input_html = (
+                f'<select name="{arg_key}" class="form-control">{options}</select>'
+            )
+
         else:
-            return f''
-            
+            return f""
+
         return f"""
                 <div class="form-field">
                     <label for="{arg_key}" class="form-label">{escape(label)}</label>
@@ -184,11 +200,11 @@ class ToolFormGenerator:
                     {help_html}
                 </div>
                  """
-                
+
     def _build_section(self, section) -> str:
         """Builds HTML for a <section> element."""
 
-        title = section.get('title', 'Section')
+        title = section.get("title", "Section")
         body = self._traverse(section)
         return f"""
                 <fieldset class="form-section">
@@ -196,20 +212,22 @@ class ToolFormGenerator:
                     {body}
                 </fieldset>
                 """
-                
+
     def _build_conditional(self, cond) -> str:
         """Builds HTML and JS for a <conditional> element."""
 
-        cond_name = cond.get('name')
-        test_param_xml = cond.find('param')
+        cond_name = cond.get("name")
+        test_param_xml = cond.find("param")
         test_param_html = self._build_param(test_param_xml)
-        test_param_name = test_param_xml.get('name')
+        test_param_name = test_param_xml.get("name")
         cases_html = []
-        for i, when in enumerate(cond.findall('when')):
-            value = when.get('value')
+        for i, when in enumerate(cond.findall("when")):
+            value = when.get("value")
             case_body = self._traverse(when)
             # Wrapper div for each case, hidden by default
-            cases_html.append(f'<div id="case-{cond_name}-{value}" class="conditional-case" style="display: none;">{case_body}</div>')
+            cases_html.append(
+                f'<div id="case-{cond_name}-{value}" class="conditional-case" style="display: none;">{case_body}</div>'
+            )
         # Add JavaScript to control visibility
         self._add_conditional_script(cond_name, test_param_name)
         return f"""
@@ -219,7 +237,7 @@ class ToolFormGenerator:
                     {''.join(cases_html)}
                 </fieldset>
                 """
-         
+
     def _add_upload_toggle_script(self):
         """Returns the JavaScript for toggling upload forms."""
 
@@ -236,7 +254,7 @@ class ToolFormGenerator:
             });
         });
         """
-    
+
     def _add_conditional_script(self, cond_name: str, test_param_name: str):
         """Adds a JavaScript block for handling conditional logic."""
 
@@ -261,10 +279,17 @@ class ToolFormGenerator:
                 """
         self.script_blocks.add(script)
 
+
 class WorkflowFormGenerator:
     """Workflow html form generator for a galaxy workflow"""
 
-    def __init__ (self, mapped_workflow: Union[List, Dict], data_manager: DataManager, history: History, workflow: Workflow):
+    def __init__(
+        self,
+        mapped_workflow: Union[List, Dict],
+        data_manager: DataManager,
+        history: History,
+        workflow: Workflow,
+    ):
         self.mapped_workflow = mapped_workflow
         self.workflow = workflow
         self.history = history
@@ -295,48 +320,79 @@ class WorkflowFormGenerator:
         # Fetch datasets and collections once for performance.
         datasets, collections = self.data_manager.list_contents(history=self.history)
         history_id = self.history.id
-        workflow_id = self.workflow['id']
-        
-        form_parts = [f'<form class="galaxy-form" action="/api/workflows/{workflow_id}/histories/{history_id}/execute" method="POST">']
+        workflow_id = self.workflow["id"]
+
+        form_parts = [
+            f'<form class="galaxy-form" action="/api/workflows/{workflow_id}/histories/{history_id}/execute" method="POST">'
+        ]
 
         for workflow_idx, workflow_inputs in enumerate(self.mapped_workflow):
-            form_parts.append(f'<fieldset class="form-section" id="workflow-{workflow_idx}"><legend>{workflow_inputs["name"]}</legend>')
+            form_parts.append(
+                f'<fieldset class="form-section" id="workflow-{workflow_idx}"><legend>{workflow_inputs["name"]}</legend>'
+            )
 
             for _, input_info in workflow_inputs.items():
                 if not isinstance(input_info, dict):  # Skip the 'name' key
                     continue
-                
+
                 # Generate a unique field name for the input element
                 field_name = f"{input_info['step_id']}"
                 input_type = input_info.get("input_type", "")
-                
+
+                # read the new structured validation
+
+                validation = input_info.get("validation", {})
+                validation_status = validation.get("status", "not_validated")
+                validation_rules = validation.get("rules", {})
+
                 # Create the form field HTML based on the input type
                 field_html = ""
-                if input_type == "data_input":
-                    field_html = self._create_data_input(field_name, datasets)
-                elif input_type == "data_collection_input":
-                    field_html = self._create_collection_input(field_name, collections)
-                elif input_type == "parameter_input":
-                    field_html = self._create_parameter_input(field_name, input_info.get("tool_inputs", {}))
-                else:   
-                    field_html = f'<input type="text" class="form-control" name="{field_name}" placeholder="Unsupported input type: {input_type}">'
+                if validation_status == "failed":
+                    error_message = validation.get(
+                        "message", "Could not determine input"
+                    )
+                    field_html = f"<div >⚠️ <strong>Configuration Error:</strong> {error_message}</div>"
+
+                else:
+                    if input_type == "data_input":
+                        field_html = self._create_data_input(
+                            field_name, datasets, validation_rules
+                        )
+                    elif input_type == "data_collection_input":
+                        field_html = self._create_collection_input(
+                            field_name, collections
+                        )
+                    elif input_type == "parameter_input":
+                        field_html = self._create_parameter_input(
+                            field_name, input_info.get("tool_inputs", {})
+                        )
+                    else:
+                        field_html = f'<input type="text" class="form-control" name="{field_name}" placeholder="Unsupported input type: {input_type}">'
 
                 # Assemble the full field with its label and annotation
-                form_parts.append(self._assemble_form_field(field_name, input_info, field_html))
+                form_parts.append(
+                    self._assemble_form_field(field_name, input_info, field_html)
+                )
 
             form_parts.append("</fieldset>")
 
-        form_parts.append('<button type="submit" class="galaxy-submit">Run Workflow</button>')
+        form_parts.append(
+            '<button type="submit" class="galaxy-submit">Run Workflow</button>'
+        )
         form_parts.append("</form>")
 
         return "\n".join(form_parts)
 
-    def _assemble_form_field(self, field_name: str, input_info: dict, field_html: str) -> str:
+    def _assemble_form_field(
+        self, field_name: str, input_info: dict, field_html: str
+    ) -> str:
         """Helper to wrap an input element with its label and annotations."""
         label = input_info.get("Label", f"Input {field_name}")
         annotation = input_info.get("annotation", "")
-        annotation_html = f'<small class="form-help-text">{annotation}</small>' if annotation else ''
-        
+        annotation_html = (
+            f'<small class="form-help-text">{annotation}</small>' if annotation else ""
+        )
+
         return f"""
             <div class="form-field" id="field-wrapper-{field_name}">
                 <label for="{field_name}" class="form-label">{label}</label>
@@ -345,14 +401,45 @@ class WorkflowFormGenerator:
             </div>
             """
 
-    def _create_data_input(self, name: str, datasets: list) -> str:
+    def _create_data_input(
+        self, name: str, datasets: list, validation_rules: dict
+    ) -> str:
         """Creates a <select> for a single dataset input."""
-        options = ''.join([f'<option value="{opt["id"]}">{opt["name"]}</option>' for opt in datasets])
+
+        required_formats = []
+        if validation_rules and validation_rules.get("format"):
+            required_formats = validation_rules["format"].split(",")
+
+        # Filter the master list of datasets
+        filtered_datasets = datasets
+        if required_formats:
+            filtered_datasets = [
+                ds for ds in datasets if ds.get("extension") in required_formats
+            ]
+        options = "".join(
+            [
+                f'<option value="{opt["id"]}">{opt["name"]}</option>'
+                for opt in filtered_datasets
+            ]
+        )
+
+        if not options:
+            if required_formats:
+                formats_str = ", ".join(required_formats)
+                options = f'<option value="" disabled selected>No compatible datasets in history (requires: {formats_str})</option>'
+            else:
+                options = f'<option value="" disabled selected>No datasets available in this history</option>'
+
         return f'<select class="form-control" name="{name}" id="{name}" required>{options}</select>'
 
     def _create_collection_input(self, name: str, collections: list) -> str:
         """Creates a <select> for a dataset collection input."""
-        options = ''.join([f'<option value="{opt["id"]}">{opt["name"]}</option>' for opt in collections])
+        options = "".join(
+            [
+                f'<option value="{opt["id"]}">{opt["name"]}</option>'
+                for opt in collections
+            ]
+        )
         return f'<select class="form-control" name="{name}" id="{name}" required>{options}</select>'
 
     def _create_parameter_input(self, name: str, tool_inputs: dict) -> str:
@@ -371,14 +458,19 @@ class WorkflowFormGenerator:
 
         # Case 2: Select/dropdown from a list of choices with restrictions.
         if "restrictions" in tool_inputs:
-            options = ''.join([f'<option value="{opt}">{opt}</option>' for opt in tool_inputs["restrictions"]])
+            options = "".join(
+                [
+                    f'<option value="{opt}">{opt}</option>'
+                    for opt in tool_inputs["restrictions"]
+                ]
+            )
             return f'<select class="form-control" name="{name}" id="{name}" {required}>{options}</select>'
-        
+
         # Case 3: Number inputs (Integer or Float)
         if param_type == "integer":
             return f'<input type="number" class="form-control" name="{name}" id="{name}" {required}>'
         if param_type == "float":
             return f'<input type="number" step="any" class="form-control" name="{name}" id="{name}" {required}>'
-            
+
         # Case 4: Default to a simple text input
         return f'<input type="text" class="form-control" name="{name}" id="{name}" {required}>'

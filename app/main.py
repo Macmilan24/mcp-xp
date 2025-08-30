@@ -9,17 +9,21 @@ from app.AI.chatbot import ChatSession, initialize_session
 
 from app.log_setup import configure_logging
 from app.api.middleware import GalaxyAPIKeyMiddleware
-from app.api.api import api_router 
+from app.api.api import api_router
 from app.api.socket_manager import ws_manager, SocketMessageEvent
 
 configure_logging()
 
-logger= logging.getLogger('main')
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # Optional: Add project root to Python path
+logger = logging.getLogger("main")
+sys.path.append(
+    os.path.dirname(os.path.abspath(__file__))
+)  # Optional: Add project root to Python path
 sessions = {}
+
 
 class MessageRequest(BaseModel):
     message: str
+
 
 APP_DESCRIPTION = """
 This FastAPI application provides a RESTful API for dynamically interacting with the Galaxy platform and the Galaxy Agent.
@@ -30,6 +34,7 @@ This key uniquely identifies the user and ensures secure access to Galaxy resour
 Requests without a valid key will be rejected.
 """
 
+
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -38,7 +43,7 @@ def custom_openapi():
     openapi_schema = get_openapi(
         title="Galaxy API",
         version="1.0.0",
-        description= APP_DESCRIPTION,
+        description=APP_DESCRIPTION,
         routes=app.routes,
     )
 
@@ -95,13 +100,14 @@ async def get_chat_history(request: Request):
 async def send_message(request: Request, message: MessageRequest):
     """Conversate with the Galaxy Agent"""
     from app.context import current_api_key
+
     logger.info(f"Current user api: ******{current_api_key.get()[-4:]}")
 
     user_ip = request.client.host
     if user_ip not in sessions:
-            chat_session: ChatSession = await initialize_session(user_ip)
-            sessions[user_ip] = chat_session
-            # return {"error": "Chat session not initiated for this IP"}
+        chat_session: ChatSession = await initialize_session(user_ip)
+        sessions[user_ip] = chat_session
+        # return {"error": "Chat session not initiated for this IP"}
 
     chat_session = sessions[user_ip]
     response = await chat_session.respond(model_id="gemini", user_input=message.message)
@@ -113,18 +119,18 @@ async def list_tools(request: Request):
     """List MCP server tools available for the LLM"""
 
     logger.info("listing tools")
-    
+
     user_ip = request.client.host
     if user_ip not in sessions:
-            chat_session = await initialize_session(user_ip)
-            sessions[user_ip] = chat_session
+        chat_session = await initialize_session(user_ip)
+        sessions[user_ip] = chat_session
 
     chat_session = sessions[user_ip]
     all_tools = []
     for server in chat_session.servers:
         logger.info(f"server {server.name}")
-        tools = await server.list_tools()   
-        logger.info(f'found tools: {[tool.name for tool in tools.tools]}')
+        tools = await server.list_tools()
+        logger.info(f"found tools: {[tool.name for tool in tools.tools]}")
         all_tools.extend([tool for tool in tools.tools])
     return {"tools": all_tools}
 
@@ -133,17 +139,15 @@ async def list_tools(request: Request):
 async def websocket_endpoint(websocket: WebSocket, tracker_id: str):
     # Accept and register socket in the tracker room
     await ws_manager.connect(websocket, tracker_id)
-    
+
     # Background keepalive pinger
     async def ping_loop():
         try:
             while True:
-                await asyncio.sleep(30)  
+                await asyncio.sleep(30)
                 # Keeping shape consisitent
-                await ws_manager.broadcast( 
-                    event=SocketMessageEvent.ping,
-                    data={},
-                    tracker_id=tracker_id
+                await ws_manager.broadcast(
+                    event=SocketMessageEvent.ping, data={}, tracker_id=tracker_id
                 )
         except WebSocketDisconnect:
             # Exit silently
@@ -159,7 +163,7 @@ async def websocket_endpoint(websocket: WebSocket, tracker_id: str):
         while True:
             try:
                 # keeps the connection open
-                await websocket.receive_json()  
+                await websocket.receive_json()
             except WebSocketDisconnect:
                 break
             except RuntimeError as e:

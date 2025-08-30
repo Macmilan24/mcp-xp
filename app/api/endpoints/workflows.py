@@ -1,15 +1,31 @@
 from sys import path
-path.append('.')
+
+path.append(".")
 import pathlib
 import tempfile, pathlib, shutil, re, os
 from anyio.to_thread import run_sync
 import logging
 import uuid
 
-from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    UploadFile,
+    File,
+    Path,
+    Query,
+    Form,
+    Request,
+    HTTPException,
+    BackgroundTasks,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.concurrency import run_in_threadpool
-from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
+from bioblend.galaxy.objects.wrappers import (
+    HistoryDatasetAssociation,
+    HistoryDatasetCollectionAssociation,
+)
 
 from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
@@ -17,7 +33,7 @@ from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.api.schemas import workflow
 from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessageType
 
-logger = logging.getLogger('workflow_endpoint')
+logger = logging.getLogger("workflow_endpoint")
 router = APIRouter()
 
 
@@ -25,7 +41,7 @@ router = APIRouter()
     "/",
     response_model=workflow.WorkflowList,
     summary="List all workflows",
-    tags=["Workflows"]
+    tags=["Workflows"],
 )
 async def list_workflows():
     """
@@ -40,38 +56,41 @@ async def list_workflows():
         # Get all workflows from Galaxy instance with full details
         workflows = await run_in_threadpool(
             workflow_manager.gi_object.gi.workflows.get_workflows
-         )
-        
+        )
+
         # Extract only the required fields
         workflow_list = []
         for wf in workflows:
             # Get full workflow details to access annotations
             full_workflow: dict = await run_in_threadpool(
                 workflow_manager.gi_object.gi.workflows.show_workflow,
-                workflow_id=wf['id']
+                workflow_id=wf["id"],
             )
-            
+
             workflow_list.append(
                 workflow.WorkflowListItem(
                     id=full_workflow["id"],
                     name=full_workflow["name"],
-                    description=full_workflow.get("annotation", None)
+                    description=full_workflow.get("annotation", None),
                 )
             )
-        
+
         return workflow.WorkflowList(workflows=workflow_list)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list workflows: {e}")
-    
+
+
 @router.post(
-        "/upload-workflow",
-        response_model = workflow.WorkflowDetails,
-        summary = "Upload an external workflow ga file",
-        tags=["Workflows"]
+    "/upload-workflow",
+    response_model=workflow.WorkflowDetails,
+    summary="Upload an external workflow ga file",
+    tags=["Workflows"],
 )
 async def upload_workflow(
-        file: UploadFile = File(..., description="The Workflow ga file to upload."),
-        tracker_id: str | None = Query(None, description="Client-supplied tracker ID for WebSocket updates"),
+    file: UploadFile = File(..., description="The Workflow ga file to upload."),
+    tracker_id: str | None = Query(
+        None, description="Client-supplied tracker ID for WebSocket updates"
+    ),
 ):
     """Uploads an external workflow from a ga file into the galaxy instance."""
 
@@ -86,14 +105,15 @@ async def upload_workflow(
             tmp_path = tmp.name
 
         # Upload the galaxt workflow into the instance
-        workflow = await workflow_manager.upload_workflow(path = tmp_path,
-                                                          ws_manager = ws_manager, 
-                                                          tracker_id = tracker_id
-                                                          )
-        os.remove(tmp_path) # Clean up the temporary file
-       
-        workflow_details  = await run_in_threadpool(workflow_manager.gi_object.gi.workflows.show_workflow, workflow.id)
-       
+        workflow = await workflow_manager.upload_workflow(
+            path=tmp_path, ws_manager=ws_manager, tracker_id=tracker_id
+        )
+        os.remove(tmp_path)  # Clean up the temporary file
+
+        workflow_details = await run_in_threadpool(
+            workflow_manager.gi_object.gi.workflows.show_workflow, workflow.id
+        )
+
         return {
             "id": workflow_details.get("id"),
             "tags": workflow_details.get("tags", None),
@@ -108,19 +128,22 @@ async def upload_workflow(
         }
     except Exception as e:
         # Clean up in case of error
-        if 'tmp_path' in locals() and os.path.exists(tmp_path):
+        if "tmp_path" in locals() and os.path.exists(tmp_path):
             os.remove(tmp_path)
         raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
- 
+
+
 @router.get(
     "/{workflow_id}/form",
     response_class=HTMLResponse,
     summary="Get Dynamic Workflow Form",
-    tags=["Workflows"]
+    tags=["Workflows"],
 )
 async def get_workflow_form(
     workflow_id: str = Path(..., description="The ID of the Galaxy workflow."),
-    history_id: str = Query(..., description="The ID of the history to select inputs from.")
+    history_id: str = Query(
+        ..., description="The ID of the history to select inputs from."
+    ),
 ):
     """
     Generates and returns a dynamic HTML form for a specific workflow.
@@ -132,31 +155,44 @@ async def get_workflow_form(
 
     try:
         # Get the wrapper objects needed by your service method
-        workflow_obj = await run_in_threadpool(workflow_manager.gi_object.workflows.get, workflow_id)
-        history_obj = await run_in_threadpool(workflow_manager.gi_object.histories.get, history_id)
+        workflow_obj = await run_in_threadpool(
+            workflow_manager.gi_object.workflows.get, workflow_id
+        )
+        history_obj = await run_in_threadpool(
+            workflow_manager.gi_object.histories.get, history_id
+        )
 
         # Run the synchronous HTML build in a thread pool
-        html_form = await run_in_threadpool(
-            workflow_manager.build_input,
-            workflow=workflow_obj,
-            history=history_obj
+        html_form = await workflow_manager.build_input(
+            workflow=workflow_obj, history=history_obj
         )
+
         return HTMLResponse(content=html_form)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to build workflow form: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to build workflow form: {e}"
+        )
+
 
 @router.post(
     "/{workflow_id}/histories/{history_id}/execute",
     response_model=workflow.WorkflowExecutionResponse,
     summary="Execute a Workflow",
-    tags=["Workflows"]
+    tags=["Workflows"],
 )
 async def execute_workflow(
     request: Request,
-    dummy_input: str = Form(None, description="Dummy input to force form rendering the form input for the galaxy execution"), # Adding dummy form value to input request form.
-    workflow_id: str = Path(..., description="The ID of the Galaxy workflow to execute."),
+    dummy_input: str = Form(
+        None,
+        description="Dummy input to force form rendering the form input for the galaxy execution",
+    ),  # Adding dummy form value to input request form.
+    workflow_id: str = Path(
+        ..., description="The ID of the Galaxy workflow to execute."
+    ),
     history_id: str = Path(..., description="The ID of the history for execution."),
-    tracker_id: str | None = Query(None, description="Client-supplied tracker ID for WebSocket updates"),
+    tracker_id: str | None = Query(
+        None, description="Client-supplied tracker ID for WebSocket updates"
+    ),
 ):
     """
     Executes a workflow using input data submitted via a form.
@@ -170,21 +206,28 @@ async def execute_workflow(
     tracker_id = tracker_id or str(uuid.uuid4())
 
     try:
-        await ws_manager.broadcast(event = SocketMessageEvent.workflow_execute,
-                             data = {
-                                 "type": SocketMessageType.WORKFLOW_EXECUTE,
-                                 "payload": {"message" : "Execution started."}   
-                                },
-                             tracker_id=tracker_id
+        await ws_manager.broadcast(
+            event=SocketMessageEvent.workflow_execute,
+            data={
+                "type": SocketMessageType.WORKFLOW_EXECUTE,
+                "payload": {"message": "Execution started."},
+            },
+            tracker_id=tracker_id,
         )
         form_data = await request.form()
-        workflow_obj = await run_in_threadpool(workflow_manager.gi_object.workflows.get, workflow_id)
-        history_obj = await run_in_threadpool(workflow_manager.gi_object.histories.get, history_id)
-        workflow_details = await run_in_threadpool(workflow_manager.gi_object.gi.workflows.show_workflow, workflow_id)
+        workflow_obj = await run_in_threadpool(
+            workflow_manager.gi_object.workflows.get, workflow_id
+        )
+        history_obj = await run_in_threadpool(
+            workflow_manager.gi_object.histories.get, history_id
+        )
+        workflow_details = await run_in_threadpool(
+            workflow_manager.gi_object.gi.workflows.show_workflow, workflow_id
+        )
 
         # Reconstruct the 'inputs' dictionary for BioBlend
         inputs = {}
-        steps: dict = workflow_details['steps']
+        steps: dict = workflow_details["steps"]
         for step_id, step_details in steps.items():
 
             # Check if this step is an input step and is in the form data
@@ -193,21 +236,25 @@ async def execute_workflow(
                 continue
 
             # Differentiate between data inputs and parameter inputs
-            if step_details['type'] in ['data_input', 'data_collection_input']:
-                src = 'hdca' if step_details['type'] == 'data_collection_input' else 'hda'
-                inputs[step_id] = {'src': src, 'id': form_value}
+            if step_details["type"] in ["data_input", "data_collection_input"]:
+                src = (
+                    "hdca" if step_details["type"] == "data_collection_input" else "hda"
+                )
+                inputs[step_id] = {"src": src, "id": form_value}
 
-            elif step_details['type'] == 'parameter_input':
+            elif step_details["type"] == "parameter_input":
                 inputs[step_id] = form_value
 
         # Run the entire synchronous workflow execution and tracking in a thread pool
-        invocation_id, report, intermediate_outputs, final_outputs = await workflow_manager.run_track_workflow(
-            inputs=inputs,
-            workflow=workflow_obj,
-            history=history_obj,
-            ws_manager = ws_manager,
-            tracker_id = tracker_id
+        invocation_id, report, intermediate_outputs, final_outputs = (
+            await workflow_manager.run_track_workflow(
+                inputs=inputs,
+                workflow=workflow_obj,
+                history=history_obj,
+                ws_manager=ws_manager,
+                tracker_id=tracker_id,
             )
+        )
 
         # Format the outputs using Pydantic schemas
         intermediate_outputs_formatted = []
@@ -216,93 +263,112 @@ async def execute_workflow(
         for ds in final_outputs:
             if isinstance(ds, HistoryDatasetAssociation):
                 final_outputs_formatted.append(
-                            {
-                            "type" : "dataset",
-                            "id": ds.id,
-                            "name": ds.name,
-                            "visible": ds.visible,
-                            "peek": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['peek'],
-                            "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['data_type']
-                        }
-                    )
+                    {
+                        "type": "dataset",
+                        "id": ds.id,
+                        "name": ds.name,
+                        "visible": ds.visible,
+                        "peek": workflow_manager.gi_object.gi.datasets.show_dataset(
+                            ds.id
+                        )["peek"],
+                        "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(
+                            ds.id
+                        )[
+                            "data_type"
+                        ],
+                    }
+                )
             elif isinstance(ds, HistoryDatasetCollectionAssociation):
                 final_outputs_formatted.append(
-                        {
-                            "type" : "collection",
-                            "id": ds.id,
-                            "name": ds.name,
-                            "visible": ds.visible,
-                            "collection_type": ds.collection_type,
-                            "elements": [
-                                {
-                                    "identifier": e["element_identifier"],
-                                    "name": e["object"]["name"],
-                                    "id": e["object"]["id"],
-                                    "peek": e["object"]["peek"],
-                                    "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(e["object"]["id"])['data_type']
-                                }
+                    {
+                        "type": "collection",
+                        "id": ds.id,
+                        "name": ds.name,
+                        "visible": ds.visible,
+                        "collection_type": ds.collection_type,
+                        "elements": [
+                            {
+                                "identifier": e["element_identifier"],
+                                "name": e["object"]["name"],
+                                "id": e["object"]["id"],
+                                "peek": e["object"]["peek"],
+                                "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(
+                                    e["object"]["id"]
+                                )[
+                                    "data_type"
+                                ],
+                            }
+                            for e in ds.elements
+                        ],
+                    }
+                )
 
-                                for e in ds.elements
-                            ]
-                        }
-                    )
-                
         for ds in intermediate_outputs:
             if isinstance(ds, HistoryDatasetAssociation):
                 intermediate_outputs_formatted.append(
-                            {
-                            "id": ds.id,
-                            "name": ds.name,
-                            "visible": ds.visible,
-                            "peek": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['peek'],
-                            "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['data_type']
-                        }
-                    )
+                    {
+                        "id": ds.id,
+                        "name": ds.name,
+                        "visible": ds.visible,
+                        "peek": workflow_manager.gi_object.gi.datasets.show_dataset(
+                            ds.id
+                        )["peek"],
+                        "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(
+                            ds.id
+                        )[
+                            "data_type"
+                        ],
+                    }
+                )
             elif isinstance(ds, HistoryDatasetCollectionAssociation):
                 intermediate_outputs_formatted.append(
-                        {
-                            "id": ds.id,
-                            "name": ds.name,
-                            "visible": ds.visible,
-                            "collection_type": ds.collection_type,
-                            "elements": [
-                                {
-                                    "identifier": e["element_identifier"],
-                                    "name": e["object"]["name"],
-                                    "id": e["object"]["id"],
-                                    "peek": e["object"]["peek"],
-                                    "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(e["object"]["id"])['data_type']
-                                }
+                    {
+                        "id": ds.id,
+                        "name": ds.name,
+                        "visible": ds.visible,
+                        "collection_type": ds.collection_type,
+                        "elements": [
+                            {
+                                "identifier": e["element_identifier"],
+                                "name": e["object"]["name"],
+                                "id": e["object"]["id"],
+                                "peek": e["object"]["peek"],
+                                "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(
+                                    e["object"]["id"]
+                                )[
+                                    "data_type"
+                                ],
+                            }
+                            for e in ds.elements
+                        ],
+                    }
+                )
 
-                                for e in ds.elements
-                            ]
-                        }
-                    )
-                                        
         return {
-                "invocation_id": invocation_id,
-                "history_id": history_id,
-                "report": report,
-                "final_outputs": final_outputs_formatted,
-                "intermediate_outputs": intermediate_outputs_formatted
-            }
+            "invocation_id": invocation_id,
+            "history_id": history_id,
+            "report": report,
+            "final_outputs": final_outputs_formatted,
+            "intermediate_outputs": intermediate_outputs_formatted,
+        }
     except Exception as e:
         await ws_manager.broadcast(
-            event= SocketMessageEvent.workflow_execute,
-            data = {
+            event=SocketMessageEvent.workflow_execute,
+            data={
                 "type": SocketMessageType.WORKFLOW_FAILURE,
-                "payload" : f"Workflow execution failed: {e}"
+                "payload": f"Workflow execution failed: {e}",
             },
-            tracker_id = tracker_id
+            tracker_id=tracker_id,
         )
         # Provide a detailed error message for debugging
         raise HTTPException(status_code=500, detail=f"Workflow execution failed: {e}")
-    
+
+
 @router.get(
     "/{workflow_id}/details",
     response_model=workflow.WorkflowDetails,
     summary="Get detailed information about the Galaxy workflow",
-    tags=["Workflows"]
+    tags=["Workflows"],
 )
 async def get_workflow_details(
     workflow_id: str = Path(..., description="The ID of the Galaxy workflow.")
@@ -316,8 +382,10 @@ async def get_workflow_details(
     workflow_manager = WorkflowManager(galaxy_client)
 
     try:
-        workflow_details  = await run_in_threadpool(workflow_manager.gi_object.gi.workflows.show_workflow, workflow_id)
-       
+        workflow_details = await run_in_threadpool(
+            workflow_manager.gi_object.gi.workflows.show_workflow, workflow_id
+        )
+
         return {
             "id": workflow_details.get("id"),
             "tags": workflow_details.get("tags", None),
@@ -330,25 +398,28 @@ async def get_workflow_details(
             "steps": workflow_details.get("steps"),
             "inputs": workflow_details.get("inputs"),
         }
-                
+
     except Exception as e:
         # detailed error responses
-        raise HTTPException(status_code = 500 , detail= f'Show workflow failed {e}')
+        raise HTTPException(status_code=500, detail=f"Show workflow failed {e}")
 
 
 def _rmtree_sync(path: pathlib.Path):
     shutil.rmtree(path, ignore_errors=True)
 
+
 # TODO: this needs an installation on galaxy instance side, to support pdf downloads
 @router.get(
     "/{workflow_id}/invocation_pdf",
-    response_class = FileResponse,
-    summary= "Get invocation pdf report",
-    tags=["Invocation", "Workflows"]
+    response_class=FileResponse,
+    summary="Get invocation pdf report",
+    tags=["Invocation", "Workflows"],
 )
 async def invocation_report_pdf(
     workflow_id: str = Path(..., description="The ID of the Galaxy workflow."),
-    invocation_id: str = Query(..., description="The ID of the invocation from a certain workflow")
+    invocation_id: str = Query(
+        ..., description="The ID of the invocation from a certain workflow"
+    ),
 ):
 
     galaxy_client = GalaxyClient(current_api_key.get())
@@ -357,18 +428,20 @@ async def invocation_report_pdf(
     tmpdir = tempfile.mkdtemp(prefix="galaxy_pdf_")
     tmpdir_path = pathlib.Path(tmpdir)
     try:
-        # get workflow object 
+        # get workflow object
         workflow_obj = await run_in_threadpool(
             workflow_manager.gi_object.workflows.get, workflow_id
         )
 
-        pdf_report_name = re.sub(r'[\\/*?:"<>|]', '', f"{workflow_obj.name}_invocation_report.pdf")
+        pdf_report_name = re.sub(
+            r'[\\/*?:"<>|]', "", f"{workflow_obj.name}_invocation_report.pdf"
+        )
         pdf_path = tmpdir_path / pdf_report_name
 
         await run_in_threadpool(
             workflow_manager.gi_object.gi.invocations.get_invocation_report_pdf,
             invocation_id=invocation_id,
-            file_path=str(pdf_path)
+            file_path=str(pdf_path),
         )
         background = BackgroundTasks()
         background.add_task(run_sync, _rmtree_sync, tmpdir)
@@ -377,9 +450,11 @@ async def invocation_report_pdf(
             path=pdf_path,
             filename=pdf_report_name,
             media_type="application/octet-stream",
-            background=background
+            background=background,
         )
     except Exception as exc:
         # Clean up immediately on error
         await run_sync(_rmtree_sync, tmpdir)
-        raise HTTPException(status_code=500, detail=f"Failed to get PDF invocation report: {exc}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get PDF invocation report: {exc}"
+        )

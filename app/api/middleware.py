@@ -7,17 +7,20 @@ from starlette.responses import JSONResponse
 from fastapi import Request, status
 
 from sys import path
-path.append('.')
+
+path.append(".")
 
 from app.context import current_api_key
 
 load_dotenv()
+
 
 class GalaxyAPIKeyMiddleware(BaseHTTPMiddleware):
     """
     Reject any request whose USER-API-KEY header is missing
     or not accepted by the Galaxy server and sets apikey as a context.
     """
+
     # One shared httpx.AsyncClient for connection reuse
     def __init__(self, app):
         super().__init__(app)
@@ -25,14 +28,14 @@ class GalaxyAPIKeyMiddleware(BaseHTTPMiddleware):
         self.GALAXY_URL = os.getenv("GALAXY_URL")
         self.log = logging.getLogger(__class__.__name__)
 
-
     async def dispatch(self, request: Request, call_next):
-        
+
         public_paths = {"/docs", "/redoc", "/openapi.json"}
         if request.url.path in public_paths or request.url.path.startswith("/static/"):
             return await call_next(request)
-        
+
         api_key = request.headers.get("USER-API-KEY")
+
         if not api_key:
             self.log.error("missing USER_API_KEY header")
             return JSONResponse(
@@ -45,15 +48,15 @@ class GalaxyAPIKeyMiddleware(BaseHTTPMiddleware):
             valid = await self._is_valid_key(api_key)
         except httpx.RequestError:
             return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"detail": "Galaxy server unavailable."},
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"detail": "Galaxy server unavailable."},
             )
-        
+
         if not valid:
             self.log.error("Invalid USER_API_KEY header")
             return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"detail": "Invalid Galaxy API key."},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "Invalid Galaxy API key."},
             )
 
         # Save key in context so downstream code can access it
@@ -67,9 +70,9 @@ class GalaxyAPIKeyMiddleware(BaseHTTPMiddleware):
         Returns True only if the key is accepted.
         """
         url = f"{self.GALAXY_URL.rstrip('/')}/api/users/current"
-        headers = {"x-api-key": key}
+        # headers = {"x-api-key": key}
         try:
-            r = await self.client.get(url, headers=headers)
+            r = await self.client.get(url)
             return r.status_code == 200
 
         except httpx.RequestError as e:
