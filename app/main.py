@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 from cryptography.fernet import Fernet
 
-from fastapi import FastAPI, Request, HTTPException, Body, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, HTTPException, Body, Query, WebSocket, WebSocketDisconnect
 from fastapi.openapi.utils import get_openapi
 from app.AI.chatbot import ChatSession, initialize_session
 
@@ -34,8 +34,15 @@ logger= logging.getLogger('main')
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # Optional: Add project root to Python path
 sessions = {}
 
+# Base Schemas
+
 class MessageRequest(BaseModel):
     message: str
+
+class GalaxyUserAccount(BaseModel):
+    username: str
+    api_token: str
+
 
 APP_DESCRIPTION = """
 - This **FastAPI application** provides a RESTful API for dynamically interacting with the **Galaxy platform** and the **Galaxy Agent**.\n
@@ -144,21 +151,102 @@ async def list_tools(request: Request):
         all_tools.extend([tool for tool in tools.tools])
     return {"tools": all_tools}
 
-@app.post("/register-key", tags=["Auth"])
-async def register_key(user_api_key: str = Body(..., embed=True, min_length=1)):
-    """Validate raw Users Galaxy API-key once, then return an encrypted token."""
-    url = f"{GALAXY_URL}/api/users/current"
-    headers = {"x-api-key": user_api_key}
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        r = await client.get(url, headers=headers)
-        if r.status_code != 200:
-            raise HTTPException(status_code=401, detail="Invalid Galaxy API key")
+@app.post("/register-user",
+          response_model=GalaxyUserAccount,
+          tags =["Signup Auth"]
+           )
+async def get_create_galaxy_user_and_key(
+    email: str = Query(description="email of the user to be registered to our galaxy instance."),
+    password: str = Query(description="passcode to use for our galaxy isntance.")
+    ) -> tuple[str, str]:
 
-    payload = json.dumps({"apikey": user_api_key}).encode("utf-8")
-    token = fernet.encrypt(payload).decode("utf-8")
-    return {"token": token}
+    """ Register Galaxy user from platform using the same credentials   """
 
+    # 1. Create user via admin API
+    username=None
+    api_token=None
+
+    try:
+        logger.info("creating galaxy user account from galaxy service.")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                url = f"{GALAXY_URL}/api/users",
+                headers={"x-api-key": os.getenv("GALAXY_API_KEY")},
+                json={
+                    "username": email.split("@")[0],  # or whatever scheme you like
+                    "email":    email,
+                    "password": password
+                }
+            )
+                
+        resp.raise_for_status()
+        galaxy_user_id = resp.json()["id"]
+        username= resp.json()["username"]
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 400:
+
+            # Else Fetch user by email if already exists
+            try:
+                logger.info("account already exists, getting api.")
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(
+                        f"{GALAXY_URL}/api/users",
+                        headers={"x-api-key": os.getenv("GALAXY_API_KEY")},
+                        params={"f_email": email}
+                    )
+                resp.raise_for_status()
+                users = resp.json()
+                galaxy_user_id = users[0]["id"]
+                username= users[0]["username"]
+
+            except HTTPException as e: 
+                raise HTTPException(status_code=400, detail= f"error getting/creating galaxy user: {e}")
+            except Exception as e:
+                logger.error(f"Error: {e}")
+                raise
+        elif e.response.status_code == 401:
+            logger.error(f"Unauthorized admin id: {e}")
+            raise HTTPException(status_code=401, detail= f"Unauthorized admin id: {e}")
+        else:
+            raise
+
+    except HTTPException as e:
+        logger.error(f"errror creating user acount: {e}")
+        raise HTTPException(status_code= 500, detail=f"error creating user account: {e}")
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        raise
+ 
+    # 2. Return generated galaxy api-key
+    try:
+        
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            key_resp = await client.post(
+                url = f"{GALAXY_URL}/api/users/{galaxy_user_id}/api_key",
+                headers={"x-api-key": os.getenv("GALAXY_API_KEY")},
+                json={
+                    "name": "auto-generated from platform"
+                    }
+            )
+
+        key_resp.raise_for_status()
+        api_key = key_resp.json()
+
+        payload = json.dumps({"apikey": api_key}).encode("utf-8")
+        api_token = fernet.encrypt(payload).decode("utf-8")
+
+    except HTTPException as e:
+        logger.error(f"error creating galaxy user api key: {e}")
+        raise HTTPException(status=500, detail= f"error getting galaxy user api-key: {e}")
+    except Exception as e:
+        logger.error(f"Error: {e}")
+
+    return  GalaxyUserAccount(
+        username = username,
+        api_token = api_token
+    )
 
 @app.websocket("/ws/{tracker_id}")
 async def websocket_endpoint(websocket: WebSocket, tracker_id: str):
