@@ -10,6 +10,7 @@ class OutputDataset(BaseModel):
     visible: bool
     peek: str
     data_type: str
+    is_intermediate: Optional[bool] = None
 
 class CollectionOutputDataset(BaseModel):
     """Schema representing an element output dataset from a collection dataset."""
@@ -19,12 +20,14 @@ class CollectionOutputDataset(BaseModel):
     visible: bool
     collection_type: str
     elements: List[Dict[str, Any]]
+    is_intermediate: Optional[bool] = None
 
 class WorkflowListItem(BaseModel):
     """Schema representing a single workflow in a list."""
     id: str
     name: str
     description: Optional[str] = None
+    tags: Optional[List[str]] = []
 
 class WorkflowList(BaseModel):
     """Schema representing a list of workflows with basic information."""
@@ -35,24 +38,20 @@ class WorkflowExecutionResponse(BaseModel):
     invocation_id: str
     history_id: str
     report: Dict[str, Any] = None
-    final_outputs: List[Annotated[
+    result: List[Annotated[
                                 Union[OutputDataset, CollectionOutputDataset],
                                 Field(discriminator="type")
-                            ]]
-    intermediate_outputs: List[Annotated[
-                                Union[OutputDataset, CollectionOutputDataset],
-                                Field(discriminator="type")
-                            ]]
+                            ]] = []
 
 class WorkflowDetails(BaseModel):
     """"Schema representing the details of a single workflow"""
     id: str
-    tags: Optional[List[str] ]= None
+    tags: Optional[List[str]] = []
     create_time: str
     annotations: Optional[str] = None
     published: bool
-    license: str
+    license: str = ""
     galaxy_url: str
-    creator: List[Dict]
+    creator: List[Dict] = []
     steps: Dict[str, Dict[str, Any]]
     inputs: Dict[str,Dict[str, Any]]
