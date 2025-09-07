@@ -5,7 +5,10 @@ import pathlib
 import shutil
 from anyio.to_thread import run_sync
 from typing import Dict
+import logging
 
+from sys import path
+path.append(".")
 
 from fastapi import APIRouter, Path, Query, HTTPException, BackgroundTasks
 from fastapi.responses import  FileResponse
@@ -15,30 +18,25 @@ from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryD
 from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
-from app.api.schemas import invocation
+from app.api.schemas import invocation, workflow
 from app.api.socket_manager import ws_manager
 
 # Helper functions
+logger = logging.getLogger("invocation")
 
 def _rmtree_sync(path: pathlib.Path):
     shutil.rmtree(path, ignore_errors=True)
 
-async def structure_ouptuts(_invocation: Invocation, workflow_manager: WorkflowManager):
-    tracker_id = str(uuid.uuid4())
-    # track invocation steps and collect outputs, 
-    # but here we are just checking status and collecting outputs and also no websocket tracking here
-    outputs = await workflow_manager.track_invocation(
-        invocation = _invocation, 
-        tracker_id = tracker_id, 
-        ws_manager = ws_manager
-        )
-    
+async def structure_ouptuts(_invocation: Invocation, outputs: list, workflow_manager: WorkflowManager):
+
+    # TODO : Optimization of intermediate and final output separation.
     # prepare workflow invocation results
     invocation_id, invocation_report, intermediate_outputs, final_outputs = await run_in_threadpool(
         workflow_manager._make_result,
         invocation= _invocation,
         outputs = outputs
         )
+    logger.info(f"itermediate: {len(intermediate_outputs)}, final: {len(final_outputs)}")
 
     try:
         # Format the outputs using Pydantic schemas
@@ -54,7 +52,8 @@ async def structure_ouptuts(_invocation: Invocation, workflow_manager: WorkflowM
                             "name": ds.name,
                             "visible": ds.visible,
                             "peek": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['peek'],
-                            "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['data_type']
+                            "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['data_type'],
+                            "is_intermediate": False
                         }
                     )
             elif isinstance(ds, HistoryDatasetCollectionAssociation):
@@ -75,55 +74,66 @@ async def structure_ouptuts(_invocation: Invocation, workflow_manager: WorkflowM
                                 }
 
                                 for e in ds.elements
-                            ]
+                            ],
+                            "is_intermediate": False
                         }
                     )
+            else:
+                logger.error("result is neither a collection nor a dataset")
                 
-            for ds in intermediate_outputs:
-                if isinstance(ds, HistoryDatasetAssociation):
-                    intermediate_outputs_formatted.append(
-                                {
-                                "type" : "dataset",
-                                "id": ds.id,
-                                "name": ds.name,
-                                "visible": ds.visible,
-                                "peek": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['peek'],
-                                "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['data_type']
-                            }
-                        )
-                elif isinstance(ds, HistoryDatasetCollectionAssociation):
-                    intermediate_outputs_formatted.append(
+        for ds in intermediate_outputs:
+            if isinstance(ds, HistoryDatasetAssociation):
+                intermediate_outputs_formatted.append(
                             {
-                                "type" : "collection",
-                                "id": ds.id,
-                                "name": ds.name,
-                                "visible": ds.visible,
-                                "collection_type": ds.collection_type,
-                                "elements": [
-                                    {
-                                        "identifier": e["element_identifier"],
-                                        "name": e["object"]["name"],
-                                        "id": e["object"]["id"],
-                                        "peek": e["object"]["peek"],
-                                        "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(e["object"]["id"])['data_type']
-                                    }
+                            "type" : "dataset",
+                            "id": ds.id,
+                            "name": ds.name,
+                            "visible": ds.visible,
+                            "peek": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['peek'],
+                            "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['data_type'],
+                            "is_intermediate": True
+                        }
+                    )
+            elif isinstance(ds, HistoryDatasetCollectionAssociation):
+                intermediate_outputs_formatted.append(
+                        {
+                            "type" : "collection",
+                            "id": ds.id,
+                            "name": ds.name,
+                            "visible": ds.visible,
+                            "collection_type": ds.collection_type,
+                            "elements": [
+                                {
+                                    "identifier": e["element_identifier"],
+                                    "name": e["object"]["name"],
+                                    "id": e["object"]["id"],
+                                    "peek": e["object"]["peek"],
+                                    "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(e["object"]["id"])['data_type']
+                                }
 
-                                    for e in ds.elements
-                                ]
-                            }
-                        )
+                                for e in ds.elements
+                            ],
+                            "is_intermediate": True
+                        }
+                    )
+            else:
+                logger.error("result is neither a collection nor a dataset")
+                
+        logger.info(f"itermediate formatted: {len(intermediate_outputs_formatted)}, final formatted : {len(final_outputs_formatted)}")
+                
+        combined_final_result = [*intermediate_outputs_formatted, *final_outputs_formatted]
+                                        
+        # workflow_result = invocation.WorkflowExecutionResponse(
+        #                 invocation_id =invocation_id,
+        #                 history_id= _invocation.history_id,
+        #                 report = invocation_report,
+        #                 result = combined_final_result
+        #         )
+        
+        return combined_final_result, invocation_report
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list workflows: {e}")
-                                            
-    workflow_result = invocation.WorkflowExecutionResponse(
-                    invocation_id =invocation_id,
-                    history_id= _invocation.history_id,
-                    report = invocation_report,
-                    final_outputs = final_outputs_formatted,
-                    intermediate_outputs = intermediate_outputs_formatted
-            )
-    
-    return workflow_result
 
         
 async def structure_inputs(inv: Dict, workflow_manager: WorkflowManager):
@@ -221,22 +231,26 @@ async def list_invocations(
                 workflow_id = workflow_id,
                 history_id = history_id
             )
+            logger.info("invocation retreived with history and workflow filter")
         elif history_id:
             invocations = await run_in_threadpool(
                 workflow_manager.gi_object.gi.invocations.get_invocations,
                 history_id = history_id
             )
+            logger.info("invocation retreived with history filter")
         # Filter by workflow_id if provided
         elif workflow_id:
             invocations = await run_in_threadpool(
                 workflow_manager.gi_object.gi.invocations.get_invocations,
                 workflow_id = workflow_id
             )
+            logger.info("invocation retreived with workflow filter")
         else:
             # Get all invocations from Galaxy instance
             invocations = await run_in_threadpool(
                 workflow_manager.gi_object.gi.invocations.get_invocations
             )
+            logger.info("invocation retreived with no filter")
         # Get list of workflows
         workflows = await run_in_threadpool(
             workflow_manager.gi_object.gi.workflows.get_workflows
@@ -245,7 +259,7 @@ async def list_invocations(
         # Format the response
         invocation_list = []
         for inv in invocations:
-            
+            workflow_name = "Unkown"
             for wf in workflows:
                 if wf.get("id") == inv.get("workflow_id"):
                     workflow_name = wf.get("name")
@@ -290,13 +304,19 @@ async def invocation_report_pdf(
             workflow_manager.gi_object.gi.invocations.show_invocation,
             invocation_id=invocation_id
         )
-        # get workflow object 
-        workflow_obj = await run_in_threadpool(
-            workflow_manager.gi_object.workflows.get,
-            id_ = inv.get("workflow_id")
-        )
+        
+        try:
+            # get workflow object 
+            workflow_obj = await run_in_threadpool(
+                workflow_manager.gi_object.workflows.get,
+                id_ = inv.get("workflow_id")
+            )
+            workflow_name = workflow_obj.name
+        except Exception as e:
+            logger.error(f"error finding workflow name: {e} defaulting to id.")
+            workflow_name = inv.get("workflow_id")
 
-        pdf_report_name = re.sub(r'[\\/*?:"<>|]', '', f"{workflow_obj.name}_invocation_report.pdf")
+        pdf_report_name = re.sub(r'[\\/*?:"<>|]', '', f"{workflow_name}_invocation_report.pdf")
         pdf_path = tmpdir_path / pdf_report_name
 
         await run_in_threadpool(
@@ -329,39 +349,79 @@ async def show_invocation_result(
 ):
     galaxy_client = GalaxyClient(current_api_key.get())
     workflow_manager = WorkflowManager(galaxy_client)
-   
+
+    # TODO: Refactoring websocket connection by using the invocation id as the the room id
+    # Generate a random tracker_id for now
+    # Set websocket to use the invocation id as the room id
+    # Get invocation object
+    _invocation = await run_in_threadpool(
+        galaxy_client.gi_object.invocations.get,
+        id_ = invocation_id
+        )
+    outputs, invocation_completed = await workflow_manager.track_invocation(
+        invocation = _invocation, 
+        tracker_id = invocation_id, 
+        ws_manager = ws_manager,
+        invocation_check = True
+        )
+    
+    logger.info(len(outputs))
 
     inv = await run_in_threadpool(
         workflow_manager.gi_object.gi.invocations.show_invocation,
         invocation_id=invocation_id
     ) # Get invocation information
-
-    # Get workflow Name.
-    workflow = await run_in_threadpool(
-        workflow_manager.gi_object.workflows.get,
-        id_ = inv.get("workflow_id")
-        )
     
-    workflow_name = workflow.name
+    
+    # Get workflow Name.
+    try:
+        workflow_ = await run_in_threadpool(
+            workflow_manager.gi_object.gi.workflows.show_workflow,
+            workflow_id = inv.get("workflow_id")
+            )
+        
+    except Exception as e:
+        logger.error(f"workflow removed or unknown: {e}")
 
+    # Structure workflow details
+    workflow_description = workflow.WorkflowListItem(
+        id = workflow_.get("id", "Unknown"),
+        name = workflow_.get("name", "Unknown"),
+        description = workflow_.get("annotation") or workflow_.get("description", None),
+        tags = workflow_.get("tags", "Unknown")
+    )
+
+    #Strucutre inputs into appropriate format
     inputs_formatted = await structure_inputs(inv=inv, workflow_manager=workflow_manager)
 
+     # Wrap invocaion id into invocation object
     _invocation = await run_in_threadpool(
         workflow_manager.gi_object.invocations.get, 
         id_ = invocation_id
-        ) # Wrap invocaion id into invocation object
+        )
 
-    
-    workflow_result = await structure_ouptuts(_invocation= _invocation, workflow_manager= workflow_manager)
+    # Structure invocation results
+    workflow_result, invocation_report = await structure_ouptuts(_invocation= _invocation, outputs = outputs, workflow_manager= workflow_manager)
+
+    # Strucutre Invocation state.
+    if inv.get("state") == "cancelled" or inv.get("state") == "cancelled" or inv.get("state") == "failed":
+        inv_state = "Failed"
+    elif invocation_completed and inv.get("state") == "scheduled":
+        inv_state = "Complete"
+    elif inv.get("state") == "requires_materialization" or inv.get("state") == "ready" or inv.get("state") == "new" or inv.get("state") == "scheduled":
+        inv_state = "Pending"
+    else:
+        logger.warning(f"invocation state unknown: {inv.get('state')}") # Flag unknown invocation state or if it is none
+        inv_state == "Failed"
 
     return invocation.InvocationResult(
         invocation_id = inv.get("id"),
-        workflow_name = workflow_name,
-        workflow_id = inv.get("workflow_id"),
+        state = inv_state,
         history_id = inv.get("history_id"),
-        state = inv.get("state"),
         create_time = inv.get("create_time"),
         update_time = inv.get("update_time"),
         inputs = inputs_formatted,
-        result = workflow_result
+        result = workflow_result,
+        workflow= workflow_description,
+        report = invocation_report
     )

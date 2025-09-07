@@ -5,10 +5,10 @@ from anyio.to_thread import run_sync
 import logging
 import uuid
 
-from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException
+from fastapi.responses import HTMLResponse
 from fastapi.concurrency import run_in_threadpool
-from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
+from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation, Workflow
 
 from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
@@ -54,7 +54,8 @@ async def list_workflows():
                 workflow.WorkflowListItem(
                     id=full_workflow["id"],
                     name=full_workflow["name"],
-                    description=full_workflow.get("annotation", None)
+                    description=full_workflow.get("annotation") or full_workflow.get("description", None),
+                    tags = full_workflow.get("tags")
                 )
             )
         
@@ -81,7 +82,7 @@ async def upload_workflow(
     try:
         # Use a temporary file to handle the upload
         with tempfile.NamedTemporaryFile(delete=False, suffix=file.filename) as tmp:
-            tmp.write(await file.read())
+            tmp.write(await file.read())    
             tmp_path = tmp.name
 
         # Upload the galaxt workflow into the instance
@@ -89,8 +90,12 @@ async def upload_workflow(
                                                           ws_manager = ws_manager, 
                                                           tracker_id = tracker_id
                                                           )
-        os.remove(tmp_path) # Clean up the temporary file
-       
+        # Clean up the temporary file
+        os.remove(tmp_path)
+
+        if not isinstance(workflow, Workflow):
+            raise HTTPException(status_code=500, detail = workflow.get('error', "workflow uploading failed."))
+        
         workflow_details  = await run_in_threadpool(workflow_manager.gi_object.gi.workflows.show_workflow, workflow.id)
        
         return {
