@@ -345,7 +345,8 @@ class WorkflowManager:
                          tracker_id: str,
                          ws_manager: SocketManager, 
                          base_extension: int = 30,
-                         initial_wait: int = 120
+                         initial_wait: int = 120,
+                         invocation_check = False
                          )-> List[Union[Dataset, DatasetCollection]]:
         """Tracks invocation steps and waits for the invocation reaches a terminal state and returns with the invocation results""" 
         
@@ -361,6 +362,8 @@ class WorkflowManager:
         deadline = start_time + initial_wait
         max_extension = initial_wait // 2
         poll_interval = 1
+
+        invocation_completed = False
 
         # estimate maxwait based on the number of steps in the workflow?
         while True:
@@ -471,6 +474,7 @@ class WorkflowManager:
                 break
             if all_ok:
                 self.log.info("All steps completed successfully.")
+                invocation_completed = True
                 
                 ws_data = {
                     "type" : SocketMessageType.INVOCATION_COMPLETE,
@@ -514,8 +518,11 @@ class WorkflowManager:
                 min(10, poll_interval + 1)
 
             await asyncio.sleep(poll_interval) 
-
-        return invocation_outputs
+        
+        if invocation_check:
+            return invocation_outputs, invocation_completed
+        else:
+            return invocation_outputs
 
     def invoke_workflow(self, inputs: dict, workflow: Workflow, history: History ) -> Invocation:
         """
