@@ -37,7 +37,7 @@ class GalaxyAPIKeyMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         
-        public_paths = {"/", "/docs", "/redoc", "/openapi.json", "/register-key"}
+        public_paths = {"/", "/docs", "/redoc", "/openapi.json", "/register-user"}
         if request.url.path in public_paths or request.url.path.startswith("/static/"):
             return await call_next(request)
         
