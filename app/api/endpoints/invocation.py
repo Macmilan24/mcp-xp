@@ -36,7 +36,7 @@ async def structure_ouptuts(_invocation: Invocation, outputs: list, workflow_man
         invocation= _invocation,
         outputs = outputs
         )
-    logger.info(f"itermediate: {len(intermediate_outputs)}, final: {len(final_outputs)}")
+    logger.info(f"itermediate:{len(intermediate_outputs)}: {[ds.name for ds in intermediate_outputs]}, final: {len(final_outputs)} {[ds.name for ds in final_outputs]}")
 
     try:
         # Format the outputs using Pydantic schemas
@@ -242,9 +242,10 @@ async def list_invocations(
         elif workflow_id:
             invocations = await run_in_threadpool(
                 workflow_manager.gi_object.gi.invocations.get_invocations,
-                workflow_id = workflow_id
+                workflow_id = workflow_id,
+                limit = 100
             )
-            logger.info("invocation retreived with workflow filter")
+            logger.info(invocations)
         else:
             # Get all invocations from Galaxy instance
             invocations = await run_in_threadpool(
@@ -259,9 +260,11 @@ async def list_invocations(
         # format and map invocation to workflow_id
         invocation_list = []
         for inv in invocations:
+            workflow_name = "Unknown"
             stored_workflow_id = None
             for wf in workflows:
-                for inv_ in invocations:
+                wf_invocations = workflow_manager.gi_object.gi.workflows.get_invocations(wf['id'])
+                for inv_ in wf_invocations:
                     if inv['id'] == inv_["id"]:
                         stored_workflow_id = wf["id"]
                         workflow_name = wf["name"]
@@ -269,13 +272,22 @@ async def list_invocations(
                 if stored_workflow_id:
                     break
 
+            if inv.get("state") == "cancelled" or inv.get("state") == "cancelled" or inv.get("state") == "failed":
+                inv_state = "Failed"
+            elif inv.get("state") == "scheduled":
+                inv_state = "Complete" # Not yet accurate.
+            elif inv.get("state") == "requires_materialization" or inv.get("state") == "ready" or inv.get("state") == "new":
+                inv_state = "Pending"
+            else:
+                logger.warning(f"invocation state unknown: {inv.get('state')}") # Flag unknown invocation state or if it is none
+                inv_state == "Failed"
             invocation_list.append(
                 invocation.InvocationListItem(
                     id=inv.get("id"),
                     workflow_name= workflow_name,
                     workflow_id=inv.get("workflow_id"),
                     history_id=inv.get("history_id"),
-                    state=inv.get("state"),
+                    state=inv_state,
                     create_time=inv.get("create_time"),
                     update_time=inv.get("update_time")
                 )
@@ -401,8 +413,14 @@ async def show_invocation_result(
         tags = workflow_.get("tags", "Unknown")
     )
 
+    # Result invocation information.
+    invocation_details = await run_in_threadpool(
+        workflow_manager.gi_object.gi.invocations.show_invocation,
+        invocation_id=invocation_id
+    )
+
     #Strucutre inputs into appropriate format
-    inputs_formatted = await structure_inputs(inv=inv, workflow_manager=workflow_manager)
+    inputs_formatted = await structure_inputs(inv=invocation_details, workflow_manager=workflow_manager)
 
      # Wrap invocaion id into invocation object
     _invocation = await run_in_threadpool(

@@ -9,7 +9,7 @@ class InvocationListItem(BaseModel):
     workflow_name: str
     workflow_id: str
     history_id: str
-    state: str
+    state: Literal["Pending", "Failed", "Complete"]
     create_time: str
     update_time: str
 
