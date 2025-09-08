@@ -14,7 +14,7 @@ from fastapi.openapi.utils import get_openapi
 from app.AI.chatbot import ChatSession, initialize_session
 
 from app.log_setup import configure_logging
-from app.api.middleware import GalaxyAPIKeyMiddleware
+from app.api.middleware import JWTGalaxyKeyMiddleware
 from app.api.api import api_router 
 from app.api.socket_manager import ws_manager, SocketMessageEvent
 
@@ -65,17 +65,17 @@ def custom_openapi():
         routes=app.routes,
     )
 
-    # Add global security scheme for API key in header
+    # Bearer JWT security scheme
     openapi_schema["components"]["securitySchemes"] = {
-        "APIKeyHeader": {
-            "type": "apiKey",
-            "in": "header",
-            "name": "USER-API-TOKEN",
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT"
         }
     }
 
-    # Apply this scheme globally, every endpoint in docs will require it
-    openapi_schema["security"] = [{"APIKeyHeader": []}]
+    # Apply globally
+    openapi_schema["security"] = [{"BearerAuth": []}]
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema
@@ -85,7 +85,7 @@ app = FastAPI()
 
 
 # Add middleware
-app.add_middleware(GalaxyAPIKeyMiddleware)
+app.add_middleware(JWTGalaxyKeyMiddleware)
 
 # Include the API router
 app.include_router(api_router, prefix="/api")
