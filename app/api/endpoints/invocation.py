@@ -256,13 +256,18 @@ async def list_invocations(
             workflow_manager.gi_object.gi.workflows.get_workflows
         )
 
-        # Format the response
+        # format and map invocation to workflow_id
         invocation_list = []
         for inv in invocations:
-            workflow_name = "Unkown"
+            stored_workflow_id = None
             for wf in workflows:
-                if wf.get("id") == inv.get("workflow_id"):
-                    workflow_name = wf.get("name")
+                for inv_ in invocations:
+                    if inv['id'] == inv_["id"]:
+                        stored_workflow_id = wf["id"]
+                        workflow_name = wf["name"]
+                        break
+                if stored_workflow_id:
+                    break
 
             invocation_list.append(
                 invocation.InvocationListItem(
@@ -367,17 +372,22 @@ async def show_invocation_result(
     
     logger.info(len(outputs))
 
-    inv = await run_in_threadpool(
-        workflow_manager.gi_object.gi.invocations.show_invocation,
-        invocation_id=invocation_id
-    ) # Get invocation information
-    
-    
+    stored_workflow_id = None
+    workflows = workflow_manager.gi_object.gi.workflows.get_workflows()
+    for wf in workflows:
+        wf_invocations = workflow_manager.gi_object.gi.workflows.get_invocations(wf['id'])
+        for inv in wf_invocations:
+            if inv['id'] == invocation_id:
+                stored_workflow_id = wf['id']
+                break
+        if stored_workflow_id:
+            break
+        
     # Get workflow Name.
     try:
         workflow_ = await run_in_threadpool(
             workflow_manager.gi_object.gi.workflows.show_workflow,
-            workflow_id = inv.get("workflow_id")
+            workflow_id = stored_workflow_id
             )
         
     except Exception as e:
