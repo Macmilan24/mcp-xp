@@ -45,17 +45,22 @@ async def structure_ouptuts(_invocation: Invocation, outputs: list, workflow_man
 
         for ds in final_outputs:
             if isinstance(ds, HistoryDatasetAssociation):
+                dataset_info = await run_in_threadpool(
+                    workflow_manager.gi_object.gi.datasets.show_dataset,
+                    dataset_id = ds.id
+                    )
                 final_outputs_formatted.append(
                             {
                             "type" : "dataset",
                             "id": ds.id,
                             "name": ds.name,
                             "visible": ds.visible,
-                            "peek": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['peek'],
-                            "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['data_type'],
+                            "file_path": dataset_info.get('file_name'),
+                            "peek": dataset_info.get('peek'),
+                            "data_type": dataset_info.get('extension', 'file_ext'),
                             "is_intermediate": False
                         }
-                    )
+                )
             elif isinstance(ds, HistoryDatasetCollectionAssociation):
                 final_outputs_formatted.append(
                         {
@@ -66,15 +71,15 @@ async def structure_ouptuts(_invocation: Invocation, outputs: list, workflow_man
                             "collection_type": ds.collection_type,
                             "elements": [
                                 {
-                                    "identifier": e["element_identifier"],
-                                    "name": e["object"]["name"],
-                                    "id": e["object"]["id"],
-                                    "peek": e["object"]["peek"],
-                                    "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(e["object"]["id"])['data_type']
+                                    "identifier": e.get("element_identifier", ""),
+                                    "name": e.get("object", {}).get("name", ""),
+                                    "id": e.get("object", {}).get("id", ""),
+                                    "peek": e.get("object", {}).get("peek", ""),
+                                    "data_type": (workflow_manager.gi_object.gi.datasets.show_dataset(e.get("object", {}).get("id", "")).get('extension', 'file_ext') 
+                                                if e.get("object", {}).get("id", "") else '')
                                 }
-
                                 for e in ds.elements
-                            ],
+                                ],
                             "is_intermediate": False
                         }
                     )
@@ -83,14 +88,16 @@ async def structure_ouptuts(_invocation: Invocation, outputs: list, workflow_man
                 
         for ds in intermediate_outputs:
             if isinstance(ds, HistoryDatasetAssociation):
+                dataset_info = workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)
                 intermediate_outputs_formatted.append(
                             {
                             "type" : "dataset",
                             "id": ds.id,
                             "name": ds.name,
                             "visible": ds.visible,
-                            "peek": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['peek'],
-                            "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(ds.id)['data_type'],
+                            "file_path": dataset_info.get('file_name'),
+                            "peek": dataset_info.get('peek'),
+                            "data_type": dataset_info.get('extension', 'file_ext'),
                             "is_intermediate": True
                         }
                     )
@@ -104,15 +111,15 @@ async def structure_ouptuts(_invocation: Invocation, outputs: list, workflow_man
                             "collection_type": ds.collection_type,
                             "elements": [
                                 {
-                                    "identifier": e["element_identifier"],
-                                    "name": e["object"]["name"],
-                                    "id": e["object"]["id"],
-                                    "peek": e["object"]["peek"],
-                                    "data_type": workflow_manager.gi_object.gi.datasets.show_dataset(e["object"]["id"])['data_type']
+                                    "identifier": e.get("element_identifier", ""),
+                                    "name": e.get("object", {}).get("name", ""),
+                                    "id": e.get("object", {}).get("id", ""),
+                                    "peek": e.get("object", {}).get("peek", ""),
+                                    "data_type": (workflow_manager.gi_object.gi.datasets.show_dataset(e.get("object", {}).get("id", "")).get('extension', 'file_ext') 
+                                                if e.get("object", {}).get("id", "") else '')
                                 }
-
                                 for e in ds.elements
-                            ],
+                                ],
                             "is_intermediate": True
                         }
                     )
@@ -155,8 +162,9 @@ async def structure_inputs(inv: Dict, workflow_manager: WorkflowManager):
                         "id": dataset_id,
                         "name": dataset_info.get('name', ''),
                         "visible": dataset_info.get('visible', False),
+                        "file_path": dataset_info.get('file_name'),
                         "peek": dataset_info.get('peek', ''),
-                        "data_type": dataset_info.get('data_type', ''),
+                        "data_type": dataset_info.get('extension', 'file_ext'),
                         "step_id": input_value.get('workflow_step_id', '')
                     }
                     
@@ -430,7 +438,8 @@ async def show_invocation_result(
 
     # Structure invocation results
     workflow_result, invocation_report = await structure_ouptuts(_invocation= _invocation, outputs = outputs, workflow_manager= workflow_manager)
-
+    
+    inv_state="Failed"
     # Strucutre Invocation state.
     if inv.get("state") == "cancelled" or inv.get("state") == "cancelled" or inv.get("state") == "failed":
         inv_state = "Failed"

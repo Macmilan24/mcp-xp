@@ -8,6 +8,7 @@ class OutputDataset(BaseModel):
     name: str
     file_ext: Optional[str] = None
     visible: bool
+    file_path: str
     peek: Optional[str] = None
     data_type: str
     is_intermediate: Optional[bool] = None
