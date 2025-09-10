@@ -9,10 +9,12 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 from cryptography.fernet import Fernet
 
-from fastapi import FastAPI, Request, HTTPException, Body, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.openapi.utils import get_openapi
 from app.AI.chatbot import ChatSession, initialize_session
 
+from app.utils import import_published_workflows
 from app.log_setup import configure_logging
 from app.api.middleware import JWTGalaxyKeyMiddleware
 from app.api.api import api_router 
@@ -83,6 +85,13 @@ def custom_openapi():
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Add middleware
 app.add_middleware(JWTGalaxyKeyMiddleware)
@@ -183,6 +192,7 @@ async def get_create_galaxy_user_and_key(
         resp.raise_for_status()
         galaxy_user_id = resp.json()["id"]
         username= resp.json()["username"]
+        logger.info(resp.json())
 
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 400:
@@ -198,6 +208,7 @@ async def get_create_galaxy_user_and_key(
                     )
                 resp.raise_for_status()
                 users = resp.json()
+                logger.info(users)
                 galaxy_user_id = users[0]["id"]
                 username= users[0]["username"]
 
@@ -210,7 +221,7 @@ async def get_create_galaxy_user_and_key(
             logger.error(f"Unauthorized admin id: {e}")
             raise HTTPException(status_code=401, detail= f"Unauthorized admin id: {e}")
         else:
-            raise
+            raise Exception(f"error caused during getting api_key for the user: {e}")
 
     except HTTPException as e:
         logger.error(f"errror creating user acount: {e}")
@@ -242,6 +253,9 @@ async def get_create_galaxy_user_and_key(
         raise HTTPException(status=500, detail= f"error getting galaxy user api-key: {e}")
     except Exception as e:
         logger.error(f"Error: {e}")
+
+    # import missing public workflows into the users account.    
+    import_published_workflows(galaxy_url=GALAXY_URL, api_key=api_key)
 
     return  GalaxyUserAccount(
         username = username,
