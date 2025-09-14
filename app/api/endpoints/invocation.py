@@ -1,16 +1,18 @@
 import re
+import os
 import tempfile
-import uuid
+import redis
 import pathlib
 import shutil
+import asyncio
 from anyio.to_thread import run_sync
-from typing import Dict
+from typing import Dict, List
 import logging
 
 from sys import path
 path.append(".")
 
-from fastapi import APIRouter, Path, Query, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Path, Query, HTTPException, BackgroundTasks, Response
 from fastapi.responses import  FileResponse
 from fastapi.concurrency import run_in_threadpool
 from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation, Invocation
@@ -21,8 +23,9 @@ from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.api.schemas import invocation, workflow
 from app.api.socket_manager import ws_manager
 
-# Helper functions
+# Helper functions and redis instantiation
 logger = logging.getLogger("invocation")
+redis_client = redis.Redis(host='localhost', port=os.environ.get("REDIS_PORT"), db=0, decode_responses=True)
 
 def _rmtree_sync(path: pathlib.Path):
     shutil.rmtree(path, ignore_errors=True)
@@ -36,7 +39,6 @@ async def structure_ouptuts(_invocation: Invocation, outputs: list, workflow_man
         invocation= _invocation,
         outputs = outputs
         )
-    logger.info(f"itermediate:{len(intermediate_outputs)}: {[ds.name for ds in intermediate_outputs]}, final: {len(final_outputs)} {[ds.name for ds in final_outputs]}")
 
     try:
         # Format the outputs using Pydantic schemas
@@ -229,7 +231,8 @@ async def list_invocations(
     Optionally filter results to only show invocations for a specific workflow, and history.
     Returns basic information including invocation ID, workflow ID, history ID, state, and timestamps.
     """
-    galaxy_client = GalaxyClient(current_api_key.get())
+    api_key = current_api_key.get()
+    galaxy_client = GalaxyClient(api_key)
     workflow_manager = WorkflowManager(galaxy_client)
     try:
 
@@ -239,13 +242,13 @@ async def list_invocations(
                 workflow_id = workflow_id,
                 history_id = history_id
             )
-            logger.info("invocation retreived with history and workflow filter")
+            logger.info("invocations retreived with history and workflow filter")
         elif history_id:
             invocations = await run_in_threadpool(
                 workflow_manager.gi_object.gi.invocations.get_invocations,
                 history_id = history_id
             )
-            logger.info("invocation retreived with history filter")
+            logger.info("invocations retreived with history filter")
         # Filter by workflow_id if provided
         elif workflow_id:
             invocations = await run_in_threadpool(
@@ -253,17 +256,23 @@ async def list_invocations(
                 workflow_id = workflow_id,
                 limit = 100
             )
-            logger.info(invocations)
+            logger.info("Invocations retrieved with workflow filter.")
         else:
             # Get all invocations from Galaxy instance
             invocations = await run_in_threadpool(
                 workflow_manager.gi_object.gi.invocations.get_invocations
             )
-            logger.info("invocation retreived with no filter")
+            logger.info("invocations retreived with no filter")
+
         # Get list of workflows
         workflows = await run_in_threadpool(
             workflow_manager.gi_object.gi.workflows.get_workflows
         )
+        
+        # Filter out deleted invocations using Redis (user-specific)
+        deleted_key = f"deleted_invocations:{api_key}"
+        deleted_set = {inv_id for inv_id in redis_client.smembers(deleted_key)}
+        invocations = [inv for inv in invocations if inv.get('id') not in deleted_set]
 
         # format and map invocation to workflow_id
         invocation_list = []
@@ -279,7 +288,8 @@ async def list_invocations(
                         break
                 if stored_workflow_id:
                     break
-
+            
+            # Structure state: TODO: Needs improvement to give difference between pending and completed when state is scheduled.
             if inv.get("state") == "cancelled" or inv.get("state") == "cancelled" or inv.get("state") == "failed":
                 inv_state = "Failed"
             elif inv.get("state") == "scheduled":
@@ -289,6 +299,8 @@ async def list_invocations(
             else:
                 logger.warning(f"invocation state unknown: {inv.get('state')}") # Flag unknown invocation state or if it is none
                 inv_state == "Failed"
+                
+                
             invocation_list.append(
                 invocation.InvocationListItem(
                     id=inv.get("id"),
@@ -390,8 +402,6 @@ async def show_invocation_result(
         invocation_check = True
         )
     
-    logger.info(len(outputs))
-
     stored_workflow_id = None
     workflows = workflow_manager.gi_object.gi.workflows.get_workflows()
     for wf in workflows:
@@ -462,3 +472,75 @@ async def show_invocation_result(
         workflow= workflow_description,
         report = invocation_report
     )
+    
+
+async def _cancel_invocation_and_delete_data(invocation_ids: List[str], workflow_manager: WorkflowManager):
+    """Cancel running invocaitons and delete data in the background."""
+    
+    for invocation_id in invocation_ids:
+        try:
+            # Get the invocation object
+            _invocation = await run_in_threadpool(
+                workflow_manager.gi_object.invocations.get,
+                id_=invocation_id
+            )
+
+            # Cancel if not in a terminal state
+            state = _invocation.state
+            terminal_states = {'cancelled', 'failed', 'scheduled'}  # 'scheduled' often means completed
+            if state not in terminal_states:
+                await run_in_threadpool(
+                    workflow_manager.gi_object.gi.invocations.cancel_invocation,
+                    invocation_id=invocation_id
+                )
+                # Short wait for cancellation to propagate (or implement polling for state change)
+                await asyncio.sleep(2)
+
+            # Get outputs and purge datasets/collections to free space
+            outputs, _ = await workflow_manager.track_invocation(
+                invocation=_invocation,
+                tracker_id=invocation_id,
+                ws_manager=None,
+                invocation_check=True
+            )
+            for ds in outputs:
+                if isinstance(ds, HistoryDatasetAssociation):
+                    await run_in_threadpool(ds.delete)
+                elif isinstance(ds, HistoryDatasetCollectionAssociation):
+                    await run_in_threadpool(ds.delete)
+
+        except Exception as e:
+            logger.error(f"Error while deleting invocation: {e}")
+    
+@router.delete(
+    "/DELETE",
+    summary="Delete workflow invocations",
+    tags=["Invocation"],
+    status_code=204
+)
+async def delete_invocations(
+    invocation_ids: List[str] = Query(..., description="IDs of the workflow invocations to delete")
+) -> Response:
+    """
+    Simulates deletion of workflow invocations in the middleware layer since Galaxy does not support
+    permanent deletion of invocation records via API. Cancels the invocation(s) if running, purges
+    associated datasets to free space, and marks them as deleted in persistent storage to filter
+    from listings.
+    """
+    
+    api_key = current_api_key.get()
+    galaxy_client = GalaxyClient(api_key)
+    workflow_manager = WorkflowManager(galaxy_client)
+
+    try:
+        deleted_key = f"deleted_invocations:{api_key}"
+
+        # Mark all as deleted in Redis
+        redis_client.sadd(deleted_key, *invocation_ids)
+
+        # Spawn async deletion tasks
+        asyncio.create_task(_cancel_invocation_and_delete_data(invocation_ids, workflow_manager))
+
+        return Response(status_code=204)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete invocations: {e}")
