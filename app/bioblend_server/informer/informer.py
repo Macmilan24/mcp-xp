@@ -1,18 +1,24 @@
 import re
+import os
 import ast
 from rapidfuzz import process, fuzz
 import json
 import numpy as np
 import logging
 import redis
-import requests
+import httpx
+from dotenv import load_dotenv
 import sys
+import asyncio
+
+load_dotenv()
 sys.path.append('.')
 
 from app.log_setup import configure_logging
 from app.bioblend_server.galaxy import GalaxyClient
 from app.AI.provider.gemini_provider import GeminiProvider
-from app.bioblend_server.informer.prompts import RETRIEVE_PROMPT, SELECTION_PROMPT, INVOCATION_PROMPT
+from app.AI.provider.openai_provider import OpenAIProvider
+from app.bioblend_server.informer.prompts import RETRIEVE_PROMPT, SELECTION_PROMPT, INVOCATION_PROMPT, EXTRACT_KEY_WORD
 from app.AI.llm_config._base_config import LLMModelConfig
 
 
@@ -53,7 +59,7 @@ class GalaxyInformer:
         self.logger.info(f'Initializing the galaxy informer for entity type: {entity_type} for user {self.user_info["id"]}')
 
     @classmethod
-    async def create(cls, galaxy_client: GalaxyClient, entity_type: str):
+    async def create(cls, galaxy_client: GalaxyClient, entity_type: str, llm_provider = "openai"):
         """Asynchronous factory to create and fully initialize a GalaxyInformer instance."""
 
         from app.bioblend_server.informer.manager import InformerManager 
@@ -65,20 +71,50 @@ class GalaxyInformer:
         with open('app/AI/llm_config/llm_config.json', 'r') as f:
             model_config_data = json.load(f)
 
-        gemini_cfg = LLMModelConfig(model_config_data['providers']['gemini'])
-        self.llm = GeminiProvider(model_config=gemini_cfg)
-        self.redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+        
+        if llm_provider == "gemini":
+            gemini_cfg = LLMModelConfig(model_config_data['providers']['gemini'])
+            self.llm = GeminiProvider(model_config=gemini_cfg)
+        elif llm_provider == "openai":
+            openai_cfg = LLMModelConfig(model_config_data['providers']['openai'])
+            self.llm = OpenAIProvider(model_config=openai_cfg)
+            
+        self.redis_client = redis.Redis(host='localhost', port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
         self.manager = await InformerManager.create()
         return self
 
     async def get_embedding_model(self, input):
-        return await self.llm.gemini_embedding_model(input)
+        return await self.llm.embedding_model(input)
     
     async def get_response(self, message):
         # Accept either a raw string or already-formatted list[dict]
         if isinstance(message, str):
             message = [{"role": "user", "content": message}]
         return await self.llm.get_response(message)
+    
+    async def run_get_request(self, url, headers, params):
+        """
+        Sends an asynchronous HTTP GET request to the specified URL with the given headers and query parameters.
+        """
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url=url, headers=headers, params=params)
+            response.raise_for_status()
+        return response.json()
+    
+    async def run_post_request(self, url, headers=None, data=None, json_data=None, params=None):
+        """
+        Makes an asynchronous HTTP POST request using httpx.
+        """
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                url=url,
+                headers=headers,
+                data=data,
+                json=json_data,
+                params=params
+            )
+            response.raise_for_status()
+            return response.json()
     
     def extract_filename(self, path: str) -> str:
         """
@@ -230,7 +266,7 @@ class GalaxyInformer:
                 query=[query]
             embeddings = await self.get_embedding_model(query)
             embed = np.array(embeddings)
-            query_embedding = embed.reshape(-1, 768).tolist()[0]
+            query_embedding = embed.reshape(-1, 1536).tolist()[0]
             # Search vector database
             results = self.manager.search_by_vector(
                 collection=collection_name,
@@ -259,14 +295,7 @@ class GalaxyInformer:
         """
         Uses an LLM to extract relevant keywords for a fuzzy search.
         """
-        prompt = f"""
-        Extract the main keywords from the following query for a fuzzy search in a Galaxy platform(tool/workflow/dataset/invocation) database. 
-        Return a single Python list of a combination of keywords that can potentially be used to get search results for to the inputed query.
-        
-        Input query: "{query}"
-        
-        Output (Python list of keywords): []
-        """
+        prompt = EXTRACT_KEY_WORD.format(query = query)
         try:
             keywords_str = await self.get_response(prompt)
             self.logger.info("Extracted keywords for fuzzy search.")
@@ -419,8 +448,8 @@ class GalaxyInformer:
             for item in unique_fuzzy_results:
                 combined[item[self._entity_config[self.entity_type]['id_field']]] = item
             return dict(list(combined.items())[:3])
-
-    def _show_tool(self, tool_id):
+        
+    async def _show_tool(self, tool_id):
         """
         Replacement for bioblends show_tool function for richer information retrieval, 
         making direct get http request to the galaxy api
@@ -430,28 +459,27 @@ class GalaxyInformer:
         params= {'history_id': self.gi_user.histories.get_histories()[-1]['id']}
 
         try:
-            response= requests.get(url=url,headers=headers,params=params)
-            tool=response.json()
+            tool = await self.run_get_request(url=url, headers=headers, params=params)
         except Exception as e:
             self.logger.error(f'error fetching toolds via direct api call: {e}')
             raise 
         return tool
 
 
-    def get_entity_details(self, entity_id: str) -> dict:
-        """
-        Retrieves full details for a single entity by its ID.
-        """
-
+    async def get_entity_details(self, entity_id: str) -> dict:
         detail_methods = {
             'dataset': self.gi_user.datasets.show_dataset,
-            'tool': lambda id: self._show_tool(tool_id=id),
+            'tool': self._show_tool,
             'workflow': self.gi_user.workflows.show_workflow
         }
-        
+
         try:
             self.logger.info(f"Fetching details for {self.entity_type} with ID: {entity_id}")
-            return detail_methods[self.entity_type](entity_id)
+            method = detail_methods[self.entity_type]
+
+            if asyncio.iscoroutinefunction(method):
+                return await method(entity_id)
+            return method(entity_id)
         except Exception as e:
             self.logger.error(f"Could not retrieve details for {self.entity_type}:{entity_id}: {e}")
             return {"error": "Failed to retrieve details."}
@@ -590,7 +618,7 @@ class GalaxyInformer:
         for i, item_stub in enumerate(found_entities.values()):
             item_id = item_stub.get(id_field)
             if item_id:
-                details = self.get_entity_details(item_id)
+                details = await self.get_entity_details(item_id)
                 response_details[f'found {self.entity_type} {i}'] = details
         
         return await self.generate_final_response(search_query, response_details)

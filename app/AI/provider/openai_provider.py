@@ -3,60 +3,52 @@ import json
 import re
 import logging
 from typing import Dict, List
+import time
 
-import google.generativeai as genai
+from openai import AsyncOpenAI
 from sys import path
 path.append(".")
 
-from app.config import GEMINI_API_KEY
+from app.config import OPENAI_API_KEY
 from app.AI.provider._base_provider import LLMProvider
 
 
-class GeminiProvider(LLMProvider):
+class OpenAIProvider(LLMProvider):
     def __init__(self, model_config):
         super().__init__(model_config)
-        genai.configure(api_key=GEMINI_API_KEY)
+        self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
         self.log = logging.getLogger(self.__class__.__name__)
         
     async def get_response(self, messages: List[Dict[str, str]]) -> str:
         """
-        Sends a request to the Gemini API via google.generativeai and returns the generated response.
+        Sends a request to the OpenAI API via openai.AsyncOpenAI and returns the generated response.
         Identical behavior to the HTTP version: builds the same 'contents' structure, applies the same
         generation config, extracts a JSON codeblock if present, and returns parsed JSON when possible.
         """
         
-        # Convert messages to the format expected by Gemini
-        content_parts = []
-        for message in messages:
-            role = message.get("role", "user")
-            text = message.get("content", "")
-            content_parts.append({
-                "role": role,
-                "parts": [{"text": text}],
-            })
+        # Messages are already in the format expected by OpenAI (list of dicts with 'role' and 'content')
 
         # Generation config: same fields as before, mapped to SDK names
-        generation_config = genai.GenerationConfig(
-            temperature=self.config.config_data.get("temperature", 0.7),
-            max_output_tokens=self.config.config_data.get("max_tokens", 10000),
-            top_p=self.config.config_data.get("top_p", 1),
-            stop_sequences=self.config.config_data.get("stop", []),
-        )
+        generation_config = {
+            "temperature": self.config.config_data.get("temperature", 0.7),
+            "max_tokens": self.config.config_data.get("max_tokens", 10000),
+            "top_p": self.config.config_data.get("top_p", 1),
+            "stop": self.config.config_data.get("stop", []),
+        }
 
         model_name = self.config.config_data.get("model")
 
         try:
-            model = genai.GenerativeModel(model_name)
-
             # Mirror the previous 10s timeout
-            response = await model.generate_content_async(
-                contents=content_parts,
-                generation_config=generation_config,
-                request_options={"timeout": 10.0},
+            response = await self.client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                **generation_config,
+                timeout=10.0,
             )
 
-            content = response.text
+            content = response.choices[0].message.content
             json_content = self._extract_json_from_llm_response(content)
             try:
                 return json.loads(json_content)
@@ -64,8 +56,8 @@ class GeminiProvider(LLMProvider):
                 return json_content
 
         except Exception as e:
-            self.log.error(f"Gemini API error: {str(e)}")
-            raise RuntimeError(f"Gemini API error: {str(e)}") from e
+            self.log.error(f"OpenAI API error: {str(e)}")
+            raise RuntimeError(f"OpenAI API error: {str(e)}") from e
 
     def _extract_json_from_llm_response(self, content: str) -> str:
         """
@@ -106,12 +98,12 @@ class GeminiProvider(LLMProvider):
 
     async def embedding_model(self, batch: List[str]) -> List[List[float]]:
         """
-        Generates embeddings for a batch of texts using the google.generativeai SDK.
+        Generates embeddings for a batch of texts using the openai.AsyncOpenAI SDK.
         Logic preserved:
         - Uses batching (size 100)
         - Retries after an error with a fixed sleep time
         - Returns a flat list of embeddings
-        - Still async by running sync SDK calls in a thread pool
+        - Async native calls
         """
         
 
@@ -119,31 +111,28 @@ class GeminiProvider(LLMProvider):
         batch_size = 100
         sleep_time = 2  # Time to wait before retrying after an error
 
-        # Normalize embedding model name to include 'models/' prefix
+
         embedding_model = self.config.config_data.get("embedding_model")
         if not embedding_model:
             raise ValueError("Missing 'embedding_model' in config_data")
-        if not embedding_model.startswith("models/"):
-            embedding_model = f"models/{embedding_model}"
 
         for i in range(0, len(batch), batch_size):
             batch_segment = batch[i:i + batch_size]
 
             try:
-                # Run sync call in a thread so we don't block the event loop
-                result = await asyncio.to_thread(
-                    genai.embed_content,
+                result = await self.client.embeddings.create(
                     model=embedding_model,
-                    content=batch_segment,
+                    input=batch_segment,
                 )
 
-                # Extract embeddings (values) in order
-                batch_embeddings = result["embedding"]
+                # Extract embeddings
+                batch_embeddings = [e.embedding for e in result.data]
                 embeddings.extend(batch_embeddings)
 
-            except Exception as e:
-                self.log.error(f"Gemini Embedding error: {e}")
-                await asyncio.sleep(sleep_time)
 
-        self.log.info("Gemini embeddings generated.")
+            except Exception as e:
+                self.log.error(f"OpenAI Embedding error: {e}")
+                await asyncio.sleep(sleep_time)  # backoff before retry
+
+        self.log.info("OpenAI embeddings generated.")
         return embeddings
