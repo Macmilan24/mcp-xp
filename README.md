@@ -154,7 +154,6 @@ Before sending messages, you need to initialize the chat session:
 ```bash
 curl -X POST http://localhost:8000/initiate_chat
 ```
-````
 
 **Expected Response:**
 
@@ -277,5 +276,4 @@ This architecture allows for easy addition of new LLM providers by:
     python3 -m app.AI.bioblend_server.galaxy_tools
     ```
 
-```
 
