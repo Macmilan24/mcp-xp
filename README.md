@@ -1,4 +1,3 @@
-````markdown
 # Chatbot with Galaxy Integration
 
 This project integrates a chatbot with a custom MCP server (`bioblend_server`) to fetch tools from a Galaxy instance (e.g., https://usegalaxy.eu/). The chatbot uses various LLM providers (Azure, Groq) to process user requests and interacts with Galaxy via the bioblend library.
@@ -280,4 +279,3 @@ This architecture allows for easy addition of new LLM providers by:
 
 ```
 
-```
