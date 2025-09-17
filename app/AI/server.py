@@ -1,13 +1,13 @@
 import os
 import asyncio
-import shutil
 from typing import Any
 from contextlib import AsyncExitStack
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
 import logging
 
 from app.context import current_api_key
+
 
 class Server:
     """Manages MCP server connections and tool execution."""
@@ -19,41 +19,36 @@ class Server:
         self.session: ClientSession | None = None
         self._cleanup_lock: asyncio.Lock = asyncio.Lock()
         self.exit_stack: AsyncExitStack = AsyncExitStack()
-        self.logger= logging.getLogger(__class__.__name__)
+        self.logger = logging.getLogger(__class__.__name__)
+
+        # add Mcp url from config
+        self.mcp_server_url = self.config.get("url")
 
     async def initialize(self) -> None:
         """Initialize the server connection."""
-        command = (
-            shutil.which("npx")
-            if self.config["command"] == "npx"
-            else self.config["command"]
-        )
-        if command is None:
-            raise ValueError("The command must be a valid string and cannot be None.")
-
-        server_params = StdioServerParameters(
-            command=command,
-            args=self.config["args"],
-            env={**os.environ, **self.config["env"]}
-            if self.config.get("env")
-            else None,
-        )
+        if not self.mcp_server_url:
+            raise ValueError("MCP Server Url is not configured.")
         try:
-            self.logger.info("Attempting connection")
-            stdio_transport = await self.exit_stack.enter_async_context(
-                stdio_client(server_params)
+            self.logger.info("Attempting HTTP connection to MCP")
+
+            http_transport = await self.exit_stack.enter_async_context(
+                streamablehttp_client(url=self.mcp_server_url)
             )
-            read, write = stdio_transport
+            read, write, _ = http_transport
+
             session = await self.exit_stack.enter_async_context(
                 ClientSession(read, write)
             )
+
             await session.initialize()
             self.session = session
-            self.logger.info(f"Server {self.name} initialized successfully.")
+            self.logger.info(f"Server {self.name} connected to MCP server")
 
         except Exception as e:
             # logging.error(f"Error initializing server {self.name}: {e}")
-            self.logger.error(f"Error initializing server {self.name}: {e}")
+            self.logger.error(
+                f"Error initializing HTTP connection to MCP server {self.name}: {e}"
+            )
             await self.cleanup()
             raise
 
@@ -97,7 +92,7 @@ class Server:
             try:
                 self.logger.info(f"attempting tool execution: {tool_name}")
                 # logging.info(f"Executing {tool_name}...")
-                exec_arguments = {**arguments, 'api_key': current_api_key.get()}
+                exec_arguments = {**arguments, "api_key": current_api_key.get()}
                 result = await self.session.call_tool(tool_name, exec_arguments)
 
                 return result
