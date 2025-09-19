@@ -3,7 +3,7 @@ from fastmcp import FastMCP
 import logging
 
 from app.log_setup import configure_logging
-from app.bioblend_server.utils import ExecutorToolResponse, ApiKeyMiddleware, current_api_key_server
+from app.bioblend_server.utils import ExecutorToolResponse, JWTGalaxyKeyMiddleware, current_api_key_server
 
 from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.informer.informer import GalaxyInformer
@@ -22,12 +22,19 @@ if not os.environ.get("GALAXY_API_KEY"):
 
 bioblend_app = FastMCP(
                         name="galaxyTools",
-                        instructions="Provides tools and resources for interacting with Galaxy instances via BioBlend. "
-                                    "Tools that allow querying Galaxy information and retrieving any sort of information on a galaxy instance "
-                                    "Tools that allow execution of a tools and workflows within a galaxy instance."
-                                    "Make sure to specify 'tool', 'dataset', or 'workflow' for 'query_type'. "
-                                    "Use 'entity_id' only if the user explicitly provides an ID.",
-                        middleware=[ApiKeyMiddleware()]
+                        instructions="""
+                                    You have tools for interacting with a Galaxy instance.
+                                    These tools support these distinct capabilities:
+                                    
+                                    (1) (**get_galaxy_information_tool**) Querying **Galaxy information** to retrieve **accurate and upto date details(information)** about available tools, datasets, or workflows in **Galaxy**. 
+                                        Used for tool/workflow recommendations, To respond accurately when asked about the available tools, datasets, or workflows in the galaxy instance.
+                                        used only for gathering information to **respond to galaxy related queries**.
+                                        
+                                    (2) (**execute_galaxy_tool_workflow**) Executing Galaxy operations to run a specific tool or execute a workflow (used only when the user explicitly requests this operation).
+                                    
+                                    Always keep querying and executing strictly separate in purpose and usage.
+                                    """,
+                        middleware=[JWTGalaxyKeyMiddleware()]
                     )
 
 
