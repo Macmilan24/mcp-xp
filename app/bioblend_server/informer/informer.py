@@ -607,13 +607,13 @@ class GalaxyInformer:
          # Collate all details
         response_details = {}
 
-        if self.entity_type == 'workflow':
-            invocation_info =await self.get_invocation_details(query = search_query, workflow_id= found_entities['0'][id_field])
-            # register found information.
-            if invocation_info:
-                response_details['retrieved invocation details for the workflow'] = invocation_info
-            else:
-                response_details['retrieved invocation details for the workflow'] = "No matching invocation details found for the workflow "
+        # if self.entity_type == 'workflow':
+        #     invocation_info =await self.get_invocation_details(query = search_query, workflow_id= found_entities['0'][id_field])
+        #     # register found information.
+        #     if invocation_info:
+        #         response_details['retrieved invocation details for the workflow'] = invocation_info
+        #     else:
+        #         response_details['retrieved invocation details for the workflow'] = "No matching invocation details found for the workflow "
 
         for i, item_stub in enumerate(found_entities.values()):
             item_id = item_stub.get(id_field)
