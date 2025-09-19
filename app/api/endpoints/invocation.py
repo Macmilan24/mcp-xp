@@ -39,6 +39,7 @@ async def structure_ouptuts(_invocation: Invocation, outputs: list, workflow_man
         invocation= _invocation,
         outputs = outputs
         )
+    logger.info(f"itermediate:{len(intermediate_outputs)}: {[ds.name for ds in intermediate_outputs]}, final: {len(final_outputs)} {[ds.name for ds in final_outputs]}")
 
     try:
         # Format the outputs using Pydantic schemas
@@ -263,7 +264,6 @@ async def list_invocations(
                 workflow_manager.gi_object.gi.invocations.get_invocations
             )
             logger.info("invocations retreived with no filter")
-
         # Get list of workflows
         workflows = await run_in_threadpool(
             workflow_manager.gi_object.gi.workflows.get_workflows
@@ -288,9 +288,8 @@ async def list_invocations(
                         break
                 if stored_workflow_id:
                     break
-            
-            # Structure state: TODO: Needs improvement to give difference between pending and completed when state is scheduled.
-            if inv.get("state") == "cancelled" or inv.get("state") == "cancelled" or inv.get("state") == "failed":
+
+            if inv.get("state") == "cancelled" or inv.get("state") == "cancelled" or inv.get("state") == "failed" or inv.get("state") == "cancelling":
                 inv_state = "Failed"
             elif inv.get("state") == "scheduled":
                 inv_state = "Complete" # Not yet accurate.
@@ -299,8 +298,6 @@ async def list_invocations(
             else:
                 logger.warning(f"invocation state unknown: {inv.get('state')}") # Flag unknown invocation state or if it is none
                 inv_state == "Failed"
-                
-                
             invocation_list.append(
                 invocation.InvocationListItem(
                     id=inv.get("id"),
@@ -402,6 +399,8 @@ async def show_invocation_result(
         invocation_check = True
         )
     
+    logger.info(len(outputs))
+
     stored_workflow_id = None
     workflows = workflow_manager.gi_object.gi.workflows.get_workflows()
     for wf in workflows:
@@ -451,7 +450,7 @@ async def show_invocation_result(
     
     inv_state="Failed"
     # Strucutre Invocation state.
-    if inv.get("state") == "cancelled" or inv.get("state") == "cancelled" or inv.get("state") == "failed":
+    if inv.get("state") == "cancelled" or inv.get("state") == "cancelled" or inv.get("state") == "failed" or inv.get("state") == "cancelled":
         inv_state = "Failed"
     elif invocation_completed and inv.get("state") == "scheduled":
         inv_state = "Complete"
@@ -519,7 +518,7 @@ async def _cancel_invocation_and_delete_data(invocation_ids: List[str], workflow
     status_code=204
 )
 async def delete_invocations(
-    invocation_ids: List[str] = Query(..., description="IDs of the workflow invocations to delete")
+    invocation_ids: str = Query(..., description="Comma-separated IDs of the workflow invocations to delete")
 ) -> Response:
     """
     Simulates deletion of workflow invocations in the middleware layer since Galaxy does not support
@@ -527,19 +526,22 @@ async def delete_invocations(
     associated datasets to free space, and marks them as deleted in persistent storage to filter
     from listings.
     """
-    
+
     api_key = current_api_key.get()
     galaxy_client = GalaxyClient(api_key)
     workflow_manager = WorkflowManager(galaxy_client)
 
     try:
+        # Parse comma-separated string into list
+        ids_list = [i.strip() for i in invocation_ids.split(",") if i.strip()]
+
         deleted_key = f"deleted_invocations:{api_key}"
 
         # Mark all as deleted in Redis
-        redis_client.sadd(deleted_key, *invocation_ids)
+        redis_client.sadd(deleted_key, *ids_list)
 
         # Spawn async deletion tasks
-        asyncio.create_task(_cancel_invocation_and_delete_data(invocation_ids, workflow_manager))
+        asyncio.create_task(_cancel_invocation_and_delete_data(ids_list, workflow_manager))
 
         return Response(status_code=204)
     except Exception as e:
