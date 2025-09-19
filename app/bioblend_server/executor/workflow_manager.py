@@ -10,6 +10,7 @@ import traceback
 from rapidfuzz import process, fuzz
 from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
+from enum import Enum
 
 load_dotenv()
 
@@ -24,6 +25,23 @@ from app.bioblend_server.executor.tool_manager import ToolManager
 from app.bioblend_server.executor.form_generator import WorkflowFormGenerator
 
 from app.api.socket_manager import SocketManager, SocketMessageType, SocketMessageEvent
+
+class JobState(str, Enum):
+    NEW = "new"
+    RESUBMITTED = "resubmitted"
+    UPLOAD = "upload"
+    WAITING = "waiting"
+    QUEUED = "queued"
+    RUNNING = "running"
+    OK = "ok"
+    ERROR = "error"
+    FAILED = "failed"
+    PAUSED = "paused"
+    DELETING = "deleting"
+    DELETED = "deleted"
+    STOPPING = "stop"
+    STOPPED = "stopped"
+    SKIPPED = "skipped"
 
 class WorkflowManager:
     """Workflow manager class for managing Galaxy workflows"""
@@ -351,7 +369,7 @@ class WorkflowManager:
         """Tracks invocation steps and waits for the invocation reaches a terminal state and returns with the invocation results""" 
         
         # Safety: Semaphore to limit concurrent API calls (prevent overwhelming Galaxy server)
-        semaphore = asyncio.Semaphore(10)  # Adjust based on server capacity
+        semaphore = asyncio.Semaphore(20)  # Adjust based on server capacity
         
         # Helper: Fetch with semaphore
         async def _fetch_with_semaphore(self, coro):
@@ -388,19 +406,20 @@ class WorkflowManager:
         invocation_outputs = [] 
 
         start_time = time.time()
-        num_steps = len(invocation.steps)
+        inv = await _fetch_with_semaphore(self, asyncio.to_thread(
+            self.gi_object.gi.invocations.show_invocation, invocation_id=invocation.id
+        ))
+        num_steps = len(inv["steps"])
         estimated_wait = 20 * num_steps  # assume ~20s per step
         effective_initial_wait = max(estimated_wait, initial_wait)  # Renamed for clarity
         deadline = start_time + effective_initial_wait
         max_extension = effective_initial_wait // 2
-        poll_interval = max(1, min(5, num_steps // 10))  # Optimization: Start higher for large workflows
+        poll_interval = max(3, min(5, num_steps // 10))  # Optimization: Start higher for large workflows
 
         invocation_completed = False
 
-        # Optimization: Explicit initial check before loop for already-completed/failed workflows
-        inv = await _fetch_with_semaphore(self, asyncio.to_thread(
-            self.gi_object.gi.invocations.show_invocation, invocation_id=invocation.id
-        ))
+        # Explicit initial check before loop for already-completed/failed workflows
+
         if inv is None:
             self.log.error("Failed to fetch initial invocation state.")
             if invocation_check:
@@ -456,21 +475,29 @@ class WorkflowManager:
         step_index = 0
 
         for step in step_jobs:
-            step_id = step['id']
-            states = step['states']
-            # Simplified state (unchanged)
-            if states.get('running') == 1:
-                current_state = 'running'
-            elif states.get('ok') == 1:
-                current_state = 'ok'
-            elif states.get('error') or states.get("failed") == 1:
-                current_state = 'error'
+            step_id: str = step.get('id')
+            states: dict = step.get('states', {})
+            populated: str = step.get("populated_state", "Unknown")
+            
+            if populated in (JobState.FAILED) or populated not in (JobState.OK, JobState.WAITING, JobState.SKIPPED, JobState.RESUBMITTED, JobState.RUNNING, JobState.QUEUED):
+                self.log.error(f"Step {step_index} with id {step_id} {populated}; cancelling invocation")
+                current_state=JobState.ERROR
             else:
-                current_state = 'other'
+                # Pending/running/other
+                if states.get(JobState.RUNNING, 0) > 0:
+                    current_state = JobState.RUNNING
+                elif states.get(JobState.ERROR, 0) > 0 or states.get(JobState.FAILED, 0) > 0:
+                    current_state = JobState.ERROR
+                elif states.get(JobState.SKIPPED, 0) > 0:
+                    current_state = JobState.OK
+                elif states.get(JobState.OK, 0) > 0:
+                    current_state = JobState.OK
+                else:
+                    current_state = 'pending'
 
             # Log only on transitions (unchanged)
             prev = previous_states.get(step_id)
-            if current_state != prev and current_state in ('running', 'ok', 'error'):
+            if current_state != prev and current_state in (JobState.RUNNING, JobState.OK, JobState.ERROR):
                 self.log.info(f"Step {step_index} with id {step_id} transitioned to {current_state}")
                 previous_states[step_id] = current_state
                 progress_made = True
@@ -491,11 +518,11 @@ class WorkflowManager:
                 )
 
             # Collect IDs for newly completed (without fetching yet)
-            if current_state == 'ok' and step_id not in completed_steps:
+            if current_state == JobState.OK and step_id not in completed_steps:
                 newly_completed.append(step_id)
 
             # Handle errors (set flag and break to match original)
-            if current_state == 'error':
+            if current_state == JobState.ERROR:
                 self.log.error(f"Step {step_index} with id {step_id} failed; cancelling invocation")
                 all_ok = False  # Ensure all_ok is False on error
                 ws_data = {
@@ -507,50 +534,50 @@ class WorkflowManager:
                     data=ws_data, 
                     tracker_id=tracker_id
                 )
-                cancel_coro = asyncio.to_thread(invocation.cancel)
-                await _fetch_with_semaphore(self, cancel_coro)
+                cancel_coro = asyncio.to_thread(self.gi_object.gi.invocations.cancel_invocation, invocation_id=invocation.id)
+                asyncio.create_task(cancel_coro)
                 error_occurred = True
                 has_error = True
                 break
 
-            if current_state != 'ok':
+            if current_state != JobState.OK:
                 all_ok = False
             step_index += 1
 
-        # Parallel output collection for newly completed steps (optimization: gather for speed)
-        # For incremental: Use per-step jobs
-        if newly_completed and not all_ok:  # Only incremental if not fully complete
-            # Parallel fetch all jobs
-            job_futures = [asyncio.to_thread(self.gi_object.gi.jobs.show_job, job_id=sid) for sid in newly_completed]
-            jobs = await asyncio.gather(*job_futures, return_exceptions=True)
+        # # Parallel output collection for newly completed steps (optimization: gather for speed)
+        # # For incremental: Use per-step jobs
+        # if newly_completed and not all_ok:  # Only incremental if not fully complete
+        #     # Parallel fetch all jobs
+        #     job_futures = [asyncio.to_thread(self.gi_object.gi.jobs.show_job, job_id=sid) for sid in newly_completed]
+        #     jobs = await asyncio.gather(*job_futures, return_exceptions=True)
             
-            # Handle any exceptions in jobs
-            for i, job in enumerate(jobs):
-                if isinstance(job, Exception):
-                    self.log.error(f"Failed to fetch job {newly_completed[i]}: {job}")
-                    jobs[i] = {'outputs': {}}  # Treat as no outputs
+        #     # Handle any exceptions in jobs
+        #     for i, job in enumerate(jobs):
+        #         if isinstance(job, Exception):
+        #             self.log.error(f"Failed to fetch job {newly_completed[i]}: {job}")
+        #             jobs[i] = {'outputs': {}}  # Treat as no outputs
             
-            # Parallel fetch datasets only for steps with outputs
-            dataset_futures = []
-            for job in jobs:
-                outputs = job.get('outputs', {})
-                if outputs:
-                    first_output = next(iter(outputs.values()))
-                    first_output_id = first_output["id"]
-                    dataset_futures.append(_fetch_with_semaphore(self, _wait_for_dataset_safe(self, first_output_id)))
-                # If no outputs, skip (no future added)
+        #     # Parallel fetch datasets only for steps with outputs
+        #     dataset_futures = []
+        #     for job in jobs:
+        #         outputs = job.get('outputs', {})
+        #         if outputs:
+        #             first_output = next(iter(outputs.values()))
+        #             first_output_id = first_output["id"]
+        #             dataset_futures.append(_fetch_with_semaphore(self, _wait_for_dataset_safe(self, first_output_id)))
+        #         # If no outputs, skip (no future added)
             
-            if dataset_futures:
-                datasets = await asyncio.gather(*dataset_futures, return_exceptions=True)
-                # Handle exceptions in datasets
-                for i, ds in enumerate(datasets):
-                    if isinstance(ds, Exception) or ds is None:
-                        self.log.error(f"Failed to fetch dataset: {ds}")
-                        datasets[i] = None  # Or handle as needed
-                invocation_outputs.extend([d for d in datasets if d is not None])  # Append only valid
-            # Note: extend only those with outputs, in order (matches original)
+        #     if dataset_futures:
+        #         datasets = await asyncio.gather(*dataset_futures, return_exceptions=True)
+        #         # Handle exceptions in datasets
+        #         for i, ds in enumerate(datasets):
+        #             if isinstance(ds, Exception) or ds is None:
+        #                 self.log.error(f"Failed to fetch dataset: {ds}")
+        #                 datasets[i] = None  # Or handle as needed
+        #         invocation_outputs.extend([d for d in datasets if d is not None])  # Append only valid
+        #     # Note: extend only those with outputs, in order (matches original)
             
-            completed_steps.update(newly_completed)  # Add all newly, even without outputs
+        #     completed_steps.update(newly_completed)  # Add all newly, even without outputs
 
         if has_error:
             # Early exit if error (collected prior steps)
@@ -573,21 +600,21 @@ class WorkflowManager:
                 tracker_id=tracker_id
             )
             
-            # New: Final full collection if completed (overrides partial for consistency - BioBlend opt)
+            # Final full collection if completed (overrides partial for consistency - BioBlend opt)
             final_inv_coro = asyncio.to_thread(
                 self.gi_object.gi.invocations.show_invocation, invocation_id=invocation.id
             )
             final_inv = await _fetch_with_semaphore(self, final_inv_coro)
             if final_inv and 'outputs' in final_inv:
                 output_ids = []
-                for label, output_info in final_inv['outputs'].items():
+                for label, output_info in final_inv.get('outputs', {}).items():
                     if 'id' in output_info:
                         output_ids.append(output_info['id'])
                     self.log.debug(f"Found output '{label}': {output_info}")
 
             if final_inv and 'output_collections' in final_inv:
                 collection_output_ids = []
-                for label, output_info in final_inv['output_collections'].items():
+                for label, output_info in final_inv.get('output_collections', {}).items():
                     if 'id' in output_info:
                         collection_output_ids.append(output_info['id'])
                     self.log.debug(f"Found output '{label}': {output_info}")
@@ -614,6 +641,7 @@ class WorkflowManager:
 
         # If not completed/failed initially, enter polling loop
         while True:
+            
             # Reset for this poll cycle
             progress_made = False
             newly_completed = []
@@ -628,7 +656,7 @@ class WorkflowManager:
             if inv is None:
                 self.log.error("Failed to fetch invocation state during polling.")
                 break
-            invocation_state = inv["state"]
+            invocation_state = inv.get("state")
             self.log.debug(json.dumps(inv, indent=4))
             if invocation_state in ("failed", "error"):
                 self.log.error("workflow invocation has failed.")
@@ -651,21 +679,30 @@ class WorkflowManager:
                 step_jobs = []  # Safety fallback
             self.log.debug(json.dumps(step_jobs, indent=4))
 
-            # Same step processing as initial (duplicated for clarity; could extract to method)
             for step in step_jobs:
-                step_id = step['id']
-                states = step['states']
-                if states.get('running') == 1:
-                    current_state = 'running'
-                elif states.get('ok') == 1:
-                    current_state = 'ok'
-                elif states.get('error') or states.get("failed") == 1:
-                    current_state = 'error'
+                step_id: str = step.get('id')
+                states: dict = step.get('states', {})
+                populated: str = step.get("populated_state", "Unknown")
+                
+                if populated in (JobState.FAILED) or populated not in (JobState.OK, JobState.WAITING, JobState.SKIPPED, JobState.RESUBMITTED, JobState.RUNNING, JobState.QUEUED):
+                    self.log.error(f"Step {step_index} with id {step_id} {populated}; cancelling invocation")
+                    current_state=JobState.ERROR
                 else:
-                    current_state = 'other'
+                    # Pending/running/other
+                    if states.get(JobState.RUNNING, 0) > 0:
+                        current_state = JobState.RUNNING
+                    elif states.get(JobState.ERROR, 0) > 0 or states.get(JobState.FAILED, 0) > 0:
+                        current_state = JobState.ERROR
+                    elif states.get(JobState.SKIPPED, 0) > 0:
+                        current_state = JobState.OK
+                    elif states.get(JobState.OK, 0) > 0:
+                        current_state = JobState.OK
+                    else:
+                        current_state = 'pending'
 
+                # Log only on transitions (unchanged)
                 prev = previous_states.get(step_id)
-                if current_state != prev and current_state in ('running', 'ok', 'error'):
+                if current_state != prev and current_state in (JobState.RUNNING, JobState.OK, JobState.ERROR):
                     self.log.info(f"Step {step_index} with id {step_id} transitioned to {current_state}")
                     previous_states[step_id] = current_state
                     progress_made = True
@@ -685,12 +722,14 @@ class WorkflowManager:
                         tracker_id=tracker_id
                     )
 
-                if current_state == 'ok' and step_id not in completed_steps:
+                # Collect IDs for newly completed (without fetching yet)
+                if current_state == JobState.OK and step_id not in completed_steps:
                     newly_completed.append(step_id)
 
-                if current_state == 'error':
+                # Handle errors (set flag and break to match original)
+                if current_state == JobState.ERROR:
                     self.log.error(f"Step {step_index} with id {step_id} failed; cancelling invocation")
-                    all_ok = False
+                    all_ok = False  # Ensure all_ok is False on error
                     ws_data = {
                         "type": SocketMessageType.INVOCATION_FAILURE,
                         "payload": {"message": "Invocation failed or has error"}
@@ -700,42 +739,47 @@ class WorkflowManager:
                         data=ws_data, 
                         tracker_id=tracker_id
                     )
-                    cancel_coro = asyncio.to_thread(invocation.cancel)
-                    await _fetch_with_semaphore(self, cancel_coro)
+                    cancel_coro = asyncio.to_thread(self.gi_object.gi.invocations.cancel_invocation, invocation_id=invocation.id)
+                    asyncio.create_task(cancel_coro)
                     error_occurred = True
                     has_error = True
                     break
 
-                if current_state != 'ok':
+                if current_state != JobState.ERROR:
                     all_ok = False
                 step_index += 1
+            
+            for inv_steps in inv.get("steps", []):
+                if inv_steps.get("state", "Unknown") != "scheduled":
+                    all_ok = False
+                    break
 
-            # Parallel collection (same as initial, but incremental only)
-            if newly_completed and not all_ok:
-                job_futures = [asyncio.to_thread(self.gi_object.gi.jobs.show_job, job_id=sid) for sid in newly_completed]
-                jobs = await asyncio.gather(*job_futures, return_exceptions=True)
-                for i, job in enumerate(jobs):
-                    if isinstance(job, Exception):
-                        self.log.error(f"Failed to fetch job {newly_completed[i]}: {job}")
-                        jobs[i] = {'outputs': {}}
+            # # Parallel collection (same as initial, but incremental only)
+            # if newly_completed and not all_ok:
+            #     job_futures = [asyncio.to_thread(self.gi_object.gi.jobs.show_job, job_id=sid) for sid in newly_completed]
+            #     jobs = await asyncio.gather(*job_futures, return_exceptions=True)
+            #     for i, job in enumerate(jobs):
+            #         if isinstance(job, Exception):
+            #             self.log.error(f"Failed to fetch job {newly_completed[i]}: {job}")
+            #             jobs[i] = {'outputs': {}}
                 
-                dataset_futures = []
-                for job in jobs:
-                    outputs = job.get('outputs', {})
-                    if outputs:
-                        first_output = next(iter(outputs.values()))
-                        first_output_id = first_output["id"]
-                        dataset_futures.append(_fetch_with_semaphore(self, _wait_for_dataset_safe(self, first_output_id)))
+            #     dataset_futures = []
+            #     for job in jobs:
+            #         outputs = job.get('outputs', {})
+            #         if outputs:
+            #             first_output = next(iter(outputs.values()))
+            #             first_output_id = first_output["id"]
+            #             dataset_futures.append(_fetch_with_semaphore(self, _wait_for_dataset_safe(self, first_output_id)))
                 
-                if dataset_futures:
-                    datasets = await asyncio.gather(*dataset_futures, return_exceptions=True)
-                    for i, ds in enumerate(datasets):
-                        if isinstance(ds, Exception) or ds is None:
-                            self.log.error(f"Failed to fetch dataset: {ds}")
-                            datasets[i] = None
-                    invocation_outputs.extend([d for d in datasets if d is not None])
+            #     if dataset_futures:
+            #         datasets = await asyncio.gather(*dataset_futures, return_exceptions=True)
+            #         for i, ds in enumerate(datasets):
+            #             if isinstance(ds, Exception) or ds is None:
+            #                 self.log.error(f"Failed to fetch dataset: {ds}")
+            #                 datasets[i] = None
+            #         invocation_outputs.extend([d for d in datasets if d is not None])
                 
-                completed_steps.update(newly_completed)
+            #     completed_steps.update(newly_completed)
 
             if has_error:
                 break
@@ -803,15 +847,15 @@ class WorkflowManager:
                     data=ws_data, 
                     tracker_id=tracker_id
                 )
-                cancel_coro = asyncio.to_thread(invocation.cancel)
-                await _fetch_with_semaphore(self, cancel_coro)
+                cancel_coro = asyncio.to_thread(self.gi_object.gi.invocations.cancel_invocation, invocation_id=invocation.id)
+                asyncio.create_task(cancel_coro)
                 break
             
             # Adaptive polling interval based on progress made (fixed assignment)
             if progress_made:
-                poll_interval = 1
+                poll_interval = 4
             else:
-                poll_interval = min(30, poll_interval * 1.5)  # Optimization: Exponential backoff to 30s max for no-progress stalls
+                poll_interval = min(15, poll_interval * 1.5)  # Optimization: Exponential backoff to 30s max for no-progress stalls
             
             await asyncio.sleep(poll_interval) 
         
