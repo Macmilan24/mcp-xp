@@ -192,7 +192,7 @@ async def get_create_galaxy_user_and_key(
         resp.raise_for_status()
         galaxy_user_id = resp.json()["id"]
         username= resp.json()["username"]
-        logger.info(resp.json())
+        logger.info(f"Galaxy account created with username {username}")
 
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 400:
@@ -208,9 +208,9 @@ async def get_create_galaxy_user_and_key(
                     )
                 resp.raise_for_status()
                 users = resp.json()
-                logger.info(users)
                 galaxy_user_id = users[0]["id"]
                 username= users[0]["username"]
+                logger.info(f"Galaxy User fetched with username {username}")
 
             except HTTPException as e: 
                 raise HTTPException(status_code=400, detail= f"error getting/creating galaxy user: {e}")
@@ -247,6 +247,7 @@ async def get_create_galaxy_user_and_key(
 
         payload = json.dumps({"apikey": api_key}).encode("utf-8")
         api_token = fernet.encrypt(payload).decode("utf-8")
+        logger.info(f"Galaxy api-key extracted and encrypted for user with galaxy id {galaxy_user_id}")
 
     except HTTPException as e:
         logger.error(f"error creating galaxy user api key: {e}")
