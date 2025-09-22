@@ -1,3 +1,4 @@
+import os
 import re
 import ast
 from rapidfuzz import process, fuzz
@@ -75,10 +76,12 @@ class GalaxyInformer:
 
         gemini_cfg = LLMModelConfig(model_config_data["providers"]["gemini"])
         self.llm = GeminiProvider(model_config=gemini_cfg)
+        redis_host = os.environ.get("REDIS_HOST", "redis")
         self.redis_client = redis.Redis(
-            host="localhost", port=6379, db=0, decode_responses=True
+            host=redis_host, port=6379, db=0, decode_responses=True
         )
-        self.manager = await InformerManager.create()
+        qdrant_url = os.environ.get("QDRANT_URL", "http://qdrant:6333")
+        self.manager = await InformerManager.create(qdrant_url=qdrant_url)
         return self
 
     async def get_embedding_model(self, input):

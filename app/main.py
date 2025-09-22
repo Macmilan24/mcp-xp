@@ -2,9 +2,13 @@ import os
 import sys
 import asyncio
 import logging
+from dotenv import load_dotenv
 from pydantic import BaseModel
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.openapi.utils import get_openapi
+
+load_dotenv()
+
 from app.AI.chatbot import ChatSession, initialize_session
 
 from app.log_setup import configure_logging
