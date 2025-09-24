@@ -92,7 +92,7 @@ class Server:
             try:
                 self.logger.info(f"attempting tool execution: {tool_name}")
                 # logging.info(f"Executing {tool_name}...")
-                exec_arguments = {**arguments, "api_key": current_api_key.get()}
+                exec_arguments = arguments
                 result = await self.session.call_tool(tool_name, exec_arguments)
 
                 return result

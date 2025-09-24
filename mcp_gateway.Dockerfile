@@ -10,10 +10,13 @@ ENV PYTHONUNBUFFERED 1
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN mkdir -p app/bioblend_server
+RUN mkdir -p app/bioblend_server app/api
 
 COPY app/__init__.py app/
 COPY app/bioblend_server/__init__.py app/bioblend_server/
+
+COPY app/api/__init__.py app/api/
+COPY app/api/security.py app/api/
 
 COPY app/bioblend_server/server.py app/bioblend_server/
 COPY app/bioblend_server/__main__.py app/bioblend_server/

@@ -1,14 +1,17 @@
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
+from contextvars import ContextVar
 
 from fastmcp.server.middleware import Middleware, MiddlewareContext, CallNext
 from mcp.types import CallToolRequestParams, CallToolResult
 
-from contextvars import ContextVar
+from app.api.security import decrypt_api_key_from_token
 
-current_api_key_server: ContextVar[str] = ContextVar("current_api_key_server", default=None)
+current_api_key_server: ContextVar[str] = ContextVar(
+    "current_api_key_server", default=None
+)
 
-# Structure for the executor tool to respond with.
+
 class ExecutorToolResponse(BaseModel):
     entity: Literal["tool", "workflow"] = Field(..., title="Entity")
     name: str = Field(..., title="Name")
@@ -16,23 +19,43 @@ class ExecutorToolResponse(BaseModel):
     description: Optional[str] = Field(default=None, title="Description")
     action_link: str = Field(..., title="Action Link")
 
-# Middleware to extract, save to context variable and remove the api_key from tool call arguments 
-class ApiKeyMiddleware(Middleware):
+
+class JWTAuthMiddleware(Middleware):
+    """
+    A FastMCP middleware that enforces JWT-based authentication for tool calls.
+    """
+
     async def on_call_tool(
         self,
         context: MiddlewareContext[CallToolRequestParams],
-        call_next: CallNext[CallToolRequestParams, CallToolResult]
+        call_next: CallNext[CallToolRequestParams, CallToolResult],
     ) -> CallToolResult:
         params = context.message
         arguments = dict(params.arguments)
-        api_key = arguments.pop('api_key', None)
-        if api_key is None:
-            raise ValueError("No API key provided")
-        current_api_key_server.set(api_key)
+
+        token = arguments.pop("token", None)
+        if not token:
+            raise PermissionError(
+                "Authentication failed: 'token' argument is missing from the tool call."
+            )
+
         try:
-            new_params = params.model_copy(update={'arguments': arguments})
+            api_key = decrypt_api_key_from_token(token)
+            if not api_key:
+                raise PermissionError(
+                    "Authentication failed: The provided token is invalid or expired."
+                )
+
+            current_api_key_server.set(api_key)
+
+            new_params = params.model_copy(update={"arguments": arguments})
             new_context = context.copy(message=new_params)
-            result = await call_next(new_context)
+
+            return await call_next(new_context)
+
+        except PermissionError:
+            raise
         except Exception as e:
-            raise e
-        return result
+            raise RuntimeError(
+                f"An unexpected error occurred in the authentication middleware: {e}"
+            )

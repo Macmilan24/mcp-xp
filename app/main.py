@@ -114,7 +114,9 @@ async def send_message(request: Request, message: MessageRequest):
         # return {"error": "Chat session not initiated for this IP"}
 
     chat_session = sessions[user_ip]
-    response = await chat_session.respond(model_id="gemini", user_input=message.message)
+    response = await chat_session.respond(
+        request=request, model_id="gemini", user_input=message.message
+    )
     return {"response": response}
 
 

@@ -2,6 +2,7 @@ import json
 import logging
 
 from datetime import datetime
+from fastapi import Request
 from app.AI.server import Server
 
 from app.AI.llm_config.groq_config import GROQConfig
@@ -14,30 +15,37 @@ from app.AI.provider.gemini_provider import GeminiProvider
 
 from app.config import Configuration
 
+
 class LLMClient:
     def __init__(self, llm_providers: dict):
         self.providers = llm_providers  # Creates an instance of the providers
 
-logger=logging.getLogger()
+
+logger = logging.getLogger()
+
 
 class ChatSession:
     """Orchestrates the interaction between user, LLM, and tools."""
 
-    def __init__(self, servers: list[Server], llm_client: LLMClient, user_ip: str = None) -> None:
+    def __init__(
+        self, servers: list[Server], llm_client: LLMClient, user_ip: str = None
+    ) -> None:
         self.servers: list[Server] = servers
         self.llm_client: LLMClient = llm_client
         self.memory = []
         self.system_message = None
         self.messages: list = None
         self.user_ip = user_ip
-        self.tools = None 
+        self.tools = None
         self.log_filename = f"chat_session_{self.user_ip}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        self.logger=logging.getLogger(__class__.__name__)
+        self.logger = logging.getLogger(__class__.__name__)
 
     @classmethod
-    async def create(cls, servers: list[Server], llm_client: LLMClient, user_ip: str = None) -> "ChatSession":
+    async def create(
+        cls, servers: list[Server], llm_client: LLMClient, user_ip: str = None
+    ) -> "ChatSession":
         self = cls(servers, llm_client, user_ip)
-        
+
         try:
             for server in self.servers:
                 try:
@@ -53,7 +61,7 @@ class ChatSession:
                 for server in self.servers:
                     tools = await server.list_tools()
                     self.logger.info(f"Type of tools: {type(tools)} for {server.name}")
-                    self.tools=tools.tools
+                    self.tools = tools.tools
                     all_tools.extend(tools.tools)
                 tools_description = [tool for tool in all_tools]
             except Exception as e:
@@ -97,7 +105,7 @@ class ChatSession:
                 log_data = {
                     "user_ip": self.user_ip,
                     "session_start": datetime.now().isoformat(),
-                    "messages": []
+                    "messages": [],
                 }
                 json.dump(log_data, log_file)
                 log_file.write("\n")  # Ensure each session is on a new line
@@ -118,7 +126,7 @@ class ChatSession:
                 self.logger.error(f"Error cleaning up server {server.name}: {e}")
                 pass
 
-    async def process_llm_response(self, llm_response: str) -> str:
+    async def process_llm_response(self, llm_response: str, request: Request) -> str:
         """Process the LLM response and execute tools if needed.
 
         Args:
@@ -130,15 +138,20 @@ class ChatSession:
         import json
 
         try:
-            tool_call = json.loads(llm_response) if isinstance(llm_response,str) else llm_response
+            tool_call = (
+                json.loads(llm_response)
+                if isinstance(llm_response, str)
+                else llm_response
+            )
             self.logger.info(f" the tool called: {tool_call}")
             if "tool" in tool_call and "arguments" in tool_call:
                 # logging.info(f"Executing tool: {tool_call['tool']}")
                 # logging.info(f"With arguments: {tool_call['arguments']}")
+                tool_call["arguments"]["token"] = request.state.mcp_token
 
                 for server in self.servers:
                     tools = self.tools  # Use stored tools
-                    
+
                     if any(tool.name == tool_call["tool"] for tool in tools):
                         try:
                             result = await server.execute_tool(
@@ -153,22 +166,33 @@ class ChatSession:
                                 #     f"Progress: {progress}/{total} "
                                 #     f"({percentage:.1f}%)"
                                 # )
-                            if isinstance(result.content, list) and len(result.content) > 0:
+                            if (
+                                isinstance(result.content, list)
+                                and len(result.content) > 0
+                            ):
 
                                 content_type = result.content[0].type
                                 content_text = result.content[0].text
                                 annotations = result.content[0].annotations
 
-                                self.logger.info(f" The return type: {content_type} Annotations: {annotations} Content : {content_text} type: {type(content_text)}")
-                            
+                                self.logger.info(
+                                    f" The return type: {content_type} Annotations: {annotations} Content : {content_text} type: {type(content_text)}"
+                                )
+
                                 if isinstance(content_text, str):
                                     try:
                                         content_text = json.loads(content_text)
-                                        self.logger.info(f"Parsed JSON content, type: {type(content_text)}")
+                                        self.logger.info(
+                                            f"Parsed JSON content, type: {type(content_text)}"
+                                        )
                                     except json.JSONDecodeError:
-                                        self.logger.warning("Content is not valid JSON.")
+                                        self.logger.warning(
+                                            "Content is not valid JSON."
+                                        )
 
-                                if isinstance(content_text, dict) and content_text.get("action_link"):
+                                if isinstance(content_text, dict) and content_text.get(
+                                    "action_link"
+                                ):
                                     return content_text
 
                                 else:
@@ -198,7 +222,7 @@ class ChatSession:
         except json.JSONDecodeError:
             return llm_response
 
-    async def respond(self, model_id: str, user_input: str) -> str:
+    async def respond(self, model_id: str, request: Request, user_input: str) -> str:
         """Handle a user input and return the assistant's response."""
         # Process user input
 
@@ -210,33 +234,58 @@ class ChatSession:
 
             # Validate model_id
             if model_id not in providers:
-                raise ValueError(f"Invalid model_id: {model_id}. Available providers: {list(providers.keys())}")
+                raise ValueError(
+                    f"Invalid model_id: {model_id}. Available providers: {list(providers.keys())}"
+                )
 
             # Get LLM response
             llm_response = await providers[model_id].get_response(self.messages)
 
             # Process potential tool calls
-            result = await self.process_llm_response(llm_response)
+            result = await self.process_llm_response(llm_response, request)
 
             if result != llm_response:
                 # Tool was used; get a final response
-                self.messages.append({"role": "assistant", "content": f"{llm_response}"})
+                self.messages.append(
+                    {"role": "assistant", "content": f"{llm_response}"}
+                )
                 if isinstance(result, dict):
-                    self.messages.append({"role": "user", "content":"\n".join(f"{key}: {value}" for key, value in result.items())})
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": "\n".join(
+                                f"{key}: {value}" for key, value in result.items()
+                            ),
+                        }
+                    )
                 else:
                     self.messages.append({"role": "user", "content": result})
 
                 if isinstance(result, dict) and result.get("action_link"):
                     final_response = result
                     try:
-                        
-                        self.messages.append({"role": "assistant", "content": f"Generated form for {final_response['entity']} name: {final_response['name']}, return form link: {final_response['action_link']}"})
-                        self.memory.append({"role": "assistant", "content": f"Generated form for {final_response['entity']} name: {final_response['name']}, return form link: {final_response['action_link']}"})
+
+                        self.messages.append(
+                            {
+                                "role": "assistant",
+                                "content": f"Generated form for {final_response['entity']} name: {final_response['name']}, return form link: {final_response['action_link']}",
+                            }
+                        )
+                        self.memory.append(
+                            {
+                                "role": "assistant",
+                                "content": f"Generated form for {final_response['entity']} name: {final_response['name']}, return form link: {final_response['action_link']}",
+                            }
+                        )
                     except Exception as e:
-                        raise                
+                        raise
                 else:
-                    final_response = await providers[model_id].get_response(self.messages)
-                    self.messages.append({"role": "assistant", "content": final_response})
+                    final_response = await providers[model_id].get_response(
+                        self.messages
+                    )
+                    self.messages.append(
+                        {"role": "assistant", "content": final_response}
+                    )
                     self.memory.append({"role": "assistant", "content": final_response})
                 # print(self.messages)
                 return final_response
@@ -263,10 +312,9 @@ async def initialize_session(user_ip: str) -> ChatSession:
     ]
     llm_providers = get_providers()
     llm_client = LLMClient(llm_providers)
-    logger.info('Initializng session')
+    logger.info("Initializng session")
     chat_session = await ChatSession.create(servers, llm_client, user_ip)
     return chat_session
-
 
 
 def get_providers():
@@ -275,10 +323,14 @@ def get_providers():
     with open("app/AI/llm_config/llm_config.json", "r") as f:
         llm_config = json.load(f)
         for provider_name, provider_config in llm_config["providers"].items():
-            
-            if provider_name == "groq": provider_class = GroqProvider(GROQConfig(provider_config))
-            elif provider_name == "azure": provider_class = AzureProvider(AZUREConfig(provider_config))
-            elif provider_name == "gemini": provider_class = GeminiProvider(GEMINIConfig(provider_config))
-            else: raise ValueError(f"Unknown provider: {provider_name}")
+
+            if provider_name == "groq":
+                provider_class = GroqProvider(GROQConfig(provider_config))
+            elif provider_name == "azure":
+                provider_class = AzureProvider(AZUREConfig(provider_config))
+            elif provider_name == "gemini":
+                provider_class = GeminiProvider(GEMINIConfig(provider_config))
+            else:
+                raise ValueError(f"Unknown provider: {provider_name}")
             provider_registry[provider_name] = provider_class
     return provider_registry

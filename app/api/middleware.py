@@ -12,6 +12,8 @@ path.append(".")
 
 from app.context import current_api_key
 
+from app.api.security import create_mcp_access_token
+
 load_dotenv()
 
 
@@ -57,6 +59,16 @@ class GalaxyAPIKeyMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={"detail": "Invalid Galaxy API key."},
+            )
+
+        try:
+            mcp_token = create_mcp_access_token(galaxy_api_key=api_key)
+            request.state.mcp_token = mcp_token
+        except Exception as e:
+            self.log.error(f"Failed to create internal MCP token: {e}")
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"detail": "Could not generate internal security token."},
             )
 
         # Save key in context so downstream code can access it

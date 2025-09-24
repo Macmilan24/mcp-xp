@@ -6,7 +6,7 @@ import logging
 from app.log_setup import configure_logging
 from app.bioblend_server.utils import (
     ExecutorToolResponse,
-    ApiKeyMiddleware,
+    JWTAuthMiddleware,
     current_api_key_server,
 )
 
@@ -31,7 +31,7 @@ bioblend_app = FastMCP(
     "Tools that allow execution of a tools and workflows within a galaxy instance."
     "Make sure to specify 'tool', 'dataset', or 'workflow' for 'query_type'. "
     "Use 'entity_id' only if the user explicitly provides an ID.",
-    middleware=[ApiKeyMiddleware()],
+    middleware=[JWTAuthMiddleware()],
 )
 
 
