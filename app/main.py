@@ -4,10 +4,14 @@ import json
 import httpx
 import asyncio
 import logging
+import redis
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from cryptography.fernet import Fernet
+from contextlib import asynccontextmanager
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, Request, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -16,12 +20,22 @@ from app.AI.chatbot import ChatSession, initialize_session
 
 from app.utils import import_published_workflows
 from app.log_setup import configure_logging
-from app.api.middleware import JWTGalaxyKeyMiddleware
+from app.api.middleware import JWTGalaxyKeyMiddleware, RateLimiterMiddleware
 from app.api.api import api_router 
 from app.api.socket_manager import ws_manager, SocketMessageEvent
-
+from app.orchestration.invocation_cache import InvocationCache
+from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 
 load_dotenv()
+
+# Global variables for cache and background tasks
+# Initialize Redis client
+redis_client = redis.Redis(host='localhost', port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
+invocation_cache = None
+background_tasks = None
+sessions = {}
+
+logger= logging.getLogger('main')
 
 GALAXY_URL = os.getenv("GALAXY_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -31,10 +45,6 @@ fernet = Fernet(SECRET_KEY.encode() if isinstance(SECRET_KEY, str) else SECRET_K
 
 
 configure_logging()
-
-logger= logging.getLogger('main')
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))  # Optional: Add project root to Python path
-sessions = {}
 
 # Base Schemas
 
@@ -82,9 +92,62 @@ def custom_openapi():
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager for startup and shutdown tasks"""
+    global redis_client, invocation_cache, background_tasks
+    
+    # Startup
+    try:        
+        # Test Redis connection
+        await asyncio.get_event_loop().run_in_executor(None, redis_client.ping)
+        logger.info("Redis connection established")
+        
+        # Initialize cache
+        invocation_cache = InvocationCache(redis_client)
+        
+        # Initialize background tasks
+        background_tasks = InvocationBackgroundTasks(invocation_cache, redis_client)
+        
+        # Start background tasks
+        asyncio.create_task(background_tasks.start_cache_warming_task())
+        asyncio.create_task(background_tasks.start_cleanup_task())
+        
+        logger.info("Background tasks started")
+        logger.info("Application startup complete")
+        
+    except Exception as e:
+        logger.error(f"Startup failed: {e}")
+        raise
+    
+    yield  # Application runs here
+    
+    # Shutdown
+    try:
+        logger.info("Shutting down application...")
+        
+        # Cancel background tasks
+        for task in asyncio.all_tasks():
+            if not task.done():
+                task.cancel()
+        
+        # Close Redis connection
+        if redis_client:
+            redis_client.close()
+        
+        logger.info("Shutdown complete")
+        
+    except Exception as e:
+        logger.error(f"Shutdown error: {e}")
 
-app = FastAPI()
 
+
+# Initialize the FastAPI application with a lifespan context
+app = FastAPI(lifespan=lifespan)
+
+
+
+# Add middlewares
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -92,9 +155,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Add middleware
 app.add_middleware(JWTGalaxyKeyMiddleware)
+app.add_middleware(RateLimiterMiddleware, redis_client=redis_client)
 
 # Include the API router
 app.include_router(api_router, prefix="/api")
