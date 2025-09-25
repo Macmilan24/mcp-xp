@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Dict, Annotated, Union, Any, Literal
+from typing import List, Dict, Annotated, Union, Any, Literal, Optional
 from app.api.schemas.workflow import WorkflowExecutionResponse, OutputDataset, CollectionOutputDataset
 
 from app.api.schemas.workflow import WorkflowListItem
@@ -37,4 +37,4 @@ class InvocationResult(BaseModel):
                                 Field(discriminator="type")
                             ]] = []
     workflow:WorkflowListItem
-    report : Dict[str, Any] = None
+    report : Optional[Dict[str, Any]] = None
