@@ -63,17 +63,19 @@ async def list_invocations(
     
     # Initialize cache and clients
     try:
+        galaxy_client = GalaxyClient(api_key)
+        username = galaxy_client.whoami
         # Get deleted invocations list.
-        deleted_invocation_ids= await invocation_cache.get_deleted_invocations(api_key=api_key)
+        deleted_invocation_ids= await invocation_cache.get_deleted_invocations(username)
         
         # Step 1: Request deduplication check and filter out deleted invocations
-        request_hash = _generate_request_hash(workflow_id, history_id)
-        if await invocation_cache.is_duplicate_request(api_key, request_hash):
+        request_hash = _generate_request_hash(api_key, workflow_id, history_id)
+        if await invocation_cache.is_duplicate_request(username, request_hash):
             logger.info("Duplicate request detected, serving from cache")
         
         # Step 2: Try to get cached response first
         cached_response = await invocation_cache.get_response_cache(
-            api_key, workflow_id, history_id
+            username, workflow_id, history_id
         )
         if cached_response:
             logger.info("Filtering and serving response from cache")
@@ -83,18 +85,17 @@ async def list_invocations(
             ]
             response_data = {
                 "invocations": filtered_cache_response,
-                "total_count": len(filtered_cache_response)
             }
 
             return invocation.InvocationList(**response_data)
         
         # Step 3: Initialize Galaxy client and workflow manager
-        galaxy_client = GalaxyClient(api_key)
+        
         workflow_manager = WorkflowManager(galaxy_client)
         
         # Step 4: Fetch data with parallel processing and caching
-        invocations_data, workflows_data, deleted_set = await _fetch_core_data(
-            invocation_cache, api_key, workflow_manager, workflow_id, history_id
+        invocations_data, workflows_data = await _fetch_core_data(
+            invocation_cache, username, workflow_manager, workflow_id, history_id
         )
         
         if not invocations_data:
@@ -102,32 +103,40 @@ async def list_invocations(
             return invocation.InvocationList(invocations=[], total_count=0)
         
         # Step 5: Get invocation-workflow mapping (cached or build)
-        workflow_mapping = await _get_workflow_mapping(
-            invocation_cache, api_key, workflow_manager, workflows_data, invocations_data
-        )
+        workflow_mapping, all_invocations = await invocation_background.build_invocation_workflow_mapping(workflow_manager,workflows_data)
         
-        # Step 6: Filter out deleted invocations
-        invocations_data = [
-            inv for inv in invocations_data 
-            if inv.get('id') not in deleted_set
-        ]
+        if workflow_mapping:
+            await invocation_cache.set_invocation_workflow_mapping(username, workflow_mapping)
+        if not workflow_id and not history_id:
+            if all_invocations:
+                await invocation_cache.set_invocations_cache(username, all_invocations, filters={"workflow_id": None, "history_id": None})
+        
+            # Step 6: Filter out deleted invocations
+            invocations_data = [
+                inv for inv in all_invocations 
+                if inv.get('id') not in deleted_invocation_ids
+            ]
+        else:
+            invocations_data = [
+                inv for inv in invocations_data 
+                if inv.get('id') not in deleted_invocation_ids
+            ]
+        logger.info(f"length after filteration {len(invocations_data)}")
         
         # Step 7: Format invocations and filter deleted invocatoins optimized processing
         invocation_list = await _format_invocations(
-            api_key, invocations_data, workflow_mapping
+            username, invocations_data, workflow_mapping
         )
         
-        invocation_list = [inv for inv in invocation_list if inv.id not in deleted_invocation_ids]
-        
+
         # Step 8: Build response
         response_data = {
             "invocations": [inv.model_dump() for inv in invocation_list],
-            "total_count": len(invocations_data)
         }
         
         # Step 9: Cache the response
         await invocation_cache.set_response_cache(
-            api_key, response_data, workflow_id, history_id
+            username, response_data, workflow_id, history_id
         )
         
         logger.info(f"Successfully retrieved {len(invocation_list)} invocations (total: {len(invocations_data)})")
@@ -146,7 +155,7 @@ async def list_invocations(
             )
 
 
-async def _fetch_core_data(cache: InvocationCache, api_key: str, workflow_manager: WorkflowManager, workflow_id: str, history_id: str):
+async def _fetch_core_data(cache: InvocationCache, username: str, workflow_manager: WorkflowManager, workflow_id: str, history_id: str):
     """Fetch core data (invocations, workflows, deleted set) with parallel processing and caching"""
     
     # Prepare filter dictionary for caching
@@ -154,7 +163,7 @@ async def _fetch_core_data(cache: InvocationCache, api_key: str, workflow_manage
     
     async def fetch_invocations():
         """Fetch invocations with caching"""
-        cached_invocations = await cache.get_invocations_cache(api_key, filters)
+        cached_invocations = await cache.get_invocations_cache(username, filters)
         if not cached_invocations:
             # Fetch all from Galaxy API based on filters
             if history_id and workflow_id:
@@ -183,7 +192,7 @@ async def _fetch_core_data(cache: InvocationCache, api_key: str, workflow_manage
                 )
 
             # Cache the results
-            await cache.set_invocations_cache(api_key, invocations, filters)
+            await cache.set_invocations_cache(username, invocations, filters)
             return invocations
         
         # Have cache, check for new invocations
@@ -201,7 +210,8 @@ async def _fetch_core_data(cache: InvocationCache, api_key: str, workflow_manage
         # Fetch recent few to check for new
         recent = await run_in_threadpool(
             workflow_manager.gi_object.gi.invocations.get_invocations,
-            **filter_params
+            **filter_params,
+            limit = 100
         )
         
         has_new_or_updated = False
@@ -223,12 +233,12 @@ async def _fetch_core_data(cache: InvocationCache, api_key: str, workflow_manage
         )
         
         # Cache the results
-        await cache.set_invocations_cache(api_key, invocations, filters)
+        await cache.set_invocations_cache(username, invocations, filters)
         return invocations
     
     async def fetch_workflows():
         """Fetch workflows with caching"""
-        cached_workflows = await cache.get_workflows_cache(api_key)
+        cached_workflows = await cache.get_workflows_cache(username)
        
         if cached_workflows:
             logger.info("Using cached workflows")
@@ -236,115 +246,40 @@ async def _fetch_core_data(cache: InvocationCache, api_key: str, workflow_manage
         
         workflows = await invocation_background.fetch_workflows_safely(workflow_manager=workflow_manager, fetch_details = True)
         # Cache the results
-        await cache.set_workflows_cache(api_key, workflows)
+        await cache.set_workflows_cache(username, workflows)
         return workflows
     
-    async def fetch_deleted_set():
-        """Fetch deleted invocations set"""
-        return await cache.get_deleted_invocations(api_key)
     
     # Execute all fetches in parallel
     try:
         results = await asyncio.gather(
             fetch_invocations(),
             fetch_workflows(),
-            fetch_deleted_set(),
             return_exceptions=True
         )
         
         # Handle results and exceptions
         invocations_data = results[0] if not isinstance(results[0], Exception) else []
         workflows_data = results[1] if not isinstance(results[1], Exception) else []
-        deleted_set = results[2] if not isinstance(results[2], Exception) else set()
         
         # Log any exceptions
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                operation = ["invocations", "workflows", "deleted_set"][i]
+                operation = ["invocations", "workflows"][i]
                 logger.error(f"Failed to fetch {operation}: {result}")
         
-        return invocations_data, workflows_data, deleted_set
+        return invocations_data, workflows_data
         
     except Exception as e:
         logger.error(f"Error in parallel data fetching: {e}")
         return [], [], set()
 
-
-async def _get_workflow_mapping(cache: InvocationCache, api_key: str, workflow_manager: WorkflowManager, workflows_data: list, invocations_data: list):
-    """Get or build workflow mapping with caching"""
-    
-    # Try to get cached mapping first
-    cached_mapping = await cache.get_invocation_workflow_mapping(api_key)
-    
-    # Check if we have all required mappings
-    invocation_ids = {inv.get('id') for inv in invocations_data if inv.get('id')}
-    missing_ids = invocation_ids - set(cached_mapping.keys())
-    
-    if not missing_ids:
-        logger.info(f"Using cached workflow mapping for all {len(invocation_ids)} invocations")
-        return cached_mapping
-    
-    logger.info(f"Building workflow mapping for {len(missing_ids)} missing invocations")
-    
-    # Build mapping for missing invocations
-    new_mapping = {}
-      
-    # Process workflows in parallel with controlled concurrency
-    semaphore = asyncio.Semaphore(15)  # Limit concurrent requests
-    
-    async def process_workflow_for_mapping(workflow):
-        async with semaphore:
-            try:
-                wf_invocations = await asyncio.wait_for(
-                    run_in_threadpool(
-                        workflow_manager.gi_object.gi.workflows.get_invocations,
-                        workflow['id']
-                    ),
-                    timeout=15.0
-                )
-                
-                workflow_mapping = {}
-                for inv in wf_invocations or []: 
-                    if inv.get('id') in missing_ids:
-                        workflow_mapping[inv['id']] = {
-                            'workflow_name': workflow['name'],
-                            'workflow_id': workflow['id']
-                        }
-                
-                return workflow_mapping
-                
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout getting invocations for workflow {workflow['id']}")
-                return {}
-            except Exception as e:
-                logger.warning(f"Error processing workflow {workflow['id']}: {e}")
-                return {}
-    
-    # Process workflows in parallel
-    if workflows_data:
-        tasks = [process_workflow_for_mapping(wf) for wf in workflows_data]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Combine results
-        for result in results:
-            if isinstance(result, dict):
-                new_mapping.update(result)
-    
-    # Combine cached and new mappings
-    combined_mapping = {**cached_mapping, **new_mapping}
-    
-    # Update cache with new mappings
-    if new_mapping:
-        await cache.set_invocation_workflow_mapping(api_key, combined_mapping)
-    
-    return combined_mapping
-
-
-async def _format_invocations(api_key, invocations_data: list[dict], workflow_mapping: dict[str, dict]):
+async def _format_invocations(username, invocations_data: list[dict], workflow_mapping: dict[str, dict]):
     """Format invocations with optimized state mapping"""
     
     invocation_list = []
-    
+    logger.info(f"length og mappings: {len(workflow_mapping)}  and invocations: {len(invocations_data)}")
+    length = 0
     for inv in invocations_data:
         inv_id = inv.get('id')
         
@@ -355,11 +290,12 @@ async def _format_invocations(api_key, invocations_data: list[dict], workflow_ma
         
         # Skip if no workflow name : Likely due to the invocation being a subworkflow invocation.
         if not workflow_name:
+            length+=1
             continue
         
         # Optimized state mapping
         raw_state = inv.get('state')
-        inv_state = await _map_invocation_state(api_key, raw_state, inv.get("id"))
+        inv_state = await _map_invocation_state(username, raw_state, inv.get("id"))
         
         invocation_list.append(
             invocation.InvocationListItem(
@@ -372,15 +308,17 @@ async def _format_invocations(api_key, invocations_data: list[dict], workflow_ma
                 update_time=inv.get('update_time')
             )
         )
+        
+    logger.debug(f"skipped {length} invocation becasue workflowname was missing.")
     
     return invocation_list
 
 
-async def _map_invocation_state(api_key, raw_state: str, invocation_id: str) -> str:
+async def _map_invocation_state(username, raw_state: str, invocation_id: str) -> str:
     """Map Galaxy invocation states to user-friendly states"""
     
     # Get invocation state if saved for accurate state.
-    cached_state = await invocation_cache.get_invocation_state(api_key, invocation_id)
+    cached_state = await invocation_cache.get_invocation_state(username, invocation_id)
     if cached_state:
         logger.info(f"Getting cached invocation state: {cached_state}")
         return cached_state
@@ -416,12 +354,24 @@ async def _handle_partial_failure(api_key, workflow_id, history_id):
     try:
         # Try to get basic invocation data without workflows
         galaxy_client = GalaxyClient(api_key)
+        username = galaxy_client.whoami
         workflow_manager = WorkflowManager(galaxy_client)
         
-        if workflow_id:
+        if workflow_id and history_id:
+            invocations = await run_in_threadpool(
+                workflow_manager.gi_object.gi.invocations.get_invocations,
+                workflow_id=workflow_id,
+                history_id = history_id
+            )  
+        elif workflow_id:
             invocations = await run_in_threadpool(
                 workflow_manager.gi_object.gi.invocations.get_invocations,
                 workflow_id=workflow_id
+            )
+        elif history_id:
+            invocations = await run_in_threadpool(
+                workflow_manager.gi_object.gi.invocations.get_invocations,
+                history_id=history_id
             )
         else:
             invocations = await run_in_threadpool(
@@ -435,9 +385,9 @@ async def _handle_partial_failure(api_key, workflow_id, history_id):
                 invocation.InvocationListItem(
                     id=inv.get('id'),
                     workflow_name="Unknown (partial failure)",
-                    workflow_id=inv.get('workflow_id'),
+                    workflow_id='Unknown (partial failure)',
                     history_id=inv.get('history_id'),
-                    state=await _map_invocation_state(api_key, inv.get('state'), inv.get('id')),
+                    state=await _map_invocation_state(username, inv.get('state'), inv.get('id')),
                     create_time=inv.get('create_time'),
                     update_time=inv.get('update_time')
                 )
@@ -622,7 +572,7 @@ async def structure_inputs(inv: Dict, workflow_manager: WorkflowManager):
                 elif input_value.get('src') == 'hdca':  # Collection
                     collection_id = input_value['id']
                     collection = await asyncio.to_thread(
-                        workflow_manager.gi_object.gi.datasets.show_dataset,
+                        workflow_manager.gi_object.dataset_collections.get,
                         collection_id
                     )
                     
@@ -643,15 +593,15 @@ async def structure_inputs(inv: Dict, workflow_manager: WorkflowManager):
                             }
                         return None
                     
-                    element_coros = [get_element_data(e) for e in collection.get('elements', [])]
+                    element_coros = [get_element_data(e) for e in collection.elements]
                     elements_formatted = [el for el in await asyncio.gather(*element_coros) if el is not None]
                     
                     return label, {
                         "type": "collection",
                         "id": collection_id,
-                        "name": collection.get('name', ''),
-                        "visible": collection.get('visible', False),
-                        "collection_type": collection.get('collection_type', ''),
+                        "name": collection.name,
+                        "visible": collection.visible,
+                        "collection_type": collection.collection_type,
                         "elements": elements_formatted,
                     }
                 
@@ -679,7 +629,6 @@ async def structure_inputs(inv: Dict, workflow_manager: WorkflowManager):
     return inputs_formatted
 
 async def background_track_and_cache(
-    api_key: str,
     invocation_id: str,
     galaxy_client: GalaxyClient,
     workflow_manager: WorkflowManager,
@@ -693,6 +642,8 @@ async def background_track_and_cache(
     ):
     """Background task to track invocation, structure results, and cache when ready"""
 
+    username = galaxy_client.whoami
+    
     try:
    
         _invocation = await run_in_threadpool(
@@ -711,7 +662,7 @@ async def background_track_and_cache(
         )
         
         # Set invocation to cache
-        await invocation_cache.set_invocation_state(api_key, invocation_id, inv_state)
+        await invocation_cache.set_invocation_state(username, invocation_id, inv_state)
 
         workflow_result, invocation_report = await structure_outputs(
             _invocation=_invocation, outputs=outputs, workflow_manager=workflow_manager
@@ -729,7 +680,7 @@ async def background_track_and_cache(
             "workflow": workflow_description.model_dump(),
             "report": invocation_report
         }
-        await invocation_cache.set_invocation_result(api_key, invocation_id, result_dict)
+        await invocation_cache.set_invocation_result(username, invocation_id, result_dict)
         logger.info("Invocation results are complete and ready.")
 
 
@@ -746,7 +697,7 @@ async def background_track_and_cache(
             "workflow": workflow_description.model_dump(),
             "report": None
         }
-        await invocation_cache.set_invocation_result(api_key, invocation_id, result_dict)
+        await invocation_cache.set_invocation_result(username, invocation_id, result_dict)
 
     finally:
         await run_in_threadpool(redis_client.delete, tracking_key)
@@ -763,20 +714,20 @@ async def show_invocation_result(
 ):
     try:
         api_key = current_api_key.get()
+        galaxy_client = GalaxyClient(api_key)
+        username = galaxy_client.whoami
 
         # Step 1: Check if deleted
-        deleted = await invocation_cache.get_deleted_invocations(api_key)
+        deleted = await invocation_cache.get_deleted_invocations(username)
         if invocation_id in deleted:
             raise HTTPException(status_code=404, detail="Invocation not found")
 
-    
         # Step 2: Check cache for full result
-        cached_result = await invocation_cache.get_invocation_result(api_key, invocation_id)
+        cached_result = await invocation_cache.get_invocation_result(username, invocation_id)
         if cached_result:
             return invocation.InvocationResult(**cached_result)
 
         # Step 3: Fetch invocation for preliminary info
-        galaxy_client = GalaxyClient(api_key)
         workflow_manager = WorkflowManager(galaxy_client)
 
         _invocation, invocation_details = await asyncio.gather(
@@ -793,15 +744,15 @@ async def show_invocation_result(
             raise HTTPException(status_code=404, detail="Invocation not found")
 
         # Fetch common details for partial response
-        mapping = await invocation_cache.get_invocation_workflow_mapping(api_key)
+        mapping = await invocation_cache.get_invocation_workflow_mapping(username)
         if not mapping:
             logger.warning("workflow to invocation map not found, warming user cache.")
             await invocation_background.warm_user_cache(token = "dummytoken", api_key=api_key) # using a dummy token to fill the functionality
-            mapping = await invocation_cache.get_invocation_workflow_mapping(api_key)
+            mapping = await invocation_cache.get_invocation_workflow_mapping(username)
         if mapping:
             stored_workflow_id = mapping.get(invocation_id, {}).get('workflow_id')
 
-            workflow_description_list = await invocation_cache.get_workflows_cache(api_key)
+            workflow_description_list = await invocation_cache.get_workflows_cache(username)
             if workflow_description_list:
                 for _workflow in workflow_description_list:
                     try:
@@ -838,7 +789,7 @@ async def show_invocation_result(
         }
         
         await invocation_cache.set_invocation_result(
-            api_key = api_key, 
+            username = username, 
             invocation_id = invocation_details.get("id"),
             result = invocation_result,
             )
@@ -853,7 +804,6 @@ async def show_invocation_result(
                 
                 asyncio.create_task(
                     background_track_and_cache(
-                        api_key = api_key,
                         invocation_id = invocation_id,
                         galaxy_client = galaxy_client,
                         workflow_manager = workflow_manager,
@@ -877,11 +827,11 @@ async def show_invocation_result(
         raise HTTPException(status_code=500, detail= f"Error getting invocation result: {e}")
 
 
-async def _cancel_invocation_and_delete_data(invocation_ids: List[str], workflow_manager: WorkflowManager, api_key: str):
+async def _cancel_invocation_and_delete_data(invocation_ids: List[str], workflow_manager: WorkflowManager, username: str):
     """Cancel running invocaitons and delete data in the background."""
-    
-    for invocation_id in invocation_ids:
-        try:
+    try:    
+        for invocation_id in invocation_ids:
+
             # Get the invocation object
             _invocation = await run_in_threadpool(
                 workflow_manager.gi_object.invocations.get,
@@ -913,13 +863,13 @@ async def _cancel_invocation_and_delete_data(invocation_ids: List[str], workflow
             await asyncio.gather(*delete_datasets, *delete_collections, return_exceptions= False)
             
             # Delete invocation states saved earlier.
-            await asyncio.gather(*[invocation_cache.delete_invocation_state(api_key, inv_id) for inv_id in invocation_ids])
-            logger.info(f"Invocation {invocation_ids} deletion complete.")
-
+            await asyncio.gather(*[invocation_cache.delete_invocation_state(username, inv_id) for inv_id in invocation_ids])
             
-        except Exception as e:
+        
+        logger.info(f"Invocation {invocation_ids} deletion complete.")
+    except Exception as e:
             logger.error(f"Error while deleting invocation: {e}")
-    
+        
 @router.delete(
     "/DELETE",
     summary="Delete workflow invocations",
@@ -938,6 +888,8 @@ async def delete_invocations(
 
     api_key = current_api_key.get()
     galaxy_client = GalaxyClient(api_key)
+    username = galaxy_client.whoami
+    
     workflow_manager = WorkflowManager(galaxy_client)
 
     try:
@@ -945,11 +897,11 @@ async def delete_invocations(
         ids_list = [i.strip() for i in invocation_ids.split(",") if i.strip()]
 
         # Mark as deleted using cache method
-        await invocation_cache.add_to_deleted_invocations(api_key, ids_list)
+        await invocation_cache.add_to_deleted_invocations(username, ids_list)
         
 
         # Spawn async deletion tasks
-        asyncio.create_task(_cancel_invocation_and_delete_data(ids_list, workflow_manager, api_key))
+        asyncio.create_task(_cancel_invocation_and_delete_data(ids_list, workflow_manager, username))
 
         return Response(status_code=204)
     except Exception as e:

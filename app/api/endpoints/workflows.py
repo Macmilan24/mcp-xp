@@ -48,22 +48,24 @@ async def list_workflows():
     api_key = current_api_key.get()
 
     try:
+        galaxy_client = GalaxyClient(api_key)
+        username = galaxy_client.whoami
+        
         # Step 1: Request deduplication
         request_hash = hashlib.md5(api_key.encode()).hexdigest()
-        if invocation_cache.is_duplicate_workflow_request(api_key, request_hash):
+        if await invocation_cache.is_duplicate_workflow_request(username, request_hash):
             logger.info("Duplicate workflow list request detected")
 
-        # Step 2: Check for cached response
-        cached_data = await invocation_cache.get_workflows_cache(api_key)
+        # Step 2: Check for cached responses
+        cached_data = await invocation_cache.get_workflows_cache(username)
         if cached_data:
             logger.info("Serving workflows from cache")
             return workflow.WorkflowList(workflows=cached_data)
-        
-        galaxy_client = GalaxyClient(api_key)
-        workflow_manager = WorkflowManager(galaxy_client)
 
+        workflow_manager = WorkflowManager(galaxy_client)
+        
         workflow_list = await invocation_background.fetch_workflows_safely(workflow_manager, fetch_details=True)
-        await invocation_cache.set_workflows_cache(api_key,workflow_list)
+        await invocation_cache.set_workflows_cache(username,workflow_list)
 
         return workflow.WorkflowList(workflows=workflow_list)
     except Exception as e:

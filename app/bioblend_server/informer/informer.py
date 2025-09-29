@@ -33,7 +33,7 @@ class GalaxyInformer:
         self.galaxy_client = galaxy_client
         self.gi_user = self.galaxy_client.gi_client
         self.gi_admin = self.galaxy_client.gi_admin
-        self.user_info = self.galaxy_client.whoami()
+        self.username = self.galaxy_client.whoami
         self.llm = None
         self.redis_client = None
         self.manager = None
@@ -54,7 +54,7 @@ class GalaxyInformer:
                 'id_field': 'workflow_id'
             }
         }
-        self.logger.info(f'Initializing the galaxy informer for entity type: {entity_type} for user {self.user_info["id"]}')
+        self.logger.info(f'Initializing the galaxy informer for entity type: {entity_type} for user {self.username}')
 
     @classmethod
     async def create(cls, galaxy_client: GalaxyClient, entity_type: str):
@@ -364,7 +364,7 @@ class GalaxyInformer:
         if not entities:
             return None
         
-        collection_name = f'Galaxy_{self.entity_type}_{self.user_info["id"]}'
+        collection_name = f'Galaxy_{self.entity_type}_{self.username}'
         
         # Cache in Redis with a 10-hour TTL
         try:
@@ -393,7 +393,7 @@ class GalaxyInformer:
         fresh data if the cache is empty or invalid.
         """
         try:
-            entities_str = self.redis_client.get(f'Galaxy_{self.entity_type}_{self.user_info["id"]}')
+            entities_str = self.redis_client.get(f'Galaxy_{self.entity_type}_{self.username}')
             if entities_str:
                 self.logger.info(f'Retrieved cached {self.entity_type} entities from Redis.')
                 return json.loads(entities_str)
@@ -421,7 +421,7 @@ class GalaxyInformer:
         unique_fuzzy_results = list({item[f'{self._entity_config[self.entity_type]["id_field"]}']: item for item, score in fuzzy_results}.values())
 
         # 2. Semantic Search
-        collection_name = f'Galaxy_{self.entity_type}_{self.user_info["id"]}'
+        collection_name = f'Galaxy_{self.entity_type}_{self.username}'
         semantic_results = await self._semantic_search(query=query, collection_name=collection_name)
         
         # 3. LLM-based Re-ranking and Selection

@@ -28,7 +28,6 @@ class InvocationBackgroundTasks:
     def __init__(self, cache: InvocationCache, redis_client: redis.Redis):
         self.cache = cache
         self.redis = redis_client
-        self.active_tasks = {}
     
     async def start_cache_warming_task(self):
         """Start the background cache warming task"""
@@ -122,13 +121,17 @@ class InvocationBackgroundTasks:
             # Not a fernet payload or parse failed; return None so fallback can apply
             return None
         
-    async def warm_user_cache(self, token: str, api_key = None):
+    async def warm_user_cache(self, token: str, api_key= None):
         """Warm cache for a specific user"""
+        
         try:
             # Decode JWT to extract the Api key
             if not api_key:
                 encrypted_api_key = jwt.decode(token, options={"verify_signature": False}).get(GALAXY_API_TOKEN)
                 api_key = await self._decrypt_api_token(encrypted_api_key)
+            
+            galaxy_client = GalaxyClient(api_key)
+            username = galaxy_client.whoami
             
             # Avoid warming cache for the same user too frequently
             last_warm_key = f"last_cache_warm:{api_key}"
@@ -137,26 +140,25 @@ class InvocationBackgroundTasks:
             if last_warm:
                 last_warm_time = datetime.fromisoformat(last_warm)
                 if datetime.now() - last_warm_time < timedelta(minutes=3):
-                    logger.debug(f"Skipping cache warm for {api_key}: recently warmed")
+                    logger.debug(f"Skipping cache warm for user {username}: recently warmed")
                     return  # Skip if warmed recently
             
-            logger.info(f"Warming cache for user: {api_key}")
+            logger.info(f"Warming cache for user: {username}")
             
-            # Initialize Galaxy client and workflow manager
-            galaxy_client = GalaxyClient(api_key)
+            # Initialize workflow manager
             workflow_manager = WorkflowManager(galaxy_client)
             
             # Warm workflows cache with full details
             workflows = await self.fetch_workflows_safely(workflow_manager, fetch_details=True)
             if workflows:
-                await self.cache.set_workflows_cache(api_key, workflows)
+                await self.cache.set_workflows_cache(username, workflows)
             
             # Build and cache invocation-workflow mapping and invocations list
             mapping, all_invocations = await self.build_invocation_workflow_mapping(workflow_manager, workflows)
             if mapping:
-                await self.cache.set_invocation_workflow_mapping(api_key, mapping)
+                await self.cache.set_invocation_workflow_mapping(username, mapping)
             if all_invocations:
-                await self.cache.set_invocations_cache(api_key, all_invocations, filters={"workflow_id": None, "history_id": None})
+                await self.cache.set_invocations_cache(username, all_invocations, filters={"workflow_id": None, "history_id": None})
             
             # Update last warm timestamp
             await asyncio.get_event_loop().run_in_executor(
@@ -167,10 +169,10 @@ class InvocationBackgroundTasks:
                 datetime.now().isoformat()
             )
             
-            logger.info(f"Cache warmed for user ****{api_key[-5]}: {len(workflows or [])} workflows, {len(mapping)} mappings, {len(all_invocations)} invocations")
+            logger.info(f"Cache warmed for user {username}: {len(workflows or [])} workflows, {len(mapping)} mappings, {len(all_invocations)} invocations")
             
         except Exception as e:
-            logger.error(f"Error warming cache for user *****{api_key[-5]}: {e}")
+            logger.error(f"Error warming cache for user {username}: {e}")
     
     async def fetch_workflows_safely(self, workflow_manager: WorkflowManager, fetch_details: bool = False) -> List[Dict]:
         """Safely fetch workflows with timeout and error handling, optionally with full details"""
@@ -252,7 +254,8 @@ class InvocationBackgroundTasks:
                         wf_invocations = await asyncio.wait_for(
                             run_in_threadpool(
                                 workflow_manager.gi_object.gi.invocations.get_invocations,
-                                workflow_id=workflow['id']
+                                workflow_id=workflow['id'],
+                                limit = 100
                             ),
                             timeout=15.0
                         )
