@@ -51,7 +51,7 @@ class WorkflowDetails(BaseModel):
     create_time: str
     annotations: Optional[str] = None
     published: bool
-    license: str = ""
+    license: Optional[str] = None
     galaxy_url: str
     creator: List[Dict] = []
     steps: Dict[str, Dict[str, Any]]
