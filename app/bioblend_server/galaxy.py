@@ -60,33 +60,35 @@ class GalaxyClient:
         except Exception as e:
             self.logger.error(f"Unexpected error initializing GalaxyClient: {e}")
             raise
-
-    def whoami(self) -> Dict[str, Any]:
+    
+    @property
+    def whoami(self) -> str:
         """
         Return current user info with retries, error handling, and safe fallback.
         Retries up to 3 times with exponential backoff on network errors.
         """
+        @retry(
+            stop=stop_after_attempt(self.max_retries),
+            wait=wait_exponential(multiplier=1, min=2, max=10),
+            retry=retry_if_exception_type((GalaxyConnectionError, RequestException)),
+            reraise=True,
+        )
         def _whoami():
             try:
                 whoami = self.config_client.whoami()
                 if not whoami or "id" not in whoami:
                     self.logger.error("Received invalid response from Galaxy whoami: %s", whoami)
                     return {"error": "Invalid whoami response"}
-                return whoami
+                return whoami.get("username")
             except (GalaxyConnectionError, RequestException) as e:
                 self.logger.warning("Network error fetching user identity: %s", e)
-                raise  # retried by tenacity
+                raise
             except Exception as e:
                 self.logger.exception("Unexpected error in whoami: %s", e)
-                return {"error": str(e)}
+                raise 
 
-        retryer = retry(
-            stop=stop_after_attempt(self.max_retries),
-            wait=wait_exponential(multiplier=1, min=2, max=10),
-            retry=retry_if_exception_type((GalaxyConnectionError, RequestException)),
-            reraise=True,
-        )
-        return retryer(_whoami)
+        return _whoami()
+
 
     def validate_connection(self) -> bool:
         """
@@ -94,9 +96,9 @@ class GalaxyClient:
         Returns True if valid, False otherwise.
         """
         try:
-            whoami = self.whoami()
+            whoami = self.whoami
             if isinstance(whoami, dict) and "id" in whoami:
-                self.logger.debug("Connection valid: %s", whoami.get("username", "unknown"))
+                self.logger.debug("Connection valid: %s", whoami)
                 return True
             self.logger.warning("Connection validation failed: response missing id.")
             return False
