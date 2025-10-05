@@ -116,23 +116,33 @@ class OpenAIProvider(LLMProvider):
         if not embedding_model:
             raise ValueError("Missing 'embedding_model' in config_data")
 
-        for i in range(0, len(batch), batch_size):
-            batch_segment = batch[i:i + batch_size]
+        sem = asyncio.Semaphore(5)  # limit concurrency to avoid rate limit spikes
 
-            try:
-                result = await self.client.embeddings.create(
-                    model=embedding_model,
-                    input=batch_segment,
-                )
+        async def fetch_batch(batch_segment):
+            async with sem:
+                try:
+                    result = await self.client.embeddings.create(
+                        model=embedding_model,
+                        input=batch_segment,
+                    )
+                    return [e.embedding for e in result.data]
+                except Exception as e:
+                    self.log.error(f"OpenAI Embedding error: {e}")
+                    await asyncio.sleep(sleep_time)  # backoff before retry
+                    return []
 
-                # Extract embeddings
-                batch_embeddings = [e.embedding for e in result.data]
-                embeddings.extend(batch_embeddings)
+        # Create all batch tasks
+        tasks = [
+            fetch_batch(batch[i:i + batch_size])
+            for i in range(0, len(batch), batch_size)
+        ]
 
+        # Run concurrently
+        results = await asyncio.gather(*tasks)
 
-            except Exception as e:
-                self.log.error(f"OpenAI Embedding error: {e}")
-                await asyncio.sleep(sleep_time)  # backoff before retry
+        # Flatten results into embeddings
+        for r in results:
+            embeddings.extend(r)
 
         self.log.info("OpenAI embeddings generated.")
         return embeddings
