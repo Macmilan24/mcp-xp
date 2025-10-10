@@ -39,7 +39,7 @@ bioblend_app = FastMCP(
 
 
 
-@bioblend_app.tool()
+# @bioblend_app.tool()
 async def execute_galaxy_tool_workflow(
     entity: str,
     name: str = None,
@@ -158,9 +158,7 @@ async def get_galaxy_information_tool(
 
         # Create GalaxyInformer object and execute informer
         informer = await GalaxyInformer.create(galaxy_client=galaxy_client, entity_type=query_type)
-        galaxy_response= await informer.get_entity_info(search_query = query, entity_id = entity_id)
-
-        result= galaxy_response.get('response')
+        result = await informer.get_entity_info(search_query = query, entity_id = entity_id)
         return result
     
     except Exception as e:
