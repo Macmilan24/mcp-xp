@@ -786,82 +786,6 @@ class GalaxyInformer:
             self.logger.error(f"Could not retrieve details for {self.entity_type}:{entity_id}: {e}")
             return {"error": "Failed to retrieve details."}
 
-    # async def get_invocation_details(self, query: str, workflow_id: str = None):
-    #     """Function to check and extract specific invocation details from the galaxy instance"""
-
-    #     invocation_result = None
-        
-    #     def is_close_to_invocation(query: str) -> bool:
-    #         query_words = query.split()
-    #         target_word = "invocation"
-    #         reference_word = "invoke"
-
-    #         # Create a threshold from the ratio of the two words
-    #         threshold = fuzz.ratio(target_word, reference_word)  # similarity score
-
-    #         # Check each word against 'invocation'
-    #         for word in query_words:
-    #             score = fuzz.ratio(word, target_word)
-    #             if score >= threshold:
-    #                 return True
-    #         return False
-    #     try:
-    #         self.logger.info('Checking if query is invocation related')
-    #         if is_close_to_invocation(query=query):
-    #             self.logger.info('Extracting invocation information')
-    #             if workflow_id:
-    #                 invocations=self.gi_user.invocations.get_invocations(workflow_id=workflow_id)
-    #             else:
-    #                 invocations=self.gi_user.invocations.get_invocations()
-
-    #             # Prompt LLM to select the correct match for invocation.
-    #             prompt=INVOCATION_PROMPT.format(query=query, invocations=invocations)
-    #             response= await self.get_response(prompt)
-    #             response=response.strip()
-    #             self.logger.warning(f" the response of the LLM: {response}")
-
-    #             if response == "No matches":
-    #                 return None
-    #             else:
-
-    #                 # Extract and structure essential parts of invocation information
-
-    #                 invocation_detail= self.gi_user.invocations.show_invocation(invocation_id=response)
-    #                 invocation_report= self.gi_user.invocations.get_invocation_report(invocation_id=response)
-    #                 invocation_report['messages']= invocation_detail['messages']
-    #                 invocation_steps= [{
-    #                                     'update_time': step.get('update_time', None),
-    #                                     'job_id': step.get('job_id', None),
-    #                                     'workflow_step_label': step.get('workflow_step_label', None),
-    #                                     'order_index': step.get('order_index'),
-    #                                     'state':step.get('state')
-    #                                 } for step in invocation_detail.get('steps')]
-    #                 invocation_inputs=[{
-    #                                     'id': value.get('id'),
-    #                                     'label': value.get('label'),
-    #                                     'src': value.get('src')
-    #                                     } for key,value in invocation_detail.get('inputs', None).items() ]
-    #                 invocation_input_step_parameters=invocation_detail.get('input_step_parameters', None)
-    #                 invocation_outputs=[key for key,value in invocation_detail.get('outputs', None).items()]
-    #                 invocation_output_collection= [key for key,value in invocation_detail.get('output_collections', None).items()]
-                    
-
-    #                 invocation_result={
-    #                     'invocation id': response,
-    #                     'workflow id': workflow_id,
-    #                     'invocation inputs': invocation_inputs,
-    #                     'invocation input step parameters': invocation_input_step_parameters,
-    #                     'invocation steps': invocation_steps,
-    #                     'invocation outputs' : invocation_outputs,
-    #                     'invocation collection outputs': invocation_output_collection,
-    #                     'invocation final report' : invocation_report
-    #                 }
-    #     except Exception as e:
-    #         self.logger.error(f"Error handling invocationss: {e}")
-    #         raise e
-            
-    #     return invocation_result
-
     async def generate_final_response(self, query: str, retrieved_contents: list):
         """ Generates a final, user-facing natural language response based on the retrieved and processed information. """
         
@@ -906,17 +830,6 @@ class GalaxyInformer:
             return await self.generate_final_response(search_query, {"message": "No relevant items found."})
         
         self.logger.info(f"Relevant {self.entity_type}s found are: {[v.get('name') for v in found_entities.values()]}")
-        # Check and retrieve invocation detail if query is asking about workflow invocation.
-        
-         # Collate all details
-
-        # if self.entity_type == 'workflow':
-        #     invocation_info =await self.get_invocation_details(query = search_query, workflow_id= found_entities['0'][id_field])
-        #     # register found information.
-        #     if invocation_info:
-        #         response_details['retrieved invocation details for the workflow'] = invocation_info
-        #     else:
-        #         response_details['retrieved invocation details for the workflow'] = "No matching invocation details found for the workflow "
 
         tasks = []
 
