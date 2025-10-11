@@ -22,16 +22,6 @@ if not FERNET_SECRET:
 fernet = Fernet(FERNET_SECRET)
 GALAXY_API_TOKEN = "galaxy_api_token"
 
-
-# Structure for the executor tool to respond with.
-class ExecutorToolResponse(BaseModel):
-    entity: Literal["tool", "workflow"] = Field(..., title="Entity")
-    name: str = Field(..., title="Name")
-    id: str = Field(..., title="Id")
-    description: Optional[str] = Field(default=None, title="Description")
-    action_link: str = Field(..., title="Action Link")
-
-
 class JWTGalaxyKeyMiddleware(Middleware):
     """
     FastMCP middleware that expects:
