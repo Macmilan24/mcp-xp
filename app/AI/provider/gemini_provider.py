@@ -126,36 +126,24 @@ class GeminiProvider(LLMProvider):
         if not embedding_model.startswith("models/"):
             embedding_model = f"models/{embedding_model}"
 
-        sem = asyncio.Semaphore(5)  # limit concurrency (tune as needed)
+        for i in range(0, len(batch), batch_size):
+            batch_segment = batch[i:i + batch_size]
+            
+            try:
+                # Run sync call in a thread so we don't block the event loop
+                result = await asyncio.to_thread(
+                    genai.embed_content,
+                    model=embedding_model,
+                    content=batch_segment,
+                )
 
-        async def fetch_batch(batch_segment):
-            async with sem:
-                try:
-                    # Run sync call in a thread so we don't block the event loop
-                    result = await asyncio.to_thread(
-                        genai.embed_content,
-                        model=embedding_model,
-                        content=batch_segment,
-                    )
-                    # Extract embeddings (values) in order
-                    return result["embedding"]
-                except Exception as e:
-                    self.log.error(f"Gemini Embedding error: {e}")
-                    await asyncio.sleep(sleep_time)
-                    return []
+                # Extract embeddings (values) in order
+                batch_embeddings = result["embedding"]
+                embeddings.extend(batch_embeddings)
 
-        # Create all tasks
-        tasks = [
-            fetch_batch(batch[i:i + batch_size])
-            for i in range(0, len(batch), batch_size)
-        ]
-
-        # Run them concurrently
-        results = await asyncio.gather(*tasks)
-
-        # Flatten results
-        for r in results:
-            embeddings.extend(r)
+            except Exception as e:
+                self.log.error(f"Gemini Embedding error: {e}")
+                await asyncio.sleep(sleep_time)
 
         self.log.info("Gemini embeddings generated.")
         return embeddings
