@@ -15,7 +15,6 @@ from .executor.form_generator import (
                                     )
 
 from .utils import (
-                ExecutorToolResponse,
                 JWTGalaxyKeyMiddleware,
                 current_api_key_server
             )
