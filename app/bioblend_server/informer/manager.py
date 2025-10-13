@@ -7,6 +7,7 @@ import random
 import json
 
 from qdrant_client import QdrantClient, models
+from enum import Enum
 from dotenv import load_dotenv
 
 from app.AI.provider.gemini_provider import GeminiProvider
@@ -15,9 +16,23 @@ from app.AI.llm_config._base_config import LLMModelConfig
 from app.log_setup import configure_logging
 
 
+class EmbeddingModel(Enum):
+    """Defines supported embedding models and their vector sizes."""
+    
+    GEMINI_EMBEDDING_001 = ("embedding-001", 768)
+    GEMINI_EMBEDDING_002 = ("embedding-002", 1408)
+    GEMINI_TEXT_EMBEDDING_004 = ("text-embedding-004", 2048)
+    OPENAI_TEXT_EMBEDDING_3_SMALL = ("text-embedding-3-small", 1536)
+    OPENAI_TEXT_EMBEDDING_3_LARGE = ("text-embedding-3-large", 3072)
 
+    @property
+    def model_name(self) -> str:
+        return self.value[0]
 
-load_dotenv()
+    @property
+    def embedding_size(self) -> int:
+        return self.value[1]
+
 
 class InformerManager:
     """
@@ -31,7 +46,9 @@ class InformerManager:
         self.client = None
         self.llm = None
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.embedding_size = 1536  # Gemini embedding vector size
+        self.embedding_model = None
+        self.embedding_size = None
+        self.model_name = None
 
     @classmethod
     async def create(cls, llm_provider = "openai"):
@@ -49,10 +66,18 @@ class InformerManager:
             if llm_provider == "gemini":
                 gemini_cfg = LLMModelConfig(model['providers']['gemini'])
                 self.llm = GeminiProvider(model_config=gemini_cfg)
+                self.embedding_model = EmbeddingModel.GEMINI_EMBEDDING_001
             elif llm_provider == "openai":
                 openai_cfg = LLMModelConfig(model['providers']['openai'])
                 self.llm = OpenAIProvider(model_config=openai_cfg)
+                self.embedding_model = EmbeddingModel.OPENAI_TEXT_EMBEDDING_3_SMALL
+            else:
+                raise ValueError(f"Unsupported LLM provider: {llm_provider}")
             
+            # Assign embedding metadata
+            self.embedding_size = self.embedding_model.embedding_size
+            self.model_name = self.embedding_model.model_name
+              
             self.logger.info("InformerManager connected to Qdrant successfully.")
         except Exception as e:
             self.logger.exception(f"Qdrant connection failed: {e}")
