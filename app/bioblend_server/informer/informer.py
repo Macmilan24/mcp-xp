@@ -72,7 +72,6 @@ class GalaxyInformer:
         
         with open('app/AI/llm_config/llm_config.json', 'r') as f:
             model_config_data = json.load(f)
-
         
         if llm_provider == "gemini":
             gemini_cfg = LLMModelConfig(model_config_data['providers']['gemini'])

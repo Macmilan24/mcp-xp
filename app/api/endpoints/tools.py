@@ -1,4 +1,5 @@
 import logging
+import uuid
 
 from fastapi import APIRouter, Query, Path, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -11,6 +12,7 @@ from app.api.schemas.tool import ToolExecutionResponse
 from app.api.schemas.workflow import OutputDataset, CollectionOutputDataset
 from app.bioblend_server.galaxy import GalaxyClient 
 from app.bioblend_server.executor.tool_manager import ToolManager
+from app.api.socket_manager import ws_manager
 
 log = logging.getLogger("tool_endpoints")
 
@@ -42,11 +44,8 @@ async def get_tool_form(
         log.info(f"Hisotry: {history.name}")
 
         # Run the synchronous HTML build in a thread pool
-        html_form = await run_in_threadpool(
-            tool_manager.build_html_form,
-            tool,
-            history
-        )
+        html_form = await tool_manager.build_html_form( tool = tool, history = history)
+
         return HTMLResponse(content = html_form)
     except Exception as e:
         raise HTTPException(status_code = 500 , detail = f"failed to build tool form: {e}")
@@ -60,7 +59,8 @@ async def get_tool_form(
 async def execute_tool(
     request: Request,
     tool_id: str = Path(..., description="The ID of the Galaxy tool to execute."),
-    history_id: str = Path(..., description="The ID of the history for execution.")
+    history_id: str = Path(..., description="The ID of the history for execution."),
+    tracker_id: str | None = Query(None, description="Client-supplied tracker ID for WebSocket updates"),
 ):
     """
     Executes a tool using input data submitted via a form.
@@ -71,6 +71,8 @@ async def execute_tool(
     galaxy_client = GalaxyClient(current_api_key.get())
     tool_manager = ToolManager(galaxy_client)
 
+    # NOTE: tracker_id has to be sent from the client, but as a fallback option
+    tracker_id = tracker_id or str(uuid.uuid4()) 
     try: 
         # Extract form data
         form_data = await request.form()
@@ -86,15 +88,18 @@ async def execute_tool(
         log.info(f"Transformed inputs: {bioblend_inputs}")
         
         # Get history object
-        history = await run_in_threadpool(tool_manager.gi_object.histories.get, history_id)
+        history = await run_in_threadpool(
+            tool_manager.gi_object.histories.get, history_id
+            )
         
         # Execute tool with transformed inputs
-        result = await run_in_threadpool(
-            tool_manager.run, 
-            tool_id, 
-            history, 
-            bioblend_inputs
-        )
+        result = await tool_manager.run(
+            tool_id = tool_id, 
+            history = history, 
+            inputs = bioblend_inputs,
+            ws_manager = ws_manager,
+            tracker_id= tracker_id
+            )
         
         # Process output datasets
         output_datasets = []
@@ -138,9 +143,7 @@ async def execute_tool(
         return ToolExecutionResponse(
                     state = result["state"],
                     outputs = output_datasets,
-                    stdout = result["stdout"],
-                    stderr = result["stderr"],
-                    error_message = result["error"]
+                    message = result["message"]
                     )
     
     except Exception as e:

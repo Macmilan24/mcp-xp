@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.endpoints import histories, tools, workflows
+from app.api.endpoints import histories, tools, workflows, invocation
 
 api_router = APIRouter()
 
@@ -22,4 +22,10 @@ api_router.include_router(
     tools.router,
     prefix="/tools",
     tags=["Tools"]
+)
+# Include the invocation router with a prefix and tags
+api_router.include_router(
+    invocation.router,
+    prefix="/invocation",
+    tags=["Invocation"]
 )

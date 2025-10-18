@@ -1,23 +1,37 @@
 from sys import path
 path.append('.')
-import pathlib
 import tempfile, pathlib, shutil, re, os
 from anyio.to_thread import run_sync
+from dotenv import load_dotenv
 import logging
+import uuid
+import redis
+import hashlib
+import json
+import asyncio
 
-from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException
+from fastapi.responses import HTMLResponse
 from fastapi.concurrency import run_in_threadpool
-from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
+from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation, Workflow
 
 from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.api.schemas import workflow
+from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessageType
+from app.orchestration.invocation_cache import InvocationCache
+from app.orchestration.invocation_tasks import InvocationBackgroundTasks
+
+
+
+load_dotenv()
 
 logger = logging.getLogger('workflow_endpoint')
 router = APIRouter()
-
+redis_client = redis.Redis(host='localhost', port=os.environ.get("REDIS_PORT"), db=0, decode_responses=True)
+invocation_cache = InvocationCache(redis_client)
+invocation_background = InvocationBackgroundTasks(cache = invocation_cache, redis_client=redis_client)
 
 @router.get(
     "/",
@@ -30,33 +44,29 @@ async def list_workflows():
     Retrieves a list of all workflows available in the Galaxy instance.
     Returns basic information including workflow ID, name, and description.
     """
-
-    galaxy_client = GalaxyClient(current_api_key.get())
-    workflow_manager = WorkflowManager(galaxy_client)
+    
+    api_key = current_api_key.get()
 
     try:
-        # Get all workflows from Galaxy instance with full details
-        workflows = await run_in_threadpool(
-            workflow_manager.gi_object.gi.workflows.get_workflows
-         )
+        galaxy_client = GalaxyClient(api_key)
+        username = galaxy_client.whoami
         
-        # Extract only the required fields
-        workflow_list = []
-        for wf in workflows:
-            # Get full workflow details to access annotations
-            full_workflow: dict = await run_in_threadpool(
-                workflow_manager.gi_object.gi.workflows.show_workflow,
-                workflow_id=wf['id']
-            )
-            
-            workflow_list.append(
-                workflow.WorkflowListItem(
-                    id=full_workflow["id"],
-                    name=full_workflow["name"],
-                    description=full_workflow.get("annotation", None)
-                )
-            )
+        # Step 1: Request deduplication
+        request_hash = hashlib.md5(api_key.encode()).hexdigest()
+        if await invocation_cache.is_duplicate_workflow_request(username, request_hash):
+            logger.info("Duplicate workflow list request detected")
+
+        # Step 2: Check for cached responses
+        cached_data = await invocation_cache.get_workflows_cache(username)
+        if cached_data:
+            logger.info("Serving workflows from cache")
+            return workflow.WorkflowList(workflows=cached_data)
+
+        workflow_manager = WorkflowManager(galaxy_client)
         
+        workflow_list = await invocation_background.fetch_workflows_safely(workflow_manager, fetch_details=True)
+        await invocation_cache.set_workflows_cache(username,workflow_list)
+
         return workflow.WorkflowList(workflows=workflow_list)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list workflows: {e}")
@@ -68,24 +78,32 @@ async def list_workflows():
         tags=["Workflows"]
 )
 async def upload_workflow(
-        file: UploadFile = File(..., description="The Workflow ga file to upload.")
+        file: UploadFile = File(..., description="The Workflow ga file to upload."),
+        tracker_id: str | None = Query(None, description="Client-supplied tracker ID for WebSocket updates"),
 ):
     """Uploads an external workflow from a ga file into the galaxy instance."""
 
     galaxy_client = GalaxyClient(current_api_key.get())
     workflow_manager = WorkflowManager(galaxy_client)
+    tracker_id = tracker_id or str(uuid.uuid4())
 
     try:
         # Use a temporary file to handle the upload
         with tempfile.NamedTemporaryFile(delete=False, suffix=file.filename) as tmp:
-            tmp.write(await file.read())
+            tmp.write(await file.read())    
             tmp_path = tmp.name
 
         # Upload the galaxt workflow into the instance
-        workflow = await run_in_threadpool(workflow_manager.upload_workflow, path = tmp_path)
+        workflow = await workflow_manager.upload_workflow(path = tmp_path,
+                                                          ws_manager = ws_manager, 
+                                                          tracker_id = tracker_id
+                                                          )
+        # Clean up the temporary file
+        os.remove(tmp_path)
 
-        os.remove(tmp_path) # Clean up the temporary file
-       
+        if not isinstance(workflow, Workflow):
+            raise HTTPException(status_code=500, detail = workflow.get('error', "workflow uploading failed."))
+        
         workflow_details  = await run_in_threadpool(workflow_manager.gi_object.gi.workflows.show_workflow, workflow.id)
        
         return {
@@ -149,7 +167,8 @@ async def execute_workflow(
     request: Request,
     dummy_input: str = Form(None, description="Dummy input to force form rendering the form input for the galaxy execution"), # Adding dummy form value to input request form.
     workflow_id: str = Path(..., description="The ID of the Galaxy workflow to execute."),
-    history_id: str = Path(..., description="The ID of the history for execution.")
+    history_id: str = Path(..., description="The ID of the history for execution."),
+    tracker_id: str | None = Query(None, description="Client-supplied tracker ID for WebSocket updates"),
 ):
     """
     Executes a workflow using input data submitted via a form.
@@ -160,8 +179,16 @@ async def execute_workflow(
 
     galaxy_client = GalaxyClient(current_api_key.get())
     workflow_manager = WorkflowManager(galaxy_client)
+    tracker_id = tracker_id or str(uuid.uuid4())
 
     try:
+        await ws_manager.broadcast(event = SocketMessageEvent.workflow_execute,
+                             data = {
+                                 "type": SocketMessageType.WORKFLOW_EXECUTE,
+                                 "payload": {"message" : "Execution started."}   
+                                },
+                             tracker_id=tracker_id
+        )
         form_data = await request.form()
         workflow_obj = await run_in_threadpool(workflow_manager.gi_object.workflows.get, workflow_id)
         history_obj = await run_in_threadpool(workflow_manager.gi_object.histories.get, history_id)
@@ -169,7 +196,7 @@ async def execute_workflow(
 
         # Reconstruct the 'inputs' dictionary for BioBlend
         inputs = {}
-        steps = workflow_details['steps']
+        steps: dict = workflow_details['steps']
         for step_id, step_details in steps.items():
 
             # Check if this step is an input step and is in the form data
@@ -185,13 +212,16 @@ async def execute_workflow(
             elif step_details['type'] == 'parameter_input':
                 inputs[step_id] = form_value
 
+        logger.info(f"inputs applied: {inputs}")
+
         # Run the entire synchronous workflow execution and tracking in a thread pool
-        invocation_id, report, intermediate_outputs, final_outputs = await run_in_threadpool(
-            workflow_manager.run_workflow,
+        invocation_id, report, intermediate_outputs, final_outputs = await workflow_manager.run_track_workflow(
             inputs=inputs,
             workflow=workflow_obj,
-            history=history_obj
-        )
+            history=history_obj,
+            ws_manager = ws_manager,
+            tracker_id = tracker_id
+            )
 
         # Format the outputs using Pydantic schemas
         intermediate_outputs_formatted = []
@@ -200,7 +230,8 @@ async def execute_workflow(
         for ds in final_outputs:
             if isinstance(ds, HistoryDatasetAssociation):
                 final_outputs_formatted.append(
-                            {
+                        {
+                            "type" : "dataset",
                             "id": ds.id,
                             "name": ds.name,
                             "visible": ds.visible,
@@ -211,6 +242,7 @@ async def execute_workflow(
             elif isinstance(ds, HistoryDatasetCollectionAssociation):
                 final_outputs_formatted.append(
                         {
+                            "type" : "collection",
                             "id": ds.id,
                             "name": ds.name,
                             "visible": ds.visible,
@@ -232,7 +264,8 @@ async def execute_workflow(
         for ds in intermediate_outputs:
             if isinstance(ds, HistoryDatasetAssociation):
                 intermediate_outputs_formatted.append(
-                            {
+                        {
+                            "type" : "dataset",
                             "id": ds.id,
                             "name": ds.name,
                             "visible": ds.visible,
@@ -243,6 +276,7 @@ async def execute_workflow(
             elif isinstance(ds, HistoryDatasetCollectionAssociation):
                 intermediate_outputs_formatted.append(
                         {
+                            "type" : "collection",
                             "id": ds.id,
                             "name": ds.name,
                             "visible": ds.visible,
@@ -269,6 +303,14 @@ async def execute_workflow(
                 "intermediate_outputs": intermediate_outputs_formatted
             }
     except Exception as e:
+        await ws_manager.broadcast(
+            event= SocketMessageEvent.workflow_execute,
+            data = {
+                "type": SocketMessageType.WORKFLOW_FAILURE,
+                "payload" : f"Workflow execution failed: {e}"
+            },
+            tracker_id = tracker_id
+        )
         # Provide a detailed error message for debugging
         raise HTTPException(status_code=500, detail=f"Workflow execution failed: {e}")
     
@@ -308,52 +350,3 @@ async def get_workflow_details(
     except Exception as e:
         # detailed error responses
         raise HTTPException(status_code = 500 , detail= f'Show workflow failed {e}')
-
-
-def _rmtree_sync(path: pathlib.Path):
-    shutil.rmtree(path, ignore_errors=True)
-
-# TODO: this needs an installation on galaxy instance side, to support pdf downloads
-@router.get(
-    "/{workflow_id}/invocation_pdf",
-    response_class = FileResponse,
-    summary= "Get invocation pdf report",
-    tags=["Invocation", "Workflows"]
-)
-async def invocation_report_pdf(
-    workflow_id: str = Path(..., description="The ID of the Galaxy workflow."),
-    invocation_id: str = Query(..., description="The ID of the invocation from a certain workflow")
-):
-
-    galaxy_client = GalaxyClient(current_api_key.get())
-    workflow_manager = WorkflowManager(galaxy_client)
-
-    tmpdir = tempfile.mkdtemp(prefix="galaxy_pdf_")
-    tmpdir_path = pathlib.Path(tmpdir)
-    try:
-        # get workflow object 
-        workflow_obj = await run_in_threadpool(
-            workflow_manager.gi_object.workflows.get, workflow_id
-        )
-
-        pdf_report_name = re.sub(r'[\\/*?:"<>|]', '', f"{workflow_obj.name}_invocation_report.pdf")
-        pdf_path = tmpdir_path / pdf_report_name
-
-        await run_in_threadpool(
-            workflow_manager.gi_object.gi.invocations.get_invocation_report_pdf,
-            invocation_id=invocation_id,
-            file_path=str(pdf_path)
-        )
-        background = BackgroundTasks()
-        background.add_task(run_sync, _rmtree_sync, tmpdir)
-
-        return FileResponse(
-            path=pdf_path,
-            filename=pdf_report_name,
-            media_type="application/octet-stream",
-            background=background
-        )
-    except Exception as exc:
-        # Clean up immediately on error
-        await run_sync(_rmtree_sync, tmpdir)
-        raise HTTPException(status_code=500, detail=f"Failed to get PDF invocation report: {exc}")

@@ -269,7 +269,10 @@ class WorkflowFormGenerator:
         self.workflow = workflow
         self.history = history
         self.data_manager = data_manager
-
+        self.upload_form_counter = 0
+        self.has_upload_forms = False
+        self.script_blocks = set()
+        
     def _build_html(self) -> str:
         """
         Builds a semantic HTML form from a list of mapped workflow inputs.
@@ -328,8 +331,19 @@ class WorkflowFormGenerator:
 
         form_parts.append('<button type="submit" class="galaxy-submit">Run Workflow</button>')
         form_parts.append("</form>")
-
-        return "\n".join(form_parts)
+        
+        # Add script blocks if any
+        script_content = "\n".join(self.script_blocks)
+        if self.has_upload_forms:
+            script_content += self._add_upload_toggle_script()
+        
+        joined_parts = "\n".join(form_parts)
+        return  f"""
+                {joined_parts}
+                <script>
+                    {script_content}
+                </script>
+                """
 
     def _assemble_form_field(self, field_name: str, input_info: dict, field_html: str) -> str:
         """Helper to wrap an input element with its label and annotations."""
@@ -346,15 +360,56 @@ class WorkflowFormGenerator:
             """
 
     def _create_data_input(self, name: str, datasets: list) -> str:
-        """Creates a <select> for a single dataset input."""
+        """Creates a <select> for a single dataset input with upload functionality."""
+        # Generate select options for existing datasets
         options = ''.join([f'<option value="{opt["id"]}">{opt["name"]}</option>' for opt in datasets])
-        return f'<select class="form-control" name="{name}" id="{name}" required>{options}</select>'
-
+        
+        # Create unique ID for this upload form
+        self.upload_form_counter += 1
+        unique_id = f"upload-file-form-{self.upload_form_counter}"
+        self.has_upload_forms = True
+        
+        # Create upload button and hidden form
+        upload_button = f'<button type="button" class="galaxy-upload-btn" data-target="{unique_id}">Upload File</button>'
+        upload_form = f"""
+        <div id="{unique_id}" class="upload-form" style="display:none;">
+            <form action="/api/histories/{self.history.id}/upload-file" method="POST" enctype="multipart/form-data">
+                <input type="file" name="file" required>
+                <button type="submit">Upload</button>
+            </form>
+        </div>
+        """
+        
+        return f'<select class="form-control" name="{name}" id="{name}" required>{options}</select>{upload_button}{upload_form}'
     def _create_collection_input(self, name: str, collections: list) -> str:
-        """Creates a <select> for a dataset collection input."""
+        """Creates a <select> for a dataset collection input with upload functionality."""
+        # Generate select options for existing collections
         options = ''.join([f'<option value="{opt["id"]}">{opt["name"]}</option>' for opt in collections])
-        return f'<select class="form-control" name="{name}" id="{name}" required>{options}</select>'
-
+        
+        # Create unique ID for this upload form
+        self.upload_form_counter += 1
+        unique_id = f"upload-collection-form-{self.upload_form_counter}"
+        self.has_upload_forms = True
+        
+        # Create upload button and hidden form
+        upload_button = f'<button type="button" class="galaxy-upload-btn" data-target="{unique_id}">Upload Collection</button>'
+        upload_form = f"""
+        <div id="{unique_id}" class="upload-form" style="display:none;">
+            <form action="/api/histories/{self.history.id}/upload-collection" method="POST" enctype="multipart/form-data">
+                <input type="file" name="files" multiple required>
+                <select name="collection_type" required>
+                    <option value="list">List</option>
+                    <option value="paired">Paired</option>
+                    <option value="list:paired">List:Paired</option>
+                </select>
+                <input type="text" name="collection_name" placeholder="Collection name (optional)">
+                <textarea name="structure" placeholder="For list:paired, specify structure as JSON (e.g., [[\"file1.fastq\", \"file2.fastq\"]])"></textarea>
+                <button type="submit">Upload Collection</button>
+            </form>
+        </div>
+        """
+        
+        return f'<select class="form-control" name="{name}" id="{name}" required>{options}</select>{upload_button}{upload_form}'
     def _create_parameter_input(self, name: str, tool_inputs: dict) -> str:
         """Creates an appropriate input element for a workflow parameter."""
         param_type = tool_inputs.get("parameter_type", "text")
@@ -382,3 +437,21 @@ class WorkflowFormGenerator:
             
         # Case 4: Default to a simple text input
         return f'<input type="text" class="form-control" name="{name}" id="{name}" {required}>'
+    
+    def _add_upload_toggle_script(self):
+        """Returns the JavaScript for toggling upload forms."""
+        return """
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('.galaxy-upload-btn').forEach(button => {
+                button.addEventListener('click', function() {
+                    const targetId = this.getAttribute('data-target');
+                    const form = document.getElementById(targetId);
+                    if (form) {
+                        form.style.display = form.style.display === 'none' ? 'block' : 'none';
+                    }
+                });
+            });
+        });
+        """
+    
+# TODO: Add also a create collection button and also validate the upload buttons/forms against the forms.
