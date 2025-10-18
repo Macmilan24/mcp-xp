@@ -13,6 +13,7 @@ GALAXY_API_KEY = os.getenv("GALAXY_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 AZURE_API_KEY = os.getenv("AZURE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
+OPENAI_API_KEY= os.getenv("OPENAI_API_KEY")
 
 class Configuration:
     """Manages configuration and environment variables for the MCP client."""

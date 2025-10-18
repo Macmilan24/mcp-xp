@@ -131,65 +131,12 @@ Instructions:
 4. Do not provide overly brief or shallow responses—maximize the value of the information without adding anything external.
 5. Do not mention or refer to "retrieved results" or the source of the information in your response.
 6. If the information is empty, irrelevant, or unhelpful, respond with: "I can't help with your question."
+7. If a link for execution of the tool/workflow is included in the retreived content, include that information at the bottom of the response if it is relevant or mentioned in the context.
+8. Respond in a natural tone.
 
 Provide only the answer, and avoid any unnecessary references or disclaimers.
 """
 
-
-# TODO: Improve prompting
-
-INVOCATION_PROMPT="""
-
-You are an intelligent agent that selects the correct Galaxy workflow invocation based on a user query and a list of invocation metadata.
-
-### Instructions:
-
-* You will receive two inputs:
-  **1. A user query** that might refer to a specific workflow invocation (directly or indirectly).
-  **2. A list of workflow invocation objects** (formatted as JSON), each containing fields like `id`, `workflow_id`, `history_id`, `create_time`, `update_time`, and `state`.
-
-* Your task is to **analyze the user query and determine which invocation it is most likely referring to**.
-  The user may hint at the target invocation using:
-
-  * Workflow ID
-  * History ID
-  * Creation or update timestamp
-  * The state of the invocation (e.g., "failed", "scheduled", "new")
-  * Descriptions like “the last one that failed”, “the one from yesterday”, etc.
-
-* **Your response must be the `id` of the matched workflow invocation. Return the `id` only and nothing else—no explanation, no formatting, no text.**
-
-* If no confident match can be made, strictly respond with "No matches" alone.
-
-
-### Example: when a match is found
-
-**User Query:**
-
-> “Tell me aout the workflow that failed most recently?”
-
-**Expected Output:**
-
-```
-e85a3be143d5905b
-```
-### Example: when no match is found
-
-**User Query:**
-
-> "Tell me about the workflow invoked yesteday"
-
-**Expected Output:**
-
-```
-No matches
-```
-# Input:
-
-**User Queryy**: {query}
-**Invocations**: {invocations}
-
-"""
 
 EXTRACT_KEY_WORD="""
 Extract the main keywords from the following query for a fuzzy search in a Galaxy platform(tool/workflow/dataset/invocation) database. 
@@ -198,4 +145,24 @@ Return a single Python list of a combination of keywords that can potentially be
 Input query: "{query}"
 
 Output (Python list of keywords): []
+"""
+
+
+FINAL_RESPONSE_PROMPT = """
+You are an expert Galaxy(bioinformatics) assistant. Below are multiple retrieved responses relevant to a user’s query.
+
+Your task is to produce a **single, direct, comprehensive, and well-structured final answer** by synthesizing the information from these responses.
+
+**Instructions:**
+
+* Combine and reconcile consistent details across the retrieved responses.
+* Preserve all retrieved information.
+* Eliminate redundancy or contradictions.
+* Maintain a **professional, precise, and objective tone** throughout.
+
+**User Query:**
+{query}
+
+**Retrieved Responses:**
+{query_responses}
 """

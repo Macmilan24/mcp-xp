@@ -6,10 +6,12 @@ from app.AI.server import Server
 from app.AI.llm_config.groq_config import GROQConfig
 from app.AI.llm_config.azure_config import AZUREConfig
 from app.AI.llm_config.gemini_config import GEMINIConfig
+from app.AI.llm_config.openai_config import OPENAIConfig
 
 from app.AI.provider.groq_provider import GroqProvider
 from app.AI.provider.azure_provider import AzureProvider
 from app.AI.provider.gemini_provider import GeminiProvider
+from app.AI.provider.openai_provider import OpenAIProvider
 
 from app.config import Configuration
 from app.AI.prompts import DEFINE_TOOLS_PROMPT, STRUCTURE_OUTPUT_PROMPT
@@ -259,6 +261,7 @@ def get_providers():
             if provider_name == "groq": provider_class = GroqProvider(GROQConfig(provider_config))
             elif provider_name == "azure": provider_class = AzureProvider(AZUREConfig(provider_config))
             elif provider_name == "gemini": provider_class = GeminiProvider(GEMINIConfig(provider_config))
+            elif provider_name == "openai": provider_class = OpenAIProvider(OPENAIConfig(provider_config))
             else: raise ValueError(f"Unknown provider: {provider_name}")
             provider_registry[provider_name] = provider_class
     return provider_registry

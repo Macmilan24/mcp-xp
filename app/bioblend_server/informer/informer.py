@@ -8,7 +8,10 @@ import logging
 import redis
 import httpx
 from dotenv import load_dotenv
+from typing import Dict, Any, Union
+from urllib.parse import quote
 import sys
+import asyncio
 
 load_dotenv()
 sys.path.append('.')
@@ -16,7 +19,8 @@ sys.path.append('.')
 from app.log_setup import configure_logging
 from app.bioblend_server.galaxy import GalaxyClient
 from app.AI.provider.gemini_provider import GeminiProvider
-from app.bioblend_server.informer.prompts import RETRIEVE_PROMPT, SELECTION_PROMPT, INVOCATION_PROMPT, EXTRACT_KEY_WORD
+from app.AI.provider.openai_provider import OpenAIProvider
+from app.bioblend_server.informer.prompts import RETRIEVE_PROMPT, SELECTION_PROMPT, EXTRACT_KEY_WORD, FINAL_RESPONSE_PROMPT
 from app.AI.llm_config._base_config import LLMModelConfig
 
 
@@ -57,7 +61,7 @@ class GalaxyInformer:
         self.logger.info(f'Initializing the galaxy informer for entity type: {entity_type} for user {self.username}')
 
     @classmethod
-    async def create(cls, galaxy_client: GalaxyClient, entity_type: str):
+    async def create(cls, galaxy_client: GalaxyClient, entity_type: str, llm_provider = "gemini"):
         """Asynchronous factory to create and fully initialize a GalaxyInformer instance."""
 
         from app.bioblend_server.informer.manager import InformerManager 
@@ -68,15 +72,24 @@ class GalaxyInformer:
         
         with open('app/AI/llm_config/llm_config.json', 'r') as f:
             model_config_data = json.load(f)
-
-        gemini_cfg = LLMModelConfig(model_config_data['providers']['gemini'])
-        self.llm = GeminiProvider(model_config=gemini_cfg)
+        
+        if llm_provider == "gemini":
+            gemini_cfg = LLMModelConfig(model_config_data['providers']['gemini'])
+            self.llm = GeminiProvider(model_config=gemini_cfg)
+        elif llm_provider == "openai":
+            openai_cfg = LLMModelConfig(model_config_data['providers']['openai'])
+            self.llm = OpenAIProvider(model_config=openai_cfg)
+            
         self.redis_client = redis.Redis(host='localhost', port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
         self.manager = await InformerManager.create()
         return self
 
     async def get_embedding_model(self, input):
-        return await self.llm.gemini_embedding_model(input)
+        with open('app/AI/llm_config/llm_config.json', 'r') as f:
+            model_config_data = json.load(f)
+        openai_cfg = LLMModelConfig(model_config_data['providers']['openai'])
+        llm = OpenAIProvider(model_config=openai_cfg)
+        return await llm.embedding_model(input)
     
     async def get_response(self, message):
         # Accept either a raw string or already-formatted list[dict]
@@ -258,7 +271,7 @@ class GalaxyInformer:
                 query=[query]
             embeddings = await self.get_embedding_model(query)
             embed = np.array(embeddings)
-            query_embedding = embed.reshape(-1, 768).tolist()[0]
+            query_embedding = embed.reshape(-1, 1536).tolist()[0]
             # Search vector database
             results = self.manager.search_by_vector(
                 collection=collection_name,
@@ -365,18 +378,33 @@ class GalaxyInformer:
         if not entities:
             return None
         
-        collection_name = f'Galaxy_{self.entity_type}_{self.username}'
+        if self.entity_type  == "tool":
+            collection_name = f'Galaxy_{self.entity_type}'
+        else:
+            collection_name = f'Galaxy_{self.entity_type}_{self.username}'
         
         # Cache in Redis with a 10-hour TTL
         try:
-            self.redis_client.setex(collection_name, 36000, json.dumps(entities))
-            self.logger.info(f'Saved {self.entity_type} entities to Redis.')
+            if self.entity_type  == "tool":
+                self.redis_client.setex(collection_name, 86400, json.dumps(entities))
+                self.logger.info(f'Saved {self.entity_type} entities to Redis.')
+                
+            elif self.entity_type  == "workflow":
+                self.redis_client.setex(collection_name, 18000, json.dumps(entities))
+                self.logger.info(f'Saved {self.entity_type} entities to Redis.')
+                
+            elif self.entity_type == "dataset":
+                self.redis_client.setex(collection_name, 3600, json.dumps(entities))
+                self.logger.info(f'Saved {self.entity_type} entities to Redis.')
+                
         except redis.RedisError as e:
+            self.logger.error(f'Failed to save entities to Redis: {e}')
+        except Exception as e:
             self.logger.error(f'Failed to save entities to Redis: {e}')
         
         # Store in Qdrant vector database
         try:
-            # --- Calls to the new vector manager ---
+            # Delete old collection adn add to new collection.
             self.manager.delete_collection(collection_name=collection_name)
             await self.manager.embed_and_store_entities(
                 entities=entities,
@@ -394,7 +422,10 @@ class GalaxyInformer:
         fresh data if the cache is empty or invalid.
         """
         try:
-            entities_str = self.redis_client.get(f'Galaxy_{self.entity_type}_{self.username}')
+            if self.entity_type == "tool":
+                entities_str = self.redis_client.get(f'Galaxy_{self.entity_type}')
+            else:
+                entities_str = self.redis_client.get(f'Galaxy_{self.entity_type}_{self.username}')
             if entities_str:
                 self.logger.info(f'Retrieved cached {self.entity_type} entities from Redis.')
                 return json.loads(entities_str)
@@ -412,36 +443,62 @@ class GalaxyInformer:
 
         if not entities:
             return None
-        
-        # 1. Fuzzy Search
-        keywords = await self._extract_fuzzy_search_keywords(query)
-        fuzzy_results = []
-        for keyword in keywords:
-            fuzzy_results.extend(self._fuzzy_search(query=keyword, entities=entities, config=self._entity_config[self.entity_type], threshold=threshold))
-        # Remove duplicates
-        unique_fuzzy_results = list({item[f'{self._entity_config[self.entity_type]["id_field"]}']: item for item, score in fuzzy_results}.values())
 
-        # 2. Semantic Search
-        collection_name = f'Galaxy_{self.entity_type}_{self.username}'
-        semantic_results = await self._semantic_search(query=query, collection_name=collection_name)
-        
-        # 3. LLM-based Re-ranking and Selection
+        # 1. Prepare collection name for semantic search
+        if self.entity_type == "tool":
+            collection_name = f'Galaxy_{self.entity_type}'
+        else:
+            collection_name = f'Galaxy_{self.entity_type}_{self.username}'
+
+        # 2. Extract keywords
+        keywords = await self._extract_fuzzy_search_keywords(query)
+
+        # Run fuzzy and semantic searches concurrently
+        async def run_fuzzy_searches():
+            """Run fuzzy searches concurrently for all keywords."""
+            tasks = [
+                asyncio.to_thread(
+                    self._fuzzy_search,
+                    keyword,
+                    entities,
+                    self._entity_config[self.entity_type],
+                    threshold
+                )
+                for keyword in keywords
+            ]
+            fuzzy_batches = await asyncio.gather(*tasks)
+            # Flatten all fuzzy results into one list
+            fuzzy_results = [item for batch in fuzzy_batches for item in batch]
+            # Remove duplicates
+            unique_fuzzy_results = list({
+                item[f'{self._entity_config[self.entity_type]["id_field"]}']: item
+                for item, score in fuzzy_results
+            }.values())
+            return unique_fuzzy_results
+
+        # Launch both searches concurrently
+        fuzzy_task = asyncio.create_task(run_fuzzy_searches())
+        semantic_task = asyncio.create_task(self._semantic_search(query=query, collection_name=collection_name))
+
+        # Wait for both to complete
+        unique_fuzzy_results, semantic_results = await asyncio.gather(fuzzy_task, semantic_task)
+
+        # 3. LLM-based Re-ranking and Selection (unchanged)
         self.logger.info("Using LLM to select the best results from hybrid search.")
         prompt = SELECTION_PROMPT.format(input=query, tuple_items=unique_fuzzy_results, dict_items=semantic_results)
-        
+
         try:
             selected_str = await self.get_response(prompt)
-            # The selection prompt should ask for a JSON object of the top relevant results
             return selected_str
         except (json.JSONDecodeError, Exception) as e:
             self.logger.error(f"Failed to select entities using LLM: {e}")
-            # Fallback: combine and return top results manually if LLM fails
-            combined = {v[self._entity_config[self.entity_type]['id_field']]:v for k,v in semantic_results.items()}
+            combined = {v[self._entity_config[self.entity_type]['id_field']]: v for k, v in semantic_results.items()}
             for item in unique_fuzzy_results:
                 combined[item[self._entity_config[self.entity_type]['id_field']]] = item
             return dict(list(combined.items())[:3])
+
         
-    def _show_tool(self, tool_id):
+    async def _show_tool(self, tool_id):
         """
         Replacement for bioblends show_tool function for richer information retrieval, 
         making direct get http request to the galaxy api
@@ -451,123 +508,301 @@ class GalaxyInformer:
         params= {'history_id': self.gi_user.histories.get_histories()[-1]['id']}
 
         try:
-            tool = asyncio.run(self.run_get_request(url=url, headers=headers, params=params))
+            tool = await self.run_get_request(url=url, headers=headers, params=params)
         except Exception as e:
             self.logger.error(f'error fetching toolds via direct api call: {e}')
             raise 
         return tool
 
-
-    def get_entity_details(self, entity_id: str) -> dict:
-        """
-        Retrieves full details for a single entity by its ID.
-        """
-
-        detail_methods = {
-            'dataset': self.gi_user.datasets.show_dataset,
-            'tool': lambda id: self._show_tool(tool_id=id),
-            'workflow': self.gi_user.workflows.show_workflow
-        }
+    def _prune_empty_nested(self, obj: Union[Dict[str, Any], list]) -> Union[Dict[str, Any], list]:
+        """Recursively prune empty key-value pairs, lists, and dicts from nested structures."""
         
+        if isinstance(obj, dict):
+            to_remove = []
+            for k, v in list(obj.items()):
+                if isinstance(v, (dict, list)):
+                    self._prune_empty_nested(v)  # Recurse first
+                    if isinstance(v, (dict, list)) and len(v) == 0:
+                        to_remove.append(k)
+                elif v is None or (isinstance(v, str) and not v.strip()):
+                    to_remove.append(k)
+            for k in to_remove:
+                obj.pop(k, None)
+        elif isinstance(obj, list):
+            obj[:] = [item for item in (self._prune_empty_nested(item) for item in obj) if item not in [None, '', [] , {}]]
+        return obj
+
+    async def _clean_tool_metadata(self, raw_tool: Dict[str, Any]) -> Dict[str, Any]:
+        """Clean tool metadata for RAG compatibility."""
+
+        tool = raw_tool.copy()
+
+        # Step 1: Drop only junk (UI/runtime/internal keeps all semantics)
+        universal_drops = [
+            'model_class', 'icon', 'hidden', 'config_file', 'panel_section_id', 'form_style',
+            'sharable_url', 'message', 'tool_errors', 'job_id', 'job_remap', 'history_id',
+            'display', 'action', 'method', 'enctype', 'help_format'
+        ]
+        for field in universal_drops:
+            tool.pop(field, None)
+        
+        # Step 1.5: Recursively prune empty nested structures
+        self._prune_empty_nested(tool)
+        
+        # Step 2: Enrich inputs
+        if 'inputs' in tool:
+            enriched_inputs = []
+            for inp in tool['inputs']:
+                # Keep all core fields; drop only per-input UI junk
+                input_junk = ['model_class', 'argument', 'help_format', 'refresh_on_change', 'hidden', 
+                            'is_dynamic', 'tag', 'text_value']  # These are form-specific
+                for junk in input_junk:
+                    inp.pop(junk, None)
+                
+                if 'optional' in inp:
+                    inp['required'] = not inp['optional']
+                
+                # flatten options lightly
+                if 'options' in inp and isinstance(inp['options'], list):
+
+                    flattened_opts = []
+                    for opt in inp['options']:
+                        if isinstance(opt, list) and len(opt) >= 2:
+                            flattened_opts.append({'label': opt[0], 'value': opt[1], 'selected': opt[2] if len(opt) > 2 else False})
+                        else:
+                            flattened_opts.append(opt)
+                    inp['options'] = flattened_opts
+                
+                if 'edam' in inp and inp['edam']:
+                    pass
+                
+                enriched_inputs.append(inp)
+            tool['inputs'] = enriched_inputs
+        
+        # Step 3: Full help preservation (strip HTML/tags for clean text, no truncation)
+        if 'help' in tool:
+            help_text = tool['help']
+
+            clean_help = re.sub(r'<[^>]+>', '', help_text)  # Basic tag removal
+            clean_help = re.sub(r'\n\s*\n', '\n\n', clean_help.strip())  # Normalize whitespace
+            tool['help_text'] = clean_help
+            del tool['help']
+               
+        # Step 5: Add universal derived fields
+        tool['tool_id'] = tool.get('id', 'unknown')
+        tool['tool name'] = tool.get('name', 'unknown')
+        if 'name' in tool:
+            del tool['name']
+            
+        if 'id' in tool:
+            del tool['id']
+        tool['category'] = tool.get('panel_section_name', tool.get('labels', ['General'])[0])
+        
+        tool_id = tool['tool_id']
+        
+        # Add link to for execution.
+        tool_url = quote(tool_id, safe = "")
+        tool['Link to execute tool'] = f"{self.galaxy_client.galaxy_url}/?tool_id={tool_url}&version=latest"
+        
+        if 'panel_section_name' in tool:
+            del tool['panel_section_name']
+              
+        # Flatten arrays for brevity if huge
+        for k in ['versions', 'requirements', 'labels', 'xrefs', 'edam_operations', 'edam_topics']:
+            if k in tool and isinstance(tool[k], list) and len(tool[k]) > 10:
+                tool[k + '_truncated'] = tool[k][:10] + ['...']
+        
+        return tool
+    
+    def _clean_workflow_metadata(self, raw_workflow: Dict[str, Any]) -> Dict[str, Any]:
+        """Clean and enrich workflow metadata for RAG compatibility."""
+        
+        workflow = raw_workflow.copy() 
+        
+        # Step 1: Remove universal non-semantic fields
+        universal_drops = [
+            'model_class', 'id', 'create_time', 'update_time', 'url', 'published', 'deleted', 'hidden',
+            'owner', 'latest_workflow_uuid', 'number_of_steps', 'show_in_tool_panel', 'creator_deleted',
+            'doi', 'email_hash', 'readme', 'help', 'slug', 'source_metadata', 'name'
+        ]
+        for field in universal_drops:
+            workflow.pop(field, None)
+        
+        # Step 1.5: Recursively prune empty nested structures across the entire workflow
+        self._prune_empty_nested(workflow)
+        
+        # Step 2: Enrich inputs by converting dictionary to sorted list, adding derived fields, and removing junk
+        if 'inputs' in workflow and isinstance(workflow['inputs'], dict):
+            enriched_inputs = []
+            for key, inp in sorted(workflow['inputs'].items(), key=lambda x: int(x[0])):
+                # Remove input-specific non-semantic fields
+                input_junk = ['uuid', 'value']
+                for junk in input_junk:
+                    inp.pop(junk, None)
+                
+                # Derive 'required' field based on 'optional' if present
+                inp['required'] = not inp.get('optional', False)
+                
+                # Prune the individual input after modifications
+                self._prune_empty_nested(inp)
+                
+                enriched_inputs.append(inp)
+            workflow['inputs'] = enriched_inputs
+        
+        # Step 3: Clean annotation by stripping HTML tags, normalizing whitespace, and renaming to 'description'
+        if 'annotation' in workflow:
+            annot_text = workflow['annotation']
+            # Remove HTML tags
+            clean_annot = re.sub(r'<[^>]+>', '', annot_text)
+            # Normalize multiple newlines and strip leading/trailing whitespace
+            clean_annot = re.sub(r'\n\s*\n', '\n\n', clean_annot.strip())
+            if 'description' not in workflow:
+                workflow['description'] = clean_annot
+            else:
+                workflow['description'] += f" {clean_annot}"
+                
+            workflow.pop('annotation', None)
+        
+        
+        # Step 4: Enrich steps by converting dictionary to sorted list, cleaning tool_inputs, and adding derived count
+        if 'steps' in workflow and isinstance(workflow['steps'], dict):
+            enriched_steps = []
+            for step_id, step in sorted(workflow['steps'].items(), key=lambda x: int(x[0])):
+                
+                # Remove step-specific non-semantic fields
+                step_junk = ['when', '__page__', '__rerun_remap_job_id__']
+                for junk in step_junk:
+                    step.pop(junk, None)
+                               
+                # For subworkflows, recursively clean the metadata
+                if step.get('type') == 'subworkflow':
+                    step = self._clean_workflow_metadata(step)
+                
+                # Prune the individual step after modifications
+                self._prune_empty_nested(step)
+                
+                # structure tool info better
+                if step.get('type') == 'tool':
+                    
+                    if 'tool_id' in step and step['tool_id']:
+                        parts = step['tool_id'].split('/')
+                        if len(parts) >= 5:  # Minimum for toolshed/repos/owner/repo/tool structure
+                            tool_info = {
+                                'full_path': step['tool_id'],
+                                'owner': parts[-4],
+                                'repo': parts[-3],
+                                'name': parts[-2],
+                            }
+                            # Add version and inputs
+                            if 'tool_version' in step:
+                                tool_info['version'] = re.sub(r'\+galaxy\d+$', '', step['tool_version'])
+                            if 'tool_inputs' in step:
+                                tool_info['tool_inputs'] = step['tool_inputs']
+                            step['tool_info'] = tool_info
+                    
+                    step.pop('tool_id', None)
+                    step.pop('tool_version', None)
+                    step.pop('tool_inputs', None)
+                
+                enriched_steps.append(step)
+            workflow['steps'] = enriched_steps
+            # Add derived field for step count
+            workflow['number_of_steps'] = len(enriched_steps)
+        
+        # Step 5: Clean creator list by removing non-essential fields per person and pruning
+        if 'creator' in workflow and isinstance(workflow['creator'], list):
+            for person in workflow['creator']:
+                # Remove person-specific non-essential fields
+                person_junk = [
+                    'class', 'address', 'alternateName', 'email', 'faxNumber', 'image', 'telephone',
+                    'url', 'familyName', 'givenName', 'honorificPrefix', 'honorificSuffix', 'jobTitle'
+                ]
+                for junk in person_junk:
+                    person.pop(junk, None)
+            # Prune the creator list after individual modifications
+            self._prune_empty_nested(workflow['creator'])
+        
+        # Step 6: Add derived fields for enhanced metadata
+        workflow['workflow_id'] = raw_workflow.get('id', 'unknown')
+        workflow['workflow name'] = raw_workflow.get('name', 'unknown')
+        workflow['category'] = workflow.get('tags', ['General'])[0] if 'tags' in workflow else 'General'
+        
+        # Add link to workflow for execution.
+        workflow_id = workflow['workflow_id']
+        if workflow_id != 'unknown':
+            workflow['Link to execute workflow'] = f"{self.galaxy_client.galaxy_url}/workflows/run?id={workflow_id}"
+                      
+        # Final prune to ensure no lingering empty structures
+        self._prune_empty_nested(workflow)
+        
+        return workflow
+
+    def _show_workflow(self, workflow_id):
+        """Retrieve and clean workflow metadata"""
+        workflow = self.gi_user.workflows.show_workflow(workflow_id)
+        # Clean metadata of workflow
+        cleaned_workflow_data = self._clean_workflow_metadata(workflow)
+        
+        return json.dumps(cleaned_workflow_data, ensure_ascii=False)
+    
+    async def _show_tool(self, tool_id):
+        """
+        Replacement for bioblends show_tool function for richer information retrieval, 
+        making direct get http request to the galaxy api, nd then cleaning retrieved metadata.
+        """
+        headers = {'x-api-key' : self.galaxy_client.user_api_key}
+        url = f'{self.galaxy_client.galaxy_url}/api/tools/{tool_id}/build'
+        params= {'history_id': self.gi_user.histories.get_histories()[-1]['id']}
+
+        try:
+            tool = await self.run_get_request(url=url, headers=headers, params=params)
+            cleaned_tool_data = await self._clean_tool_metadata(tool)
+        except Exception as e:
+            self.logger.error(f'error fetching toolds via direct api call: {e}')
+            raise 
+        return  json.dumps(cleaned_tool_data, ensure_ascii=False)
+    
+    def _show_dataset(self, dataset_id):
+        dataset = self.gi_user.datasets.show_dataset(dataset_id)
+        return json.dumps(dataset, ensure_ascii=False)
+
+    async def get_entity_details(self, entity_id: str) -> dict:
+        detail_methods = {
+            'dataset': self._show_dataset,
+            'tool': self._show_tool,
+            'workflow': self._show_workflow
+        }
+
         try:
             self.logger.info(f"Fetching details for {self.entity_type} with ID: {entity_id}")
-            return detail_methods[self.entity_type](entity_id)
+            method = detail_methods[self.entity_type]
+
+            if asyncio.iscoroutinefunction(method):
+                return await method(entity_id)
+            return method(entity_id)
+        
         except Exception as e:
             self.logger.error(f"Could not retrieve details for {self.entity_type}:{entity_id}: {e}")
             return {"error": "Failed to retrieve details."}
 
-
-    async def get_invocation_details(self, query: str, workflow_id: str = None):
-        """Function to check and extract specific invocation details from the galaxy instance"""
-
-        invocation_result = None
+    async def generate_final_response(self, query: str, retrieved_contents: list):
+        """ Generates a final, user-facing natural language response based on the retrieved and processed information. """
         
-        def is_close_to_invocation(query: str) -> bool:
-            query_words = query.split()
-            target_word = "invocation"
-            reference_word = "invoke"
-
-            # Create a threshold from the ratio of the two words
-            threshold = fuzz.ratio(target_word, reference_word)  # similarity score
-
-            # Check each word against 'invocation'
-            for word in query_words:
-                score = fuzz.ratio(word, target_word)
-                if score >= threshold:
-                    return True
-            return False
-        try:
-            self.logger.info('Checking if query is invocation related')
-            if is_close_to_invocation(query=query):
-                self.logger.info('Extracting invocation information')
-                if workflow_id:
-                    invocations=self.gi_user.invocations.get_invocations(workflow_id=workflow_id)
-                else:
-                    invocations=self.gi_user.invocations.get_invocations()
-
-                # Prompt LLM to select the correct match for invocation.
-                prompt=INVOCATION_PROMPT.format(query=query, invocations=invocations)
-                response= await self.get_response(prompt)
-                response=response.strip()
-                self.logger.warning(f" the response of the LLM: {response}")
-
-                if response == "No matches":
-                    return None
-                else:
-
-                    # Extract and structure essential parts of invocation information
-
-                    invocation_detail= self.gi_user.invocations.show_invocation(invocation_id=response)
-                    invocation_report= self.gi_user.invocations.get_invocation_report(invocation_id=response)
-                    invocation_report['messages']= invocation_detail['messages']
-                    invocation_steps= [{
-                                        'update_time': step.get('update_time', None),
-                                        'job_id': step.get('job_id', None),
-                                        'workflow_step_label': step.get('workflow_step_label', None),
-                                        'order_index': step.get('order_index'),
-                                        'state':step.get('state')
-                                    } for step in invocation_detail.get('steps')]
-                    invocation_inputs=[{
-                                        'id': value.get('id'),
-                                        'label': value.get('label'),
-                                        'src': value.get('src')
-                                        } for key,value in invocation_detail.get('inputs', None).items() ]
-                    invocation_input_step_parameters=invocation_detail.get('input_step_parameters', None)
-                    invocation_outputs=[key for key,value in invocation_detail.get('outputs', None).items()]
-                    invocation_output_collection= [key for key,value in invocation_detail.get('output_collections', None).items()]
-                    
-
-                    invocation_result={
-                        'invocation id': response,
-                        'workflow id': workflow_id,
-                        'invocation inputs': invocation_inputs,
-                        'invocation input step parameters': invocation_input_step_parameters,
-                        'invocation steps': invocation_steps,
-                        'invocation outputs' : invocation_outputs,
-                        'invocation collection outputs': invocation_output_collection,
-                        'invocation final report' : invocation_report
-                    }
-        except Exception as e:
-            self.logger.error(f"Error handling invocationss: {e}")
-            raise e
-            
-        return invocation_result
-
-    async def generate_final_response(self, query: str, retrieved_content: dict) -> dict:
-        """
-        Generates a final, user-facing natural language response based on the
-        retrieved and processed information.
-        """
-        self.logger.info('Generating final response with LLM.')
-        prompt = RETRIEVE_PROMPT.format(query=query, retrieved_content=retrieved_content)
+        async def content_response(query, content): 
+            prompt = RETRIEVE_PROMPT.format(query=query, retrieved_content=content)
+            response_text = await self.get_response(prompt)
+            self.logger.info(f"Context response: {response_text} \n\n")
+            return response_text
         
+        tasks = [content_response(query, content) for content in retrieved_contents]
+        task_results = await asyncio.gather(*tasks)
+        query_responses = "\n\n\n\n".join(str(r) for r in task_results if r)
+
+        self.logger.info('Generating final response.')
+        prompt = FINAL_RESPONSE_PROMPT.format(query=query, query_responses=query_responses)
         response_text = await self.get_response(prompt)
-        
-        return {
-            'query': query,
-            'retrieved_content': retrieved_content,
-            'response': response_text
-        }
+        self.logger.info(f"Final response: {response_text}")
+        return response_text
 
 
     async def get_entity_info(self, search_query: str, entity_id: str = None) -> dict:
@@ -593,24 +828,15 @@ class GalaxyInformer:
         if found_entities is None:
             return await self.generate_final_response(search_query, {"message": "No relevant items found."})
         
-        self.logger.info(f'found entities are : {found_entities} and are type {type(found_entities)}')
-        # Check and retrieve invocation detail if query is asking about workflow invocation.
-        
-         # Collate all details
-        response_details = {}
+        self.logger.info(f"Relevant {self.entity_type}s found are: {[v.get('name') for v in found_entities.values()]}")
 
-        if self.entity_type == 'workflow':
-            invocation_info =await self.get_invocation_details(query = search_query, workflow_id= found_entities['0'][id_field])
-            # register found information.
-            if invocation_info:
-                response_details['retrieved invocation details for the workflow'] = invocation_info
-            else:
-                response_details['retrieved invocation details for the workflow'] = "No matching invocation details found for the workflow "
+        tasks = []
 
-        for i, item_stub in enumerate(found_entities.values()):
+        for _, item_stub in enumerate(found_entities.values()):
             item_id = item_stub.get(id_field)
             if item_id:
-                details = self.get_entity_details(item_id)
-                response_details[f'found {self.entity_type} {i}'] = details
+                tasks.append(self.get_entity_details(item_id))
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        return await self.generate_final_response(search_query, response_details)
+        return await self.generate_final_response(search_query, results)

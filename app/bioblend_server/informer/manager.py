@@ -7,16 +7,32 @@ import random
 import json
 
 from qdrant_client import QdrantClient, models
+from enum import Enum
 from dotenv import load_dotenv
 
 from app.AI.provider.gemini_provider import GeminiProvider
+from app.AI.provider.openai_provider import OpenAIProvider
 from app.AI.llm_config._base_config import LLMModelConfig
 from app.log_setup import configure_logging
 
 
+class EmbeddingModel(Enum):
+    """Defines supported embedding models and their vector sizes."""
+    
+    GEMINI_EMBEDDING_001 = ("embedding-001", 768)
+    GEMINI_EMBEDDING_002 = ("embedding-002", 1408)
+    GEMINI_TEXT_EMBEDDING_004 = ("text-embedding-004", 2048)
+    OPENAI_TEXT_EMBEDDING_3_SMALL = ("text-embedding-3-small", 1536)
+    OPENAI_TEXT_EMBEDDING_3_LARGE = ("text-embedding-3-large", 3072)
 
+    @property
+    def model_name(self) -> str:
+        return self.value[0]
 
-load_dotenv()
+    @property
+    def embedding_size(self) -> int:
+        return self.value[1]
+
 
 class InformerManager:
     """
@@ -30,10 +46,12 @@ class InformerManager:
         self.client = None
         self.llm = None
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.embedding_size = 768  # Gemini embedding vector size
+        self.embedding_model = None
+        self.embedding_size = None
+        self.model_name = None
 
     @classmethod
-    async def create(cls):
+    async def create(cls, llm_provider = "openai"):
         """Asynchronous factory to create and initialize an InformerManager instance."""
         self = cls()
         load_dotenv()
@@ -45,9 +63,21 @@ class InformerManager:
 
             with open('app/AI/llm_config/llm_config.json', 'r') as f:
                 model = json.load(f)
-            gemini_cfg = LLMModelConfig(model['providers']['gemini'])
-            self.llm = GeminiProvider(model_config=gemini_cfg)
+            if llm_provider == "gemini":
+                gemini_cfg = LLMModelConfig(model['providers']['gemini'])
+                self.llm = GeminiProvider(model_config=gemini_cfg)
+                self.embedding_model = EmbeddingModel.GEMINI_EMBEDDING_001
+            elif llm_provider == "openai":
+                openai_cfg = LLMModelConfig(model['providers']['openai'])
+                self.llm = OpenAIProvider(model_config=openai_cfg)
+                self.embedding_model = EmbeddingModel.OPENAI_TEXT_EMBEDDING_3_SMALL
+            else:
+                raise ValueError(f"Unsupported LLM provider: {llm_provider}")
             
+            # Assign embedding metadata
+            self.embedding_size = self.embedding_model.embedding_size
+            self.model_name = self.embedding_model.model_name
+              
             self.logger.info("InformerManager connected to Qdrant successfully.")
         except Exception as e:
             self.logger.exception(f"Qdrant connection failed: {e}")
@@ -55,7 +85,7 @@ class InformerManager:
         return self
    
     async def get_embedding_model(self, input):
-        return await self.llm.gemini_embedding_model(input)
+        return await self.llm.embedding_model(input)
     
     def _ensure_collection_exists(self, collection_name: str):
         """
@@ -89,20 +119,25 @@ class InformerManager:
             raise ValueError("Input data must be a list of dictionaries.")
 
     async def _generate_embeddings(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        A private helper to generate vector embeddings for the 'content' column of a DataFrame.
-        """
         try:
             self.logger.info("Generating vector embeddings for entity content.")
             embeddings = await self.get_embedding_model(df['content'].tolist())
-            embed_array = np.array(embeddings).reshape(-1, self.embedding_size)
+
+            # Detect embedding size dynamically
+            if not embeddings or not isinstance(embeddings[0], (list, np.ndarray)):
+                raise ValueError("Embedding provider returned invalid format")
+
+            self.embedding_size = len(embeddings[0])  # <-- FIX
+
+            embed_array = np.array(embeddings).reshape(len(df), self.embedding_size)
             df['dense'] = embed_array.tolist()
-            self.logger.info("Embeddings generated successfully.")
+            self.logger.info(f"Embeddings generated successfully with size {self.embedding_size}.")
             return df
         except Exception as e:
             self.logger.error(f"Error generating dense embeddings: {e}")
             traceback.print_exc()
-            raise 
+            raise
+
 
     def _upsert_points(self, collection_name: str, df: pd.DataFrame):
         """
