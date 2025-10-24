@@ -23,6 +23,12 @@ from app.AI.provider.openai_provider import OpenAIProvider
 from app.bioblend_server.informer.prompts import RETRIEVE_PROMPT, SELECTION_PROMPT, EXTRACT_KEY_WORD, FINAL_RESPONSE_PROMPT
 from app.AI.llm_config._base_config import LLMModelConfig
 
+from app.bioblend_server.informer.generic_recommender import GenericRecommender
+
+# TODO;
+# 1, Running the generic tool recommenders semantic search and the informer search as a multi processes.
+# 2, Updgrade the get_methods by adding the description from the scraped data into them, which will enhance there retrieval more.
+# 3, using the finetuned Embedding model.
 
 class GalaxyInformer:
     """
@@ -34,11 +40,15 @@ class GalaxyInformer:
         """Initializes the GalaxyInformer with non-blocking assignments."""
         self.logger = logging.getLogger(self.__class__.__name__)
         self.entity_type = entity_type.lower()
+        
         self.galaxy_client = galaxy_client
         self.gi_user = self.galaxy_client.gi_client
         self.gi_admin = self.galaxy_client.gi_admin
         self.username = self.galaxy_client.whoami
+        
+        self.generic_recommender: GenericRecommender = None
         self.llm = None
+        self.embedding_size = None
         self.redis_client = None
         self.manager = None
         self._entity_config = {
@@ -64,11 +74,14 @@ class GalaxyInformer:
     async def create(cls, galaxy_client: GalaxyClient, entity_type: str, llm_provider = os.getenv("CURRENT_LLM", "gemini")):
         """Asynchronous factory to create and fully initialize a GalaxyInformer instance."""
 
-        from app.bioblend_server.informer.manager import InformerManager 
+        from app.bioblend_server.informer.manager import InformerManager, EmbeddingModel
         
         self = cls(galaxy_client, entity_type)
 
         configure_logging()
+        
+        if self.entity_type in {"tool", "workflow"}:
+            self.generic_recommender = GenericRecommender(entity_type= self.entity_type)
         
         with open('app/AI/llm_config/llm_config.json', 'r') as f:
             model_config_data = json.load(f)
@@ -76,15 +89,19 @@ class GalaxyInformer:
         if llm_provider == "gemini":
             gemini_cfg = LLMModelConfig(model_config_data['providers']['gemini'])
             self.llm = GeminiProvider(model_config=gemini_cfg)
+            self.embedding_size = EmbeddingModel.GEMINI_EMBEDDING_001.embedding_size
+            
         elif llm_provider == "openai":
             openai_cfg = LLMModelConfig(model_config_data['providers']['openai'])
             self.llm = OpenAIProvider(model_config=openai_cfg)
+            self.embedding_size = EmbeddingModel.OPENAI_TEXT_EMBEDDING_3_SMALL.embedding_size
             
         self.redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
         self.manager = await InformerManager.create()
         return self
 
     async def get_embedding_model(self, input):
+        #TODO: Improve embedding instantiation.
         with open('app/AI/llm_config/llm_config.json', 'r') as f:
             model_config_data = json.load(f)
         openai_cfg = LLMModelConfig(model_config_data['providers']['openai'])
@@ -271,7 +288,8 @@ class GalaxyInformer:
                 query=[query]
             embeddings = await self.get_embedding_model(query)
             embed = np.array(embeddings)
-            query_embedding = embed.reshape(-1, 1536).tolist()[0]
+            query_embedding = embed.reshape(-1, self.embedding_size).tolist()[0]
+            
             # Search vector database
             results = self.manager.search_by_vector(
                 collection=collection_name,
@@ -497,7 +515,19 @@ class GalaxyInformer:
                 combined[item[self._entity_config[self.entity_type]['id_field']]] = item
             return dict(list(combined.items())[:3])
 
-        
+    async def get_global_recommendation(self, query: str):
+        try:
+            embeddings = await self.get_embedding_model([query])
+            embed = np.array(embeddings)
+            query_embedding = embed.reshape(-1, self.embedding_size).tolist()[0]
+            
+            # Search vector database
+            result = self.generic_recommender.recommend(query_embedding)
+            return result
+        except Exception as e:
+            self.logger.error(f"Semantic search failed: {e}")
+            return {}
+
     async def _show_tool(self, tool_id):
         """
         Replacement for bioblends show_tool function for richer information retrieval, 
@@ -784,7 +814,8 @@ class GalaxyInformer:
         except Exception as e:
             self.logger.error(f"Could not retrieve details for {self.entity_type}:{entity_id}: {e}")
             return {"error": "Failed to retrieve details."}
-
+        
+ 
     async def generate_final_response(self, query: str, retrieved_contents: list):
         """ Generates a final, user-facing natural language response based on the retrieved and processed information. """
         
@@ -806,9 +837,8 @@ class GalaxyInformer:
 
 
     async def get_entity_info(self, search_query: str, entity_id: str = None) -> dict:
-        """
-        The main public method to orchestrate the entire information retrieval process.
-        """
+        """ The main public method to orchestrate the entire information retrieval process. """
+        
         id_field = self._entity_config[self.entity_type]['id_field']
         found_entities=None
         if entity_id:
@@ -840,3 +870,6 @@ class GalaxyInformer:
             results = await asyncio.gather(*tasks, return_exceptions=True)
         
         return await self.generate_final_response(search_query, results)
+    
+    # TODO: Multi process runners for the generic recommender and the informer implemenetation, Add logic to integrate one against the other interms returing optimal results for users query interms of recommendsation
+    # TODO: OPTIMIZATION WORK!!!!!

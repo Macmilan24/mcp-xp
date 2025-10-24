@@ -5,13 +5,18 @@ import numpy as np
 import logging
 import random
 import json
+import asyncio
+from typing import Literal, Any, List
 
 from qdrant_client import QdrantClient, models
+from qdrant_client.models import Filter, FieldCondition, MatchValue, PointStruct
+
 from enum import Enum
 from dotenv import load_dotenv
 
 from app.AI.provider.gemini_provider import GeminiProvider
 from app.AI.provider.openai_provider import OpenAIProvider
+from app.AI.provider.e5_provider import E5_Model
 from app.AI.llm_config._base_config import LLMModelConfig
 from app.log_setup import configure_logging
 
@@ -24,6 +29,7 @@ class EmbeddingModel(Enum):
     GEMINI_TEXT_EMBEDDING_004 = ("text-embedding-004", 2048)
     OPENAI_TEXT_EMBEDDING_3_SMALL = ("text-embedding-3-small", 1536)
     OPENAI_TEXT_EMBEDDING_3_LARGE = ("text-embedding-3-large", 3072)
+    E5_MODEL = ("intfloat/e5-base-v2", 768)
 
     @property
     def model_name(self) -> str:
@@ -42,13 +48,13 @@ class InformerManager:
     _logging_configured = False
 
     def __init__(self):
-        # This init should be lightweight and non-blocking.
-        self.client = None
-        self.llm = None
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.client: QdrantClient = None
+        self.embedder = None
         self.embedding_model = None
         self.embedding_size = None
         self.model_name = None
+        
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     @classmethod
     async def create(cls, llm_provider = os.getenv("CURRENT_LLM", "openai")):
@@ -65,16 +71,25 @@ class InformerManager:
 
             with open('app/AI/llm_config/llm_config.json', 'r') as f:
                 model = json.load(f)
-            if llm_provider == "gemini":
+                
+            if embedding_provider == "gemini":
                 gemini_cfg = LLMModelConfig(model['providers']['gemini'])
-                self.llm = GeminiProvider(model_config=gemini_cfg)
+                self.embedder = GeminiProvider(model_config=gemini_cfg)
                 self.embedding_model = EmbeddingModel.GEMINI_EMBEDDING_001
-            elif llm_provider == "openai":
+                
+            elif embedding_provider == "openai":
                 openai_cfg = LLMModelConfig(model['providers']['openai'])
-                self.llm = OpenAIProvider(model_config=openai_cfg)
+                self.embedder = OpenAIProvider(model_config=openai_cfg)
                 self.embedding_model = EmbeddingModel.OPENAI_TEXT_EMBEDDING_3_SMALL
+            
+            elif embedding_provider == "e5_model":
+                # TODO: improvements, openai configuration are used as a dummy input for abstraction class.
+                openai_cfg = LLMModelConfig(model['providers']['openai'])
+                self.embedder = E5_Model(model_config=openai_cfg)
+                self.embedding_model= EmbeddingModel.E5_MODEL
+                
             else:
-                raise ValueError(f"Unsupported LLM provider: {llm_provider}")
+                raise ValueError(f"Unsupported LLM provider: {embedding_provider}")
             
             # Assign embedding metadata
             self.embedding_size = self.embedding_model.embedding_size
@@ -87,17 +102,14 @@ class InformerManager:
         return self
    
     async def get_embedding_model(self, input):
-        return await self.llm.embedding_model(input)
+        return await self.embedder.embedding_model(input)
     
     def _ensure_collection_exists(self, collection_name: str):
         """
         A private helper to ensure a collection exists in Qdrant, creating it if necessary.
         """
         try:
-            self.client.get_collection(collection_name)
-        except Exception:
-            self.logger.warning(f"Collection '{collection_name}' not found. Creating it now.")
-            try:
+            if not self.client.collection_exists(collection_name):
                 self.client.create_collection(
                     collection_name,
                     vectors_config=models.VectorParams(
@@ -106,9 +118,9 @@ class InformerManager:
                     )
                 )
                 self.logger.info(f"Collection '{collection_name}' created successfully.")
-            except Exception as e:
-                self.logger.error(f"Failed to create collection '{collection_name}': {e}")
-                traceback.print_exc()
+        except Exception as e:
+            self.logger.error(f"Failed to ensure collection '{collection_name}' exists: {e}")
+            traceback.print_exc()
 
     def _prepare_dataframe(self, entities: list[dict]) -> pd.DataFrame:
         """
@@ -247,11 +259,8 @@ class InformerManager:
             return {"error": "Search failed"}
 
     def delete_collection(self, collection_name: str):
-        """
-        Deletes a Qdrant collection if it exists.
-
-        Called in: GalaxyInformer.retrive_informer_data
-        """
+        """ Deletes a Qdrant collection if it exists."""
+        
         try:
             self.client.delete_collection(collection_name)
             self.logger.info(f"Successfully deleted collection: {collection_name}")
@@ -259,3 +268,26 @@ class InformerManager:
             # Qdrant client might raise an exception if the collection doesn't exist.
             # We can log this as info or a warning instead of an error.
             self.logger.warning(f"Could not delete collection '{collection_name}'. It might not exist. Details: {e}")
+            
+    
+    async def match_name_from_collection(self, workflow_collection_name: str, workflow_name: str) -> tuple[Any, list[PointStruct]]:
+        """ Retrieve documents from a collection matching the specified workflow name. """
+        
+        loop = asyncio.get_running_loop()
+        hits = await loop.run_in_executor(
+            None,
+            lambda: self.client.scroll(
+                collection_name=workflow_collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="name",
+                            match=MatchValue(value=workflow_name)
+                        )
+                    ]
+                ),
+                limit=1
+            )
+        )
+        return hits
+        
