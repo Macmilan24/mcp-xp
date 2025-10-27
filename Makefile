@@ -1,35 +1,44 @@
+# Define Docker Compose command
 COMPOSE := docker compose
 
+# Load environment variables from .env file
 ifneq (,$(wildcard .env))
     include .env
     export
 endif
 
-PORT ?= 8000
-
 # Local development commands
 start:
-	uvicorn app.main:app --timeout-keep-alive 1 --host 0.0.0.0 --port $(PORT)
+	uvicorn app.main:app --timeout-keep-alive 1 --host 0.0.0.0 --port $(APP_PORT)
 
-up:
-	uvicorn app.main:app --port ${PORT}
+server:
+	python -m app.bioblend_server --port $(MCP_PORT)
 
-start-up:
-	nohup uvicorn app.main:app --reload --host 0.0.0.0 --port $(PORT) > uvicorn.log 2>&1 &
+mcp-server:
+	nohup python -m app.bioblend_server --port $(MCP_PORT) > logs/MCP_server.log 2>&1 &
 
-log:
-	tail -f uvicorn.log
+gx-service:
+	nohup uvicorn app.main:app --reload --host 0.0.0.0 --port $(APP_PORT) > logs/GX_integration.log 2>&1 &
 
-down:
-	@pid=$$(sudo lsof -ti :$(PORT)); \
+gx-down:
+	@pid=$$(lsof -ti :$(APP_PORT)); \
 	if [ -n "$$pid" ]; then \
-		echo "Killing process on port $(PORT) with PID: $$pid"; \
-		sudo kill -9 $$pid; \
+		echo "Killing process on port $(APP_PORT) with PID: $$pid"; \
+		kill -9 $$pid; \
 	else \
-		echo "No process found on port $(PORT)"; \
+		echo "No process found on port $(APP_PORT)"; \
 	fi
 
-## Docker commands
+mcp-down:
+	@pid=$$(lsof -ti :$(MCP_PORT)); \
+	if [ -n "$$pid" ]; then \
+		echo "Killing process on port $(MCP_PORT) with PID: $$pid"; \
+		kill -9 $$pid; \
+	else \
+		echo "No process found on port $(MCP_PORT)"; \
+	fi
+
+# Docker commands
 # Build Docker images
 docker-build:
 	$(COMPOSE) build
@@ -42,8 +51,7 @@ docker-up:
 docker-down:
 	$(COMPOSE) down
 
-## Maintainance
-
+# Maintenance
 # Stop containers and remove volumes
 docker-clean:
 	$(COMPOSE) down -v
@@ -52,26 +60,28 @@ docker-clean:
 docker-destroy:
 	$(COMPOSE) down -v --rmi all
 
-
-## Shell access
+# Shell access
 # Get bash shell in app container
 docker-shell:
 	$(COMPOSE) exec app bash
 
 # Access Redis CLI
-docker-shell-redis:
-	$(COMPOSE) exec redis redis-cli
+docker_redis:
+	$(COMPOSE) exec -it redis redis-cli -p $(REDIS_PORT)
 
-##  Show container status
+# Show container status
 docker-status:
 	$(COMPOSE) ps
 
-## Force rebuild without cache
-
+# Force rebuild without cache
 docker-rebuild:
 	$(COMPOSE) build --no-cache
 
-## Clean up unused Docker resources
+# Clean up unused Docker resources
 docker-prune:
 	docker system prune -f
 	docker volume prune -f
+
+# Inspect MCP (unchanged)
+mcp-inspect:
+	npx @modelcontextprotocol/inspector
