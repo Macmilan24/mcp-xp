@@ -14,6 +14,7 @@ import logging
 from typing import Literal
 from app.bioblend_server.informer.manager import InformerManager
 from dotenv import load_dotenv
+import httpx
 
 
 class GenericRecommender:
@@ -42,6 +43,18 @@ class GenericRecommender:
         # Initialize Galaxy Instance
         self.gi = GalaxyInstance(url=self.galaxy_url, key=self.galaxy_url_api_key)
 
+        # github token for future use
+        self.github_token = os.getenv("GITHUB_TOKEN", None)
+        self.github_API_URL = "https://api.github.com/repos/galaxyproject/iwc/contents/workflows"
+        self.raw_base_url = "https://raw.githubusercontent.com/galaxyproject/iwc/main/workflows"
+        self.maximum_workflow_fetch = 50
+        if self.github_token:
+            self.headers = {
+                "Authorization": f"token {self.github_token}"
+            }
+        else:
+            self.log.warning("No GITHUB_TOKEN found in environment variables. Using unauthenticated requests may hit rate limits.")
+            self.headers = {}
     async def scrape_tool(self):
         # setting variables
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -149,11 +162,143 @@ class GenericRecommender:
             return None
         
 
+    # Async GET request to GitHub API
+    async def github_api_get(self, url):
+        async with httpx.AsyncClient(headers=self.headers) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response.json()
 
-    async def scrape_workflow(self):
-        # TODO: Add workflow tool scraper logic here.
-        pass
-    
+    # Async fetch raw file contents
+    async def fetch_file_contents(self, path):
+        raw_url = f"{self.raw_base_url}/{path}"
+        async with httpx.AsyncClient(headers=self.headers) as client:
+            response = await client.get(raw_url)
+            response.raise_for_status()
+            return response.text
+        
+    # Parse .ga workflow content
+    async def parse_ga_content(self, ga_text):
+        try:
+            data = json.loads(ga_text)
+            workflow_name = data.get("name", "unknown")
+            steps = data.get("steps", {})
+            tools_used = []
+
+            for step in steps.values():
+                if step.get("type") != "tool":
+                    continue
+                repo = step.get("tool_shed_repository", {})
+                tool_info = {
+                    "id": step.get("tool_id", ""),
+                    "name": step.get("name", ""),
+                    "version": step.get("tool_version", ""),
+                    "owner": repo.get("owner", ""),
+                    "category": repo.get("name", ""),
+                    "tool_shed_url": repo.get("tool_shed", "")
+                }
+                if tool_info not in tools_used:
+                    tools_used.append(tool_info)
+
+            return {
+                "workflow_name": workflow_name,
+                "number_of_steps": len(steps),
+                "tools_used": tools_used
+            }
+        except Exception as e:
+            self.log.error(f"Failed to parse .ga JSON: {e}")
+            return {}
+
+    # Scan repository folder for workflows
+    async def scan_repo(self, category, repo_name):
+        base_path = f"{category}/{repo_name}"
+        url = f"{self.github_API_URL}/{category}/{repo_name}"
+
+        try:
+            repo_contents = await self.github_api_get(url)
+        except Exception as e:
+            self.log.error(f"Failed to get repo contents for {base_path}: {e}")
+            return None
+
+        workflow_files = []
+        files_present = set()
+        directories_present = set()
+        readme_content = None
+
+        for item in repo_contents:
+            name = item["name"]
+            if item["type"] == "file":
+                files_present.add(name)
+                if name.endswith(".ga"):
+                    ga_text = await self.fetch_file_contents(f"{base_path}/{name}")
+                    ga_info = await self.parse_ga_content(ga_text)
+
+                    # Add file info and raw download link
+                    ga_info.update({
+                        "file_name": name,
+                        "raw_download_url": f"{self.raw_base_url}/{base_path}/{name}"
+                    })
+
+                    workflow_files.append(ga_info)
+
+                if name == "README.md":
+                    try:
+                        readme_content = await self.fetch_file_contents(f"{base_path}/README.md")
+                    except Exception as e:
+                        self.log.error(f"Failed to fetch README for {base_path}: {e}")
+
+            elif item["type"] == "dir":
+                directories_present.add(name)
+
+        return {
+            "category": category.lower(),
+            "workflow_repository": repo_name.lower(),
+            "workflow_files": workflow_files,
+            "has_test_data": "test-data" in directories_present,
+            "has_dockstore_yml": ".dockstore.yml" in files_present,
+            "has_readme": "README.md" in files_present,
+            "readme_content": readme_content,
+            "has_changelog": "CHANGELOG.md" in files_present
+        }
+
+    # Main scraper
+    async def scrape_workflows(self):
+        self.log.info("Scraping Galaxy workflows from GitHub...")
+
+        categories = await self.github_api_get(self.github_API_URL)
+        all_data = []
+        workflow_count = 0
+
+        for category_item in categories:
+            if category_item["type"] != "dir":
+                continue
+            category = category_item["name"]
+            self.log.info(f"Scanning category: {category}")
+
+            repos = await self.github_api_get(category_item["url"])
+            for repo in repos:
+                if repo["type"] != "dir":
+                    continue
+
+                repo_name = repo["name"]
+                repo_data = await self.scan_repo(category, repo_name)
+                if repo_data:
+                    all_data.append(repo_data)
+                    workflow_count += len(repo_data["workflow_files"])
+                    if self.maximum_workflow_fetch and workflow_count >= self.maximum_workflow_fetch:
+                        self.log.info(f"Reached maximum workflow fetch limit of {self.maximum_workflow_fetch}. Stopping.")
+                        break
+            if self.maximum_workflow_fetch and workflow_count >= self.maximum_workflow_fetch:
+                break
+
+        # Save output
+        os.makedirs("data", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        output_file = f"data/galaxy_workflows_{timestamp}.json"
+        with open(output_file, "w") as f:
+            json.dump(all_data, f, indent=4)
+        self.log.info(f"Scraped workflow data saved to {output_file}.")
+                
     async def store_to_collection(self, scraped_data: list[dict]):
         collection_name = f"generic_galaxy_{self.entity_type}"
         self.log.info(f"Storing scraped galaxy data to Qdrant.")
@@ -169,3 +314,12 @@ class GenericRecommender:
             return {}
         
         return results
+    
+if __name__ == "__main__":
+    import asyncio
+    # recommender = GenericRecommender(entity_type="tool")
+    # asyncio.run(recommender.scrape_tool())
+    
+    recommender_workflow = GenericRecommender(entity_type="workflow")
+    asyncio.run(recommender_workflow.scrape_workflows())
+    
