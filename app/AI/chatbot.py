@@ -1,24 +1,25 @@
 import json
 import logging
 
-from datetime import datetime
 from app.AI.server import Server
 
 from app.AI.llm_config.groq_config import GROQConfig
 from app.AI.llm_config.azure_config import AZUREConfig
 from app.AI.llm_config.gemini_config import GEMINIConfig
+from app.AI.llm_config.openai_config import OPENAIConfig
 
 from app.AI.provider.groq_provider import GroqProvider
 from app.AI.provider.azure_provider import AzureProvider
 from app.AI.provider.gemini_provider import GeminiProvider
+from app.AI.provider.openai_provider import OpenAIProvider
 
 from app.config import Configuration
+from app.AI.prompts import DEFINE_TOOLS_PROMPT, STRUCTURE_OUTPUT_PROMPT
 
 class LLMClient:
     def __init__(self, llm_providers: dict):
         self.providers = llm_providers  # Creates an instance of the providers
 
-logger=logging.getLogger()
 
 class ChatSession:
     """Orchestrates the interaction between user, LLM, and tools."""
@@ -31,8 +32,21 @@ class ChatSession:
         self.messages: list = None
         self.user_ip = user_ip
         self.tools = None 
-        self.log_filename = f"chat_session_{self.user_ip}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         self.logger=logging.getLogger(__class__.__name__)
+
+    @property
+    def context(self):
+        seen = set()
+        result = []
+
+        for msg in self.messages[:3] + self.messages[-12:]:
+            # Convert dicts to a hashable representation
+            key = tuple(msg.items()) if isinstance(msg, dict) else msg
+            if key not in seen:
+                seen.add(key)
+                result.append(msg)
+
+        return result
 
     @classmethod
     async def create(cls, servers: list[Server], llm_client: LLMClient, user_ip: str = None) -> "ChatSession":
@@ -61,49 +75,16 @@ class ChatSession:
                 raise RuntimeError(f"Tool listing failed: {e}") from e
 
             # Compose system message
-            self.system_message = (
-                "You are a helpful assistant with access to these tools:\n\n"
-                f"{tools_description}\n"
-                "Choose the appropriate tool based on the user's question. "
-                "If no tool is needed, reply directly.\n\n"
-                "IMPORTANT: When you need to use a tool, you must ONLY respond with "
-                "the exact JSON object format below, nothing else:\n"
-                "{\n"
-                '    "tool": "tool name",\n'
-                '    "arguments": {\n'
-                '        "argument name": "value"\n'
-                "    }\n"
-                "}\n\n"
-                "After receiving a tool's response:\n"
-                "1. Transform the raw data into a natural, conversational response\n"
-                "2. Keep responses concise but informative\n"
-                "3. Focus on the most relevant information\n"
-                "4. Use appropriate context from the user's question\n"
-                "5. Avoid simply repeating the raw data\n\n"
-                "Please use only the tools that are explicitly defined above."
-            )
+            self.system_message = DEFINE_TOOLS_PROMPT.format(tools_description = tools_description)
 
             self.messages = [{"role": "user", "content": self.system_message}]
+
             return self
 
         except Exception:
             await self.cleanup_servers()
             raise
-
-    def _initialize_log_file(self):
-        """Create the log file when the session starts."""
-        try:
-            with open(self.log_filename, "w") as log_file:
-                log_data = {
-                    "user_ip": self.user_ip,
-                    "session_start": datetime.now().isoformat(),
-                    "messages": []
-                }
-                json.dump(log_data, log_file)
-                log_file.write("\n")  # Ensure each session is on a new line
-        except Exception as e:
-            print(f"Error initializing log file: {e}")
-
+    
     async def cleanup_servers(self) -> None:
         """Clean up all server resources safely."""
         if not self.servers:
@@ -120,100 +101,101 @@ class ChatSession:
 
     async def process_llm_response(self, llm_response: str) -> str:
         """Process the LLM response and execute tools if needed.
-
         Args:
             llm_response: The response from the LLM.
-
         Returns:
             The result of tool execution or the original response.
         """
-        import json
-
-        try:
-            tool_call = json.loads(llm_response) if isinstance(llm_response,str) else llm_response
-            self.logger.info(f" the tool called: {tool_call}")
-            if "tool" in tool_call and "arguments" in tool_call:
-                # logging.info(f"Executing tool: {tool_call['tool']}")
-                # logging.info(f"With arguments: {tool_call['arguments']}")
-
-                for server in self.servers:
-                    tools = self.tools  # Use stored tools
-                    
-                    if any(tool.name == tool_call["tool"] for tool in tools):
+        # If llm_response is already a dict (not a string), use it directly
+        if not isinstance(llm_response, str):
+            tool_call = llm_response
+        else:
+            # Try to parse the response as JSON
+            try:
+                tool_call = json.loads(llm_response)
+            except json.JSONDecodeError:
+                # If direct parsing fails, try to extract JSON from the response
+                json_start = llm_response.find('{')
+                json_end = llm_response.rfind('}') + 1
+                if json_start != -1 and json_end != -1:
+                    json_str = llm_response[json_start:json_end]
+                    try:
+                        tool_call = json.loads(json_str)
+                    except json.JSONDecodeError:
+                        # Try cleaning the JSON string
                         try:
-                            result = await server.execute_tool(
-                                tool_call["tool"], tool_call["arguments"]
-                            )
-                            # print(f'result from tool call: {result}')
-                            if isinstance(result, dict) and "progress" in result:
-                                progress = result["progress"]
-                                total = result["total"]
-                                percentage = (progress / total) * 100
-                                # logging.info(
-                                #     f"Progress: {progress}/{total} "
-                                #     f"({percentage:.1f}%)"
-                                # )
-                            if isinstance(result.content, list) and len(result.content) > 0:
-
-                                content_type = result.content[0].type
-                                content_text = result.content[0].text
-                                annotations = result.content[0].annotations
-
-                                self.logger.info(f" The return type: {content_type} Annotations: {annotations} Content : {content_text} type: {type(content_text)}")
-                            
-                                if isinstance(content_text, str):
-                                    try:
-                                        content_text = json.loads(content_text)
-                                        self.logger.info(f"Parsed JSON content, type: {type(content_text)}")
-                                    except json.JSONDecodeError:
-                                        self.logger.warning("Content is not valid JSON.")
-
-                                if isinstance(content_text, dict) and content_text.get("action_link"):
-                                    return content_text
-
-                                else:
-                                    return f"""
-                                            You are required to respond **strictly and exclusively** based on the following Tool Execution Result:
-                                            **{content_text}**
-
-                                            **Instructions:**
-                                            1. If the Tool Execution Result is complete and directly answers the query, **return it exactly as-is**. Do **not** paraphrase, summarize, interpret, or alter it in any way.
-                                            2. If the Tool Execution Result is **incomplete, unclear, or insufficient**, respond only using the information it contains—**do not draw on external knowledge or assumptions**.
-                                            3. Your response must remain **self-contained**, with no reference to outside sources, general knowledge, or unrelated context.
-                                            4. If appropriate, you may suggest **guidance or next steps**, but only when clearly warranted by the Tool Execution Result, and only if they can be logically and explicitly **derived from the given context**.
-                                            5. Never introduce new information, explanations, or assumptions beyond what is directly stated in the Tool Execution Result.
-
-                                            **Default behavior:**
-                                            Always return the Tool Execution Result **verbatim**, unless doing so would leave the query unresolved **based solely on the result itself**.
-                                            """
+                            cleaned_json = json_str.replace('\n', '').strip()
+                            cleaned_json = cleaned_json.replace("'", '"')  # Replace single quotes with double quotes
+                            cleaned_json = cleaned_json.replace(',}', '}').replace(',]', ']')  # Remove trailing commas
+                            tool_call = json.loads(cleaned_json)
+                        except json.JSONDecodeError:
+                            # Try using ast.literal_eval as a last resort
+                            try:
+                                import ast
+                                tool_call = ast.literal_eval(json_str)
+                            except (SyntaxError, ValueError) as e:
+                                self.logger.warning(f"Failed to parse JSON from response: {e}")
+                                self.logger.warning(f"Original response: {llm_response}")
+                                return llm_response
+                else:
+                    # If no JSON-like structure is found, return the original response
+                    return llm_response
+        
+        self.logger.info(f" the tool called: {tool_call}")
+        if "tool" in tool_call and "arguments" in tool_call:
+            # Ensure arguments is a dictionary
+            if not isinstance(tool_call["arguments"], dict):
+                self.logger.warning(f"Arguments is not a dictionary: {tool_call['arguments']}")
+                return llm_response
+                
+            for server in self.servers:
+                tools = self.tools  # Use stored tools
+                
+                if any(tool.name == tool_call["tool"] for tool in tools):
+                    try:
+                        result = await server.execute_tool(
+                            tool_call["tool"], tool_call["arguments"]
+                        )
+                        if isinstance(result.content, list) and len(result.content) > 0:
+                            content_type = result.content[0].type
+                            content_text = result.content[0].text
+                            annotations = result.content[0].annotations
+                            self.logger.info(f" The return type: {content_type} Annotations: {annotations} Content : {content_text} type: {type(content_text)}")
+                        
+                            if isinstance(content_text, str):
+                                try:
+                                    content_text = json.loads(content_text)
+                                    self.logger.info(f"Parsed JSON content, type: {type(content_text)}")
+                                except json.JSONDecodeError:
+                                    self.logger.warning("Content is not valid JSON.")
+                            if isinstance(content_text, dict) and content_text.get("action_link"):
+                                return content_text
                             else:
-                                return "Tool execution result: No content returned."
-                        except Exception as e:
-                            error_msg = f"Error executing tool: {str(e)}"
-                            # logging.error(error_msg)
-                            return error_msg
-
-                return f"No server found with tool: {tool_call['tool']}"
-            return llm_response
-        except json.JSONDecodeError:
-            return llm_response
+                                struct_prompt = STRUCTURE_OUTPUT_PROMPT.format(content_text = content_text)
+                                return  struct_prompt
+                        
+                        else:
+                            return "Tool execution result: No content returned."
+                    except Exception as e:
+                        error_msg = f"Error executing tool: {str(e)}"
+                        return error_msg
+            return f"No server found with tool: {tool_call['tool']}"
+        return llm_response
 
     async def respond(self, model_id: str, user_input: str) -> str:
         """Handle a user input and return the assistant's response."""
         # Process user input
 
         try:
-            # self.messages.extend(self.memory)
             self.messages.append({"role": "user", "content": user_input})
             self.memory.append({"role": "user", "content": user_input})
-            providers = self.llm_client.providers
 
             # Validate model_id
-            if model_id not in providers:
-                raise ValueError(f"Invalid model_id: {model_id}. Available providers: {list(providers.keys())}")
+            if model_id not in self.llm_client.providers:
+                raise ValueError(f"Invalid model_id: {model_id}. Available providers: {list(self.llm_client.providers.keys())}")
 
             # Get LLM response
-            llm_response = await providers[model_id].get_response(self.messages)
+            llm_response = await self.llm_client.providers[model_id].get_response(self.context)
 
             # Process potential tool calls
             result = await self.process_llm_response(llm_response)
@@ -235,7 +217,7 @@ class ChatSession:
                     except Exception as e:
                         raise                
                 else:
-                    final_response = await providers[model_id].get_response(self.messages)
+                    final_response = await self.llm_client.providers[model_id].get_response(self.context)
                     self.messages.append({"role": "assistant", "content": final_response})
                     self.memory.append({"role": "assistant", "content": final_response})
                 # print(self.messages)
@@ -249,9 +231,9 @@ class ChatSession:
             self.logger.error(f"Error processing response: {e}")
             raise RuntimeError(f"Response processing failed: {e}") from e
 
-        # finally:
-        #     await self.cleanup_servers()
 
+
+logger=logging.getLogger("ChatSession")
 
 async def initialize_session(user_ip: str) -> ChatSession:
     """Initialize and return the chat session."""
@@ -279,6 +261,7 @@ def get_providers():
             if provider_name == "groq": provider_class = GroqProvider(GROQConfig(provider_config))
             elif provider_name == "azure": provider_class = AzureProvider(AZUREConfig(provider_config))
             elif provider_name == "gemini": provider_class = GeminiProvider(GEMINIConfig(provider_config))
+            elif provider_name == "openai": provider_class = OpenAIProvider(OPENAIConfig(provider_config))
             else: raise ValueError(f"Unknown provider: {provider_name}")
             provider_registry[provider_name] = provider_class
     return provider_registry
