@@ -47,7 +47,7 @@ class InvocationBackgroundTasks:
             # Get all active API keys from Redis
             active_users = await self.get_active_users()
             
-            logger.info(f"Warming cache for {len(active_users)} active users")
+            logger.debug(f"Warming cache for {len(active_users)} active users")
             
             # Process users in batches to avoid overwhelming the Galaxy API
             batch_size = 10
@@ -143,7 +143,7 @@ class InvocationBackgroundTasks:
                     logger.debug(f"Skipping cache warm for user {username}: recently warmed")
                     return  # Skip if warmed recently
             
-            logger.info(f"Warming cache for user: {username}")
+            logger.debug(f"Warming cache for user: {username}")
             
             # Initialize workflow manager
             workflow_manager = WorkflowManager(galaxy_client)
@@ -172,7 +172,7 @@ class InvocationBackgroundTasks:
             logger.info(f"Cache warmed for user {username}: {len(workflows or [])} workflows, {len(mapping)} mappings, {len(all_invocations)} invocations")
             
         except Exception as e:
-            logger.error(f"Error warming cache for user {username}: {e}")
+            logger.error(f"Error warming cache for user: {e}")
     
     async def fetch_workflows_safely(self, workflow_manager: WorkflowManager, fetch_details: bool = False) -> List[Dict]:
         """Safely fetch workflows with timeout and error handling, optionally with full details"""
