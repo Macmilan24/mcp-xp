@@ -57,20 +57,18 @@ class WorkflowManager:
         self.data_manager = self.tool_manager.data_manager
         self.log = logging.getLogger(self.__class__.__name__)
 
-    async def upload_workflow(self, path: str, ws_manager: SocketManager, tracker_id: str)-> Workflow:
-        """Upload workflow from a ga file"""
+    async def upload_workflow(self, workflow_json: dict, ws_manager: SocketManager = None, tracker_id: str = None):
+        """Upload workflow from a ga file json."""
 
-        with open(path, 'r') as f:
-            workflow_json: dict= json.loads(f.read())
-
-        await ws_manager.broadcast(
-            event = SocketMessageEvent.workflow_upload,
-            data = {
-                "type": SocketMessageType.UPLOAD_WORKFLOW,
-                "payload": {"message": "Workflow upload started, checking and installing missing tools."}
-                },
-            tracker_id=tracker_id
-        )
+        if ws_manager:
+            await ws_manager.broadcast(
+                event = SocketMessageEvent.workflow_upload,
+                data = {
+                    "type": SocketMessageType.UPLOAD_WORKFLOW,
+                    "payload": {"message": "Workflow upload started, checking and installing missing tools."}
+                    },
+                tracker_id=tracker_id
+            )
         self.log.info("Workflow upload started, checking and installing missing tools.")
         # Check if the tools are installed and install all missing tools
         try:
@@ -79,14 +77,15 @@ class WorkflowManager:
                 for step in workflow_steps.values():
                     await self.tool_check_install(step, ws_manager, tracker_id)
         except Exception as e:
-            await ws_manager.broadcast(
-                event = SocketMessageEvent.workflow_upload,
-                data = {
-                    "type": SocketMessageType.UPLOAD_FAILURE,
-                    "payload": {"message": f"Error installing missing tools in the uploaded workflow: {e}"}
-                    },
-                tracker_id=tracker_id
-            )
+            if ws_manager:
+                await ws_manager.broadcast(
+                    event = SocketMessageEvent.workflow_upload,
+                    data = {
+                        "type": SocketMessageType.UPLOAD_FAILURE,
+                        "payload": {"message": f"Error installing missing tools in the uploaded workflow: {e}"}
+                        },
+                    tracker_id=tracker_id
+                )
             self.log.error(f"Error installing missing tools in the uploaded workflow: {e} traceback:{traceback.format_exc()}")
             
             # return {"error": f"Error installing missing tools in the uploaded workflow: {e}"}
@@ -102,17 +101,18 @@ class WorkflowManager:
 
         # Check if the workflow is considered runnable by the instance
         if workflow.is_runnable:
-            await ws_manager.broadcast(
-                event = SocketMessageEvent.workflow_upload,
-                data = {
-                    "type": SocketMessageType.UPLOAD_COMPLETE,
-                    "payload": {"message": "Workflow successfully uploaded."}
-                    },
-                tracker_id=tracker_id
-                )
-            return workflow
+            if ws_manager:
+                self.log.info("workflow Uploaded successfully")
+                await ws_manager.broadcast(
+                    event = SocketMessageEvent.workflow_upload,
+                    data = {
+                        "type": SocketMessageType.UPLOAD_COMPLETE,
+                        "payload": {"message": "Workflow successfully uploaded."}
+                        },
+                    tracker_id=tracker_id
+                    )
         else:
-            return {'error': 'uploaded workflow is not runnable'}
+            self.log.error("Workflow is not runnable.")
     
     def get_worlflow_by_name(self, name: str, score_cutoff: int = 70) -> Workflow | None:
         """Get workflow by its name (fuzzy match)."""
@@ -208,14 +208,15 @@ class WorkflowManager:
 
                 if isinstance(install_result, dict):
                     self.log.info(f"status: {install_result.get('status')}, message: {install_result.get('message')}")
-                    await ws_manager.broadcast(
-                        event= SocketMessageEvent.workflow_upload,
-                        data = {
-                            "type": SocketMessageType.TOOL_INSTALL,
-                            "payload": {"message": f"{install_result.get('message')}"}
-                        },
-                        tracker_id = tracker_id
-                    )
+                    if ws_manager:
+                        await ws_manager.broadcast(
+                            event= SocketMessageEvent.workflow_upload,
+                            data = {
+                                "type": SocketMessageType.TOOL_INSTALL,
+                                "payload": {"message": f"{install_result.get('message')}"}
+                            },
+                            tracker_id = tracker_id
+                        )
 
                 elif isinstance(install_result, list):
                     for repo_info in install_result:
@@ -228,19 +229,20 @@ class WorkflowManager:
                             f"Status: {status}, "
                             f"Error: {error_msg}"
                         )
-                        await ws_manager.broadcast(
-                            event=SocketMessageEvent.workflow_upload,
-                            data = {
-                                "type" : SocketMessageType.TOOL_INSTALL,
-                                "payload" : {
-                                    "name": repo_info.get('name', 'N/A'),
-                                    "owner": repo_info.get('owner', 'N/A'),
-                                    "status": status,
-                                    "error" : error_msg
-                                            }
-                            },
-                            tracker_id = tracker_id
-                            )
+                        if ws_manager:
+                            await ws_manager.broadcast(
+                                event=SocketMessageEvent.workflow_upload,
+                                data = {
+                                    "type" : SocketMessageType.TOOL_INSTALL,
+                                    "payload" : {
+                                        "name": repo_info.get('name', 'N/A'),
+                                        "owner": repo_info.get('owner', 'N/A'),
+                                        "status": status,
+                                        "error" : error_msg
+                                                }
+                                },
+                                tracker_id = tracker_id
+                                )
 
             except Exception as e:
                 self.log.error(f"Failed to install tool '{toolshed_info['name']}': {str(e)}  traceback:{traceback.format_exc()}")
@@ -361,8 +363,8 @@ class WorkflowManager:
     
     async def track_invocation(self, 
                             invocation: Invocation,
-                            tracker_id: str,
-                            ws_manager: SocketManager,
+                            tracker_id: str = None,
+                            ws_manager: SocketManager = None,
                             base_extension: int = 30,
                             initial_wait: int = 120,
                             invocation_check: bool = False
@@ -408,8 +410,15 @@ class WorkflowManager:
         #         self.log.error(f"Failed to wait for collection {collection_id}: {e}")
         #         return None
         
+        async def cancel_invocation_background(invocation: Invocation):
+            await asyncio.to_thread(invocation.cancel)
+            self.log.info(f"Invocation {invocation.id} has been cancelled.")
+            
         previous_states = {}
-        invocation_outputs = [] 
+        invocation_outputs ={
+            "output_datasets": [],
+            "collection_datasets": []
+        }
 
         start_time = time.time()
         inv = await _fetch_with_semaphore(asyncio.to_thread(
@@ -417,7 +426,7 @@ class WorkflowManager:
         ))
         num_steps = len(inv["steps"])
         num_completed_steps = 0
-        estimated_wait = 20 * num_steps  # assume ~20s per step
+        estimated_wait = 60 * num_steps  # assume ~60s per step
         effective_initial_wait = max(estimated_wait, initial_wait)  # Renamed for clarity
         deadline = start_time + effective_initial_wait
         max_extension = effective_initial_wait // 2
@@ -442,8 +451,8 @@ class WorkflowManager:
         if invocation_state in ("failed", "error"):
             invocation_state_result = "Failed"
             
-            if ws_manager:
-                self.log.error("workflow invocation has failed.")
+            
+            self.log.error("workflow invocation has failed.")
             
             if ws_manager:
                 ws_data = {
@@ -486,7 +495,7 @@ class WorkflowManager:
         progress_made = False
         # newly_completed = []
         has_error = False
-        step_index = 0
+        step_index = 1
 
         for step in step_jobs:
             step_id: str = step.get('id')
@@ -557,8 +566,7 @@ class WorkflowManager:
                         tracker_id=tracker_id
                     )
                     
-                cancel_coro = asyncio.to_thread(self.gi_object.gi.invocations.cancel_invocation, invocation_id=invocation.id)
-                asyncio.create_task(cancel_coro)
+                asyncio.create_task(cancel_invocation_background(invocation))
                 error_occurred = True
                 has_error = True
                 break
@@ -638,7 +646,7 @@ class WorkflowManager:
             # newly_completed = []
             has_error = False
             all_ok = True
-            step_index = 0
+            step_index = 1
 
             inv_coro = asyncio.to_thread(
                 self.gi_object.gi.invocations.show_invocation, invocation_id=invocation.id
@@ -651,6 +659,7 @@ class WorkflowManager:
             self.log.debug(json.dumps(inv, indent=4))
             if invocation_state in ("failed", "error"):
                 self.log.error("workflow invocation has failed.")
+                invocation_state_result = "Failed"
                 if ws_manager:
                     ws_data = {
                         "type": SocketMessageType.INVOCATION_FAILURE,
@@ -740,8 +749,7 @@ class WorkflowManager:
                             data=ws_data, 
                             tracker_id=tracker_id
                         )
-                    cancel_coro = asyncio.to_thread(self.gi_object.gi.invocations.cancel_invocation, invocation_id=invocation.id)
-                    asyncio.create_task(cancel_coro)
+                    asyncio.create_task(cancel_invocation_background(invocation))
                     has_error = True
                     break
 
@@ -819,8 +827,10 @@ class WorkflowManager:
                         data=ws_data, 
                         tracker_id=tracker_id
                     )
-                cancel_coro = asyncio.to_thread(self.gi_object.gi.invocations.cancel_invocation, invocation_id=invocation.id)
-                asyncio.create_task(cancel_coro)
+                    
+                asyncio.create_task(cancel_invocation_background(invocation))
+                self.log.info(f"invocation: {invocation.id} cancelled")
+                invocation_state_result = "Failed"
                 break
             
             # Adaptive polling interval based on progress made (fixed assignment)

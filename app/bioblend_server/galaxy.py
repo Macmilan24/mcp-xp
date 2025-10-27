@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional
 
 from dotenv import load_dotenv
 from bioblend import galaxy
@@ -56,10 +56,10 @@ class GalaxyClient:
             
         except GalaxyConnectionError as e:
             self.logger.error(f"Failed to connect to Galaxy at {self.galaxy_url}: {e}")
-            raise
+            raise GalaxyConnectionError(f"Failed to connect to Galaxy at {self.galaxy_url}: {e}") from e
         except Exception as e:
             self.logger.error(f"Unexpected error initializing GalaxyClient: {e}")
-            raise
+            raise Exception(f"Unexpected error initializing GalaxyClient: {e}") from e
     
     @property
     def whoami(self) -> str:
