@@ -12,10 +12,6 @@ from app.bioblend_server.informer.informer import GalaxyInformer
 configure_logging()
 logger = logging.getLogger("fastmcp_bioblend_server")
 
-# LLM model server will run on.
-SERVER_LLM_MODEL: Literal["openai", "gemini"] = "gemini"
-
-
 if not os.environ.get("GALAXY_API_KEY"):
     logger.warning("GALAXY_API_KEY environment variable is not set. GalaxyClient functionality may fail.")
 

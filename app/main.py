@@ -30,7 +30,7 @@ load_dotenv()
 
 # Global variables for cache and background tasks
 # Initialize Redis client
-redis_client = redis.Redis(host='localhost', port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
+redis_client = None
 invocation_cache = None
 background_tasks = None
 sessions = {}
@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI):
     # Startup
     try:        
         # Test Redis connection
+        redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
         await asyncio.get_event_loop().run_in_executor(None, redis_client.ping)
         logger.info("Redis connection established")
         
@@ -188,8 +189,6 @@ async def get_chat_history(request: Request):
 @app.post("/send_message", tags=["Agent"])
 async def send_message(request: Request, message: MessageRequest):
     """Conversate with the Galaxy Agent"""
-    from app.context import current_api_key
-    logger.info(f"Current user api: ******{current_api_key.get()[-4:]}")
 
     user_ip = request.client.host
     if user_ip not in sessions:
@@ -198,7 +197,7 @@ async def send_message(request: Request, message: MessageRequest):
             # return {"error": "Chat session not initiated for this IP"}
 
     chat_session = sessions[user_ip]
-    response = await chat_session.respond(model_id="openai", user_input=message.message)
+    response = await chat_session.respond(model_id=os.getenv("CURRENT_LLM", "gemini"), user_input=message.message)
     return {"response": response}
 
 
@@ -218,8 +217,8 @@ async def list_tools(request: Request):
     for server in chat_session.servers:
         logger.info(f"server {server.name}")
         tools = await server.list_tools()   
-        logger.info(f'found tools: {[tool.name for tool in tools.tools]}')
-        all_tools.extend([tool for tool in tools.tools])
+        logger.info(f'found tools: {[tool.name for tool in tools]}')
+        all_tools.extend([tool.__dict__ for tool in tools])
     return {"tools": all_tools}
 
 
@@ -287,7 +286,7 @@ async def get_create_galaxy_user_and_key(
 
     except HTTPException as e:
         logger.error(f"errror creating user acount: {e}")
-        raise HTTPException(status_code= 500, detail=f"error creating user account: {e}")
+        raise HTTPException(status_code= 500, detail=f"error creating user account: {str(e)}")
     except Exception as e:
         logger.error(f"Error: {e}")
         raise

@@ -51,14 +51,16 @@ class InformerManager:
         self.model_name = None
 
     @classmethod
-    async def create(cls, llm_provider = "openai"):
+    async def create(cls, llm_provider = os.getenv("CURRENT_LLM", "openai")):
         """Asynchronous factory to create and initialize an InformerManager instance."""
         self = cls()
         load_dotenv()
         configure_logging()
         try:
             # Initialize Qdrant client asynchronously if possible, or run in executor
-            self.client = QdrantClient(os.getenv('QDRANT_CLIENT'))
+            QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
+            QDRANT_PORT: str = os.getenv("QDRANT_HTTP_PORT", "6555")
+            self.client = QdrantClient(f"http://{QDRANT_HOST}:{QDRANT_PORT}", timeout=10.0)
             self.logger.info("Qdrant Client initialized")
 
             with open('app/AI/llm_config/llm_config.json', 'r') as f:

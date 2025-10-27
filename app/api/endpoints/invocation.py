@@ -31,7 +31,7 @@ from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 
 # Helper functions and redis instantiation
 logger = logging.getLogger("invocation")
-redis_client = redis.Redis(host='localhost', port=os.environ.get("REDIS_PORT"), db=0, decode_responses=True)
+redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.environ.get("REDIS_PORT"), db=0, decode_responses=True)
 invocation_cache = InvocationCache(redis_client)
 invocation_background = InvocationBackgroundTasks(cache = invocation_cache, redis_client=redis_client)
 
