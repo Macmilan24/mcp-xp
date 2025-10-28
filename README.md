@@ -1,6 +1,6 @@
 # Galaxy Interaction Agent
 
-This project provides a robust FastAPI application that serves as a bridge between a user and a Galaxy instance. It features a sophisticated agent powered by multiple Large Language Models (LLMs) to interact with Galaxy, execute tools and workflows, and manage data. The application uses a custom Multi-purpose Cooperative Protocol (MCP) server for seamless communication with the Galaxy platform via the `bioblend` library, and implements Retrieval-Augmented Generation (RAG) for intelligent tool discovery.
+This project provides a robust FastAPI application that serves as a bridge between a user and a Galaxy instance. It features a sophisticated agent powered by multiple Large Language Models (LLMs) to interact with Galaxy, execute tools and workflows, and manage data. The application uses a custom Model Context Protocol (MCP) server for seamless communication with the Galaxy platform via the `bioblend` library, and implements Retrieval-Augmented Generation (RAG) for intelligent tool discovery.
 
 ## Table of Contents
 
