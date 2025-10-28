@@ -1,276 +1,216 @@
-```markdown
-# Chatbot with Galaxy Integration
+# Galaxy Interaction Agent
 
-This project integrates a chatbot with a custom MCP server (`bioblend_server`) to fetch tools from a Galaxy instance (e.g., https://usegalaxy.eu/). The chatbot uses various LLM providers (Azure, Groq) to process user requests and interacts with Galaxy via the bioblend library.
+This project provides a robust FastAPI application that serves as a bridge between a user and a Galaxy instance. It features a sophisticated agent powered by multiple Large Language Models (LLMs) to interact with Galaxy, execute tools and workflows, and manage data. The application uses a custom Multi-purpose Cooperative Protocol (MCP) server for seamless communication with the Galaxy platform via the `bioblend` library, and implements Retrieval-Augmented Generation (RAG) for intelligent tool discovery.
 
-## Project Overview
+## Table of Contents
 
-**Purpose:** Fetch Galaxy tools and their metadata using a chatbot interface with support for multiple LLM providers.
+- [Key Features](#key-features)
+- [Project Structure](#project-structure)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Running the Application](#running-the-application)
+- [API Endpoints](#api-endpoints)
+  - [Authentication](#authentication)
+  - [Agent Endpoints](#agent-endpoints)
+  - [Histories & Data Endpoints](#histories--data-endpoints)
+  - [Workflows Endpoints](#workflows-endpoints)
+  - [Tools Endpoints](#tools-endpoints)
+  - [Invocations Endpoints](#invocations-endpoints)
+- [Troubleshooting](#troubleshooting)
 
-**Components:**
+## Key Features
 
--   `main.py`: The FastAPI application that provides REST endpoints for interacting with the chatbot.
--   `AI/chatbot.py`: The core chatbot implementation that interfaces with LLM providers and MCP servers.
--   `AI/llm_Config/`: Configuration and implementation for different LLM providers.
--   `AI/bioblend_server/`: An MCP server that connects to Galaxy and fetches tools.
--   `utils/`: Helper functions for fetching and processing Galaxy tool data.
+*   **Dynamic Galaxy Interaction:** Execute tools and workflows, manage histories, and handle datasets on a Galaxy instance programmatically.
+*   **Intelligent Agent (RAG-powered):** A conversational agent that uses Semantic Search (via **Qdrant**) to intelligently find and recommend the right Galaxy tools and workflows based on user queries.
+*   **Multi-LLM Support:** Easily configure and switch between different LLM providers like OpenAI, Google Gemini, Azure, and Groq.
+*   **Secure Authentication:** User authentication is handled via JWT, with Galaxy API keys securely encrypted.
+*   **Asynchronous Operations:** Built with FastAPI and `asyncio` for high-performance, non-blocking I/O.
+*   **Caching with Redis:** Caching of invocations, workflows, and rate limiting to improve performance.
+*   **Real-time Updates:** WebSocket support for real-time updates on long-running tasks like workflow and tool execution.
+*   **Dynamic Form Generation:** Automatically generates HTML forms for Galaxy tools and workflows.
 
-**Dependencies:** Python 3.8+, FastAPI, uvicorn, bioblend, mcp, httpx, python-dotenv, and other packages listed in `requirements.txt`.
+## Project Structure
 
+The project is organized into the following key directories and files:
+
+*   **`main.py`**: The entry point of the FastAPI application. It defines the API endpoints, middleware, and application lifecycle.
+*   **`app/AI/`**: Contains the core logic for the AI agent, including:
+    *   `chatbot.py`: Manages the chat sessions and orchestration between the LLM and the MCP server.
+    *   `llm_config/`: Configuration files and classes for the different LLM providers.
+    *   `bioblend_server/`: The MCP server that exposes Galaxy tools to the LLM.
+*   **`app/api/`**: Defines the API endpoints, middleware, and data schemas.
+*   **`app/orchestration/`**: Handles the caching (via Redis) and background tasks for invocations.
+*   **`app/utils/`**: Utility functions, such as importing published workflows.
 
 ## Prerequisites
 
-### Python Environment:
+Before you begin, ensure you have the following installed and running:
 
--   Ensure Python 3.8 or higher is installed.
--   Set up a virtual environment:
+*   **Python 3.8+**
+*   **Redis** (for caching and rate limiting)
+*   **Qdrant** (for vector storage and semantic search)
 
+## Installation
+
+1.  **Clone the repository:**
     ```bash
-    mcp-xp/
+    git clone https://github.com/rejuve-bio/mcp-xp.git
+    cd mcp-xp
+    ```
+
+2.  **Create and activate a virtual environment:**
+    ```bash
     python3 -m venv .venv
     source .venv/bin/activate
     ```
 
-### Install Dependencies:
-
--   Install required packages:
-
-    ```bash
-    pip install bioblend mcp httpx python-dotenv
-    ```
-
--   If using `requirements.txt`, run:
-
+3.  **Install the required dependencies:**
     ```bash
     pip install -r requirements.txt
     ```
 
-## Setup
+## Configuration
 
-### 1. Configure Environment Variables
+1.  **Create a `.env` file** in the root of the project and add the following environment variables.
 
--   Create or edit the `.env` file in the project root with the following content:
-
-    ```
-    GROQ_API_KEY=<your-groq-api-key>
-    AZURE_API_KEY=<your-azure-api-key>
-    GALAXY_API_KEY=<your-galaxy-api-key>
+    ```env
+    # Galaxy Configuration
     GALAXY_URL=https://usegalaxy.eu/
+    GALAXY_API_KEY=<your-galaxy-admin-api-key>
+
+    # LLM API Keys (Fill in the ones you intend to use)
+    OPENAI_API_KEY=<your-openai-api-key>
+    GEMINI_API_KEY=<your-gemini-api-key>
+    AZURE_API_KEY=<your-azure-api-key>
+    GROQ_API_KEY=<your-groq-api-key>
+
+    # Infrastructure & Security
+    SECRET_KEY=<a-secure-random-string-for-encryption>
+    REDIS_PORT=6379
+    QDRANT_CLIENT=http://localhost:6333 
     ```
+    *(Note: `QDRANT_CLIENT` should point to your Qdrant instance URL).*
 
-    -   `GROQ_API_KEY`: Your API key for the Groq LLM provider.
-    -   `AZURE_API_KEY`: Your API key for the Azure OpenAI service (for GPT-4o).
-    -   `GALAXY_API_KEY`: Your API key for the Galaxy instance (e.g., from https://usegalaxy.eu/).
-    -   `GALAXY_URL`: The URL of the Galaxy instance (default: https://usegalaxy.eu/).
-
-### 2. Configure Servers
-
--   Ensure `app/AI/servers_config.json` contains:
+2.  **Configure the MCP Server** in `app/AI/servers_config.json`. This file tells the application how to communicate with the `bioblend_server`.
 
     ```json
     {
       "mcpServers": {
         "galaxyTools": {
-          "command": "python3",
-          "args": ["-m", "app.AI.bioblend_server"],
-          "env": {}
+          "url": "http://localhost:8897",
+          "headers": {
+            "Authorization": "Bearer <your-jwt-token>"
+          }
         }
       }
     }
     ```
+    *Note: The `Authorization` header will be dynamically updated by the application during runtime.*
 
-    This configures the `bioblend_server` to run as an MCP server named `galaxyTools`.
-
-### 3. Configure LLM Providers
-
--   The LLM providers are configured in `app/AI/llm_Config/llm_config.json`. This file defines the available LLM providers and their settings:
+3.  **Configure LLM Providers** in `app/AI/llm_config/llm_config.json`. Here, you can define the settings for each LLM provider.
 
     ```json
     {
         "providers": {
-            "azure": {
-                "api_key": "your_azure_api_key",
-                "base_url": "https://models.inference.ai.azure.com",
-                "model": "gpt-4o",
-                "provider": "azure",
-                "temperature": 0.7,
-                "max_tokens": 150,
-                "top_p": 1,
-                "frequency_penalty": 0,
-                "presence_penalty": 0,
-                "stop": null,
-                "stream": true,
-                "stream_options": {
-                    "include_usage": true
-                }
+            "openai": {
+                "model": "gpt-4o-mini",
+                "embedding_model": "text-embedding-3-small",
+                "provider": "openai",
+                ...
             },
-            "groq": {
-                "api_key": "your_groq_api_key",
-                "base_url": "https://api.groq.com/openai/v1/chat/completions",
-                "model": "meta-llama/llama-4-scout-17b-16e-instruct",
-                "provider": "groq",
-                "temperature": 0.7,
-                "max_tokens": 1024,
-                "top_p": 1,
-                "stream": true,
-                "stop": null
+            "gemini": {
+                "model": "gemini-2.0-flash",
+                "embedding_model": "embedding-001",
+                "provider": "gemini",
+                ...
             }
         },
-        "default_provider": "azure",
-        "cache": {
-            "enabled": true,
-            "cache_size": 100,
-            "cache_expiry": 3600
-        }
+        "default_provider": "openai"
     }
     ```
 
 ## Running the Application
 
-1.  Navigate to the Project Directory:
-
+1.  **Start the MCP Server:**
+    Open a terminal and run the following command from the project root:
     ```bash
-    cd /path/to/project
+    python3 -m app.bioblend_server
     ```
 
-2.  Activate the Virtual Environment (if not already active):
-
-    ```bash
-    source .venv/bin/activate
-    ```
-
-3.  Run the FastAPI application:
-
+2.  **Start the FastAPI Application:**
+    In a separate terminal, run the following command:
     ```bash
     uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
     ```
+    The application will be available at `http://localhost:8000`.
 
-    The application will start and be available at http://localhost:8000.
+## API Endpoints
 
-## Using the API Endpoints
+The API is protected by JWT authentication. You first need to register a user to get a token.
 
-### 1. Initialize the Chat Session
+### Authentication
 
-Before sending messages, you need to initialize the chat session:
+**`POST /register-user`**
 
-```bash
-curl -X POST http://localhost:8000/initiate_chat
-```
+Registers a new user on the Galaxy instance (or fetches an existing one) and returns an encrypted API token.
 
-**Expected Response:**
-```json
-{
-  "message": "Chat session initiated"
-}
-```
+*   **Query Parameters:**
+    *   `email` (str): The user's email address.
+    *   `password` (str): The user's password.
 
-### 2. Send a Message to a Specific Model
+*   **Example Response:**
+    ```json
+    {
+      "username": "user",
+      "api_token": "<your-encrypted-api-token>"
+    }
+    ```
 
-After initializing the chat session, you can send messages to a specific model using the model_id parameter:
+### Agent Endpoints
 
-```bash
-curl -X POST "http://localhost:8000/send_message?model_id=azure" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "what tools do you have"}'
-```
+*You must include the `api_token` in the `Authorization` header as a Bearer token for all subsequent requests.*
 
-**Expected Response:**
-```json
-{
-  "response": "I can access tools from the Galaxy platform, which is a bioinformatics workflow management system. I can either fetch a list of tools available in the Galaxy instance or provide details about a specific tool using its ID. Let me know if you'd like me to retrieve a list of tools or details about a specific one!"
-}
-```
+**`POST /send_message`**
 
-### Example Interactions
+Sends a message to the Galaxy Agent. The agent will use RAG (via Qdrant) to find relevant tools if necessary.
 
-**Fetching Galaxy Tools:**
+*   **Example Request:**
+    ```bash
+    curl -X POST http://localhost:8000/send_message \
+    -H "Authorization: Bearer <your-api-token>" \
+    -H "Content-Type: application/json" \
+    -d '{"message": "find me a tool to align fastq files"}'
+    ```
 
-```bash
-curl -X POST "http://localhost:8000/send_message?model_id=azure" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "get me 5 galaxy tools"}'
-```
+### Histories & Data Endpoints
 
-**Fetching a Specific Tool by ID:**
+*   **`GET /api/histories/`**: List all Galaxy histories.
+*   **`POST /api/histories/create`**: Create a new Galaxy history.
+*   **`POST /api/histories/{history_id}/upload-file`**: Upload a file to a specific history.
+*   **`POST /api/histories/{history_id}/upload-collection`**: Upload files and create a dataset collection (list, paired, or list:paired).
 
-```bash
-curl -X POST "http://localhost:8000/send_message?model_id=azure" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "get me the tool with id upload1"}'
-```
+### Workflows Endpoints
 
-**Listing Available Tools:**
+*   **`GET /api/workflows/`**: List all available workflows.
+*   **`POST /api/workflows/upload-workflow`**: Upload a workflow from a `.ga` file.
+*   **`GET /api/workflows/{workflow_id}/form`**: Get a dynamic HTML form for a workflow.
+*   **`POST /api/workflows/{workflow_id}/histories/{history_id}/execute`**: Execute a workflow.
 
-```bash
-curl -X POST "http://localhost:8000/send_message?model_id=azure" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "what tools do you have"}'
-```
+### Tools Endpoints
 
-## LLM Configuration System
+*   **`GET /api/tools/{tool_id}/form`**: Get a dynamic HTML form for a tool.
+*   **`POST /api/tools/{tool_id}/histories/{history_id}/execute`**: Execute a tool.
 
-The application uses a flexible configuration system to support multiple LLM providers:
+### Invocations Endpoints
 
-### LLM Configuration Files
-
-1. **llm_config.json**: Located at `app/AI/llm_Config/llm_config.json`, this file defines the available LLM providers and their settings. Each provider has its own configuration section with parameters like model name, API endpoint, temperature, etc.
-
-2. **llmConfig.py**: Located at `app/AI/llm_Config/llmConfig.py`, this file implements the provider-specific classes:
-   - `LLMModelConfig`: Base class for all LLM configurations
-   - `GROQConfig` and `AZUREConfig`: Provider-specific configuration classes
-   - `LLMProvider`: Abstract base class for all LLM providers
-   - `GroqProvider` and `AzureProvider`: Concrete implementations for each provider
-
-### Application Flow
-
-1. When the application starts, it loads the configuration from `llm_config.json`
-2. The `/initiate_chat` endpoint initializes a chat session and loads all configured providers
-3. When a message is sent to `/send_message?model_id=azure`, the application:
-   - Checks if the chat session is initialized
-   - Retrieves the specified provider (e.g., Azure)
-   - Sends the message to the provider's API
-   - Returns the response
-
-This architecture allows for easy addition of new LLM providers by:
-1. Adding a new provider configuration to `llm_config.json`
-2. Implementing provider-specific classes in `llmConfig.py`
+*   **`GET /api/invocation/`**: List all workflow invocations.
+*   **`GET /api/invocation/{invocation_id}/result`**: Get the result of a specific invocation.
+*   **`DELETE /api/invocation/DELETE`**: Delete one or more invocations.
 
 ## Troubleshooting
 
-### Import Errors:
-
--   Ensure `utils/` contains all required files (`fetch_tool_source_code.py`, etc.) and `__init__.py`.
--   If running `galaxy_tools.py` standalone fails, use:
-
-    ```bash
-    cd /mcp-xp/groq/
-    python3 -m bioblend_server.galaxy_tools
-    ```
-
-### Galaxy Connection Issues:
-
--   Verify `GALAXY_URL` and `GALAXY_API_KEY` are correct.
--   Check network connectivity to https://usegalaxy.eu/.
-
-### LLM Errors:
-
--   Ensure `GROQ_API_KEY` and `AZURE_API_KEY` are valid and you have access to the configured models.
--   Check application logs for detailed error messages.
-
-### No Output:
-
--   If the API doesn't respond, check that you've initialized the chat session first.
--   Verify that the FastAPI application is running correctly.
-
-## Additional Notes
-
--   **Logging:** Logs are written to the application logs for debugging.
--   **Extending Functionality:** Add more tools to `bioblend_server/server.py` by extending the `list_tools()` function.
--   **Testing Standalone:**
-    -   Test `galaxy_tools.py` alone:
-
-        ```bash
-        cd /path/to/project
-        python3 -m app.AI.bioblend_server.galaxy_tools
-        ```
-```
+*   **Authentication Errors:** Ensure you have a valid `api_token` and that it is correctly included in the `Authorization` header as a Bearer token.
+*   **Connection Issues (Galaxy):** Verify that the `GALAXY_URL` is correct and reachable.
+*   **Connection Issues (Redis/Qdrant):** Ensure your Redis and Qdrant instances are running and the `REDIS_PORT` and `QDRANT_CLIENT` env variables are correct.
+*   **LLM Errors:** Check that your LLM API keys are correct and that you have access to the specified models in `llm_config.json`.
