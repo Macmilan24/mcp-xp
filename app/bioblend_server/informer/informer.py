@@ -1,4 +1,5 @@
 import re
+import os
 import ast
 from rapidfuzz import process, fuzz
 import json
@@ -250,12 +251,9 @@ class GalaxyInformer:
         """
         self.logger.info(f"Performing semantic search for query: '{query}'")
         try:
-            if isinstance(query, str):
-                query = [query]
-            embeddings = await self.get_embedding_model(query)
-            embed = np.array(embeddings)
-            query_embedding = embed.reshape(-1, 768).tolist()[0]
-            # Search vector database
+            # e5 models need a prefix for queries
+            query_embedding = await self.manager.embed_query(query)
+            
             results = self.manager.search_by_vector(
                 collection=collection_name,
                 query_vector=query_embedding,
@@ -375,39 +373,90 @@ class GalaxyInformer:
 
     async def refresh_and_cache_entities(self) -> list[dict]:
         """
-        Fetches fresh entity data from Galaxy, then caches it in Redis and
-        updates the Qdrant vector store.
+        Loads global entity data from pre-processed files, enriches it with instance availability,
+        improves content formatting for better embeddings, then caches it in Redis and Qdrant.
         """
-        self.logger.info(
-            f"No valid cache found for {self.entity_type}, fetching fresh data."
-        )
-        entities = self.get_all_entities()
+        self.logger.info(f'Starting entity refresh for {self.entity_type}.')
+        id_field = self._entity_config[self.entity_type]['id_field']
 
-        # If Nothing is found in the galaxy return the emoty result
-        if not entities:
-            return None
+        # --- 1. Load Global Data from JSON into a Dictionary ---
+        informer_dir = os.path.dirname(os.path.abspath(__file__))
+        base_path = os.path.join(informer_dir, "pipeline", "data")
+        global_data_path = os.path.join(base_path, f'processed_{self.entity_type}s.json')
+        
+        global_entities = {}
+        if os.path.exists(global_data_path):
+            self.logger.info(f"Loading global entities from {global_data_path}")
+            with open(global_data_path, "r", encoding="utf-8") as f:
+                global_entities = {entity[id_field]: entity for entity in json.load(f) if id_field in entity}
+        else:
+            self.logger.warning(f"Global data file not found at {global_data_path}.")
 
-        collection_name = f'Galaxy_{self.entity_type}_{self.user_info["id"]}'
+        # --- 2. Load Local Data from the Galaxy Instance ---
+        self.logger.info(f"Fetching locally available {self.entity_type}s from instance.")
+        local_entities = self.get_all_entities()
+        local_entity_ids = {entity[id_field] for entity in local_entities if id_field in entity}
 
-        # Cache in Redis with a 10-hour TTL
+        # --- 3. Merge the Global and Local Lists ---
+        merged_entities = global_entities.copy()
+        for entity in local_entities:
+            entity_id = entity.get(id_field)
+            if entity_id and entity_id not in merged_entities:
+                self.logger.info(f"Found local-only entity: {entity_id}. Adding to list.")
+                merged_entities[entity_id] = entity
+        
+        final_entity_list = list(merged_entities.values())
+
+        # --- 4. Enrich Entities with Availability and Detailed Content ---
+        for entity in final_entity_list:
+            entity['available_in_instance'] = entity.get(id_field) in local_entity_ids
+            
+            # If a 'content' field is missing, it's a global entity.
+            # Create the rich, detailed content string using YOUR ORIGINAL LOGIC.
+            if 'content' not in entity:
+                if self.entity_type == 'tool':
+                    categories = entity.get("categories") or []
+                    entity['content'] = (
+                        f"Tool Name: {entity.get('name','')}. "
+                        f"Description: {entity.get('description','')}. "
+                        f"Categories: {', '.join([c for c in categories if c])}. "
+                        f"Help Text: {entity.get('help','')}"
+                    )
+                elif self.entity_type == 'workflow':
+                    entity['content'] = (
+                        f"Workflow Repository: {entity.get('workflow_repository', '')}. "
+                        f"Category: {entity.get('category', '')}. "
+                        f"Description from README: {entity.get('readme_cleaned', '')}. "
+                        f"Tools Used in Workflow: {', '.join(entity.get('tool_names', []))}."
+                    )
+
+        self.logger.info(f"Merged and enriched a total of {len(final_entity_list)} entities.")
+
+        # --- 5. Cache in Redis and Upsert to Qdrant ---
+        collection_name = f'Galaxy_enriched_{self.entity_type}_{self.user_info["id"]}'
+        
         try:
-            self.redis_client.setex(collection_name, 36000, json.dumps(entities))
-            self.logger.info(f"Saved {self.entity_type} entities to Redis.")
-        except redis.RedisError as e:
-            self.logger.error(f"Failed to save entities to Redis: {e}")
-
-        # Store in Qdrant vector database
-        try:
-            # --- Calls to the new vector manager ---
-            self.manager.delete_collection(collection_name=collection_name)
-            await self.manager.embed_and_store_entities(
-                entities=entities, collection_name=collection_name
-            )
-            self.logger.info(f"Saved {self.entity_type} entities to Qdrant.")
+            self.redis_client.setex(collection_name, 36000, json.dumps(final_entity_list))
+            self.logger.info(f'Saved {len(final_entity_list)} entities to Redis.')
         except Exception as e:
-            self.logger.error(f"Failed to save entities to Qdrant: {e}")
+            self.logger.error(f'Failed to save entities to Redis: {e}')
+        
+        try:
+            self.manager.delete_collection(collection_name=collection_name)
+            
+            result = await self.manager.embed_and_store_entities(
+                entities=final_entity_list,
+                collection_name=collection_name
+            )
+            if result is None:
+                self.logger.error(f'Failed to upsert entities to Qdrant collection: {collection_name}. The collection may not exist or be empty.')
+            else:
+                self.logger.info(f'Upserted entities to Qdrant collection: {collection_name}.')
 
-        return entities
+        except Exception as e:
+            self.logger.error(f'An exception occurred while saving entities to Qdrant: {e}')
+            
+        return final_entity_list
 
     async def get_cached_or_fresh_entities(self) -> list[dict]:
         """
@@ -438,7 +487,7 @@ class GalaxyInformer:
         entities = await self.get_cached_or_fresh_entities()
 
         if not entities:
-            return None
+            return {} # Return an empty dict if there are no entities
 
         # 1. Fuzzy Search
         keywords = await self._extract_fuzzy_search_keywords(query)
@@ -452,7 +501,6 @@ class GalaxyInformer:
                     threshold=threshold,
                 )
             )
-        # Remove duplicates
         unique_fuzzy_results = list(
             {
                 item[f'{self._entity_config[self.entity_type]["id_field"]}']: item
@@ -461,12 +509,25 @@ class GalaxyInformer:
         )
 
         # 2. Semantic Search
-        collection_name = f'Galaxy_{self.entity_type}_{self.user_info["id"]}'
-        semantic_results = await self._semantic_search(
-            query=query, collection_name=collection_name
-        )
+        collection_name = f'Galaxy_enriched_{self.entity_type}_{self.user_info["id"]}'
+        
+        # CRITICAL FIX: Add a try/except block for the semantic search
+        try:
+            semantic_results = await self._semantic_search(
+                query=query, collection_name=collection_name
+            )
+            if not isinstance(semantic_results, dict):
+                self.logger.warning("Semantic search did not return a dictionary. Defaulting to empty.")
+                semantic_results = {}
+        except Exception as e:
+            self.logger.error(f"An exception occurred during semantic search: {e}")
+            semantic_results = {} # Ensure it's a dict on failure
 
         # 3. LLM-based Re-ranking and Selection
+        if not unique_fuzzy_results and not semantic_results:
+            self.logger.warning("Both fuzzy and semantic searches returned no results.")
+            return {} # Return empty dict if no results from anywhere
+
         self.logger.info("Using LLM to select the best results from hybrid search.")
         prompt = SELECTION_PROMPT.format(
             input=query, tuple_items=unique_fuzzy_results, dict_items=semantic_results
@@ -474,9 +535,20 @@ class GalaxyInformer:
 
         try:
             selected_str = await self.get_response(prompt)
-            # The selection prompt should ask for a JSON object of the top relevant results
-            return selected_str
-        except (json.JSONDecodeError, Exception) as e:
+            # Ensure the output is a dictionary, even on LLM error
+            if isinstance(selected_str, str):
+                 # Try to parse it, but have a fallback
+                 try:
+                     return json.loads(selected_str)
+                 except json.JSONDecodeError:
+                     self.logger.error(f"LLM selection response was not valid JSON: {selected_str}")
+                     # Fallback to combining results manually
+                     combined = { v[self._entity_config[self.entity_type]["id_field"]]: v for k, v in semantic_results.items() }
+                     for item in unique_fuzzy_results:
+                         combined[item[self._entity_config[self.entity_type]["id_field"]]] = item
+                     return dict(list(combined.items())[:3])
+            return selected_str # If it's already a dict
+        except Exception as e:
             self.logger.error(f"Failed to select entities using LLM: {e}")
             # Fallback: combine and return top results manually if LLM fails
             combined = {
@@ -650,66 +722,43 @@ class GalaxyInformer:
         """
         The main public method to orchestrate the entire information retrieval process.
         """
-        id_field = self._entity_config[self.entity_type]["id_field"]
+        id_field = self._entity_config[self.entity_type]['id_field']
         found_entities = None
-        if entity_id:
-            self.logger.info(
-                f"Direct ID provided: {entity_id}. Retrieving details directly."
-            )
-            entities = await self.get_cached_or_fresh_entities()
-            # Validate the id against the entity id in galaxy instance
-            retrived_entity = next(
-                (e for e in entities if e[id_field] == entity_id), None
-            )
-            if retrived_entity != None:
-                found_entities = {
-                    "0": {
-                        "name": retrived_entity["name"],
-                        id_field: retrived_entity[id_field],
-                    }
-                }
-            # else:
-            #     raise
 
-        if found_entities is None:
-            self.logger.info(
-                f"No ID provided or invalid ID. Searching for entities based on query: '{search_query}'"
-            )
-            found_entities = await self.search_entities(query=search_query)
+        # This search_entities call now correctly handles caching/refreshing internally
+        found_entities = await self.search_entities(query=search_query)
 
-        if found_entities is None:
-            return await self.generate_final_response(
-                search_query, {"message": "No relevant items found."}
-            )
+        if not found_entities:
+            self.logger.warning(f"Semantic search for '{search_query}' yielded no specific results. Falling back to listing available items.")
+            local_entities = self.get_all_entities()
+            response_content = {
+                "message": f"I couldn't find a specific match for your query, but here are some of the {self.entity_type}s available in your instance:",
+                "available_items": [entity.get('name', 'Unknown') for entity in local_entities[:10]]
+            }
+            return await self.generate_final_response(search_query, response_content)
 
-        self.logger.info(
-            f"found entities are : {found_entities} and are type {type(found_entities)}"
-        )
-        # Check and retrieve invocation detail if query is asking about workflow invocation.
-
-        # Collate all details
+        self.logger.info(f'Found entities via semantic search: {found_entities}')
+        
         response_details = {}
 
-        if self.entity_type == "workflow":
-            invocation_info = await self.get_invocation_details(
-                query=search_query, workflow_id=found_entities["0"][id_field]
-            )
-            # register found information.
-            if invocation_info:
-                response_details["retrieved invocation details for the workflow"] = (
-                    invocation_info
-                )
-            else:
-                response_details["retrieved invocation details for the workflow"] = (
-                    "No matching invocation details found for the workflow "
-                )
+        # Check for invocation details only if it's a workflow and we found a specific one
+        if self.entity_type == 'workflow' and '0' in found_entities:
+            workflow_id_for_invocation = found_entities['0'].get(id_field)
+            if workflow_id_for_invocation:
+                invocation_info = await self.get_invocation_details(query=search_query, workflow_id=workflow_id_for_invocation)
+                response_details['invocation_details'] = invocation_info or "No matching invocation details found for this workflow."
 
+        # Collate details for all found entities
         for i, item_stub in enumerate(found_entities.values()):
-            item_id = item_stub.get(id_field)
+            item_id = item_stub.get(id_field) or item_stub.get("workflow_repository") # Handle workflow ID
             if item_id:
-                details = self.get_entity_details(item_id)
-                response_details[f"found {self.entity_type} {i}"] = details
-
+                # We need to get the full details from the cached master list, not the API
+                master_list = await self.get_cached_or_fresh_entities()
+                details = next((e for e in master_list if (e.get(id_field) or e.get("workflow_repository")) == item_id), None)
+                
+                if details:
+                    response_details[f'found_{self.entity_type}_{i}'] = details
+        
         return await self.generate_final_response(search_query, response_details)
 
 

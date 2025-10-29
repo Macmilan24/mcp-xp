@@ -125,12 +125,13 @@ Query: {query}.
 Information: {retrieved_content}.
 
 Instructions:
-1. Evaluate the provided information for relevance, accuracy, and usefulness to the query.
-2. Use only the provided information to answer the query. Do not incorporate any outside knowledge or assumptions.
-3. If the information is sufficient, construct a detailed, technically sound response that thoroughly addresses the query.
-4. Do not provide overly brief or shallow responses—maximize the value of the information without adding anything external.
-5. Do not mention or refer to "retrieved results" or the source of the information in your response.
-6. If the information is empty, irrelevant, or unhelpful, respond with: "I can't help with your question."
+1.  Evaluate the provided information for relevance to the query.
+2.  Each item in the information contains a boolean flag called `"available_in_instance"`.
+3.  If a relevant item has `"available_in_instance": true`, describe it normally as a tool or workflow that is ready to use on their Galaxy instance.
+4.  **If a relevant item has `"available_in_instance": false`, you MUST clearly state that this item is not installed on their Galaxy instance, but it is a known tool in the broader Galaxy community. You should then suggest that they could ask their Galaxy administrator about installing it.**
+5.  Construct a detailed, technically sound response using only the provided information.
+6.  Do not mention or refer to "retrieved results" or the source of the information.
+7.  If the information is empty, irrelevant, or unhelpful, respond with: "I can't help with your question."
 
 Provide only the answer, and avoid any unnecessary references or disclaimers.
 """

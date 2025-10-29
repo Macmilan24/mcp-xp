@@ -2,6 +2,9 @@ import os
 from fastmcp import FastMCP
 import logging
 
+from contextlib import asynccontextmanager
+from apscheduler.schedulers.background import BackgroundScheduler
+
 from app.log_setup import configure_logging
 from app.bioblend_server.utils import ExecutorToolResponse, ApiKeyMiddleware, current_api_key_server
 
@@ -10,6 +13,9 @@ from app.bioblend_server.informer.informer import GalaxyInformer
 
 from app.bioblend_server.executor.tool_manager import ToolManager
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
+
+from app.bioblend_server.informer.pipeline.tool_pipeline import main as run_tool_pipeline
+from app.bioblend_server.informer.pipeline.workflow_pipeline import main as run_workflow_pipeline
 
 
 configure_logging()
@@ -20,7 +26,56 @@ if not os.environ.get("GALAXY_API_KEY"):
     logger.warning("GALAXY_API_KEY environment variable is not set. GalaxyClient functionality may fail.")
 
 
+PIPELINE_DATA_DIR = os.path.join(os.path.dirname(__file__), "informer", "pipeline", "data")
+PROCESSED_TOOLS_PATH = os.path.join(PIPELINE_DATA_DIR, "processed_tools.json")
+PROCESSED_WORKFLOWS_PATH = os.path.join(PIPELINE_DATA_DIR, "processed_workflows.json")
+
+# --- NEW: Create a scheduler instance ---
+scheduler = BackgroundScheduler(daemon=True)
+
+def run_pipelines_if_needed():
+    """Checks for data files and runs pipelines if they are missing."""
+    logger.info("Checking for processed data files on startup...")
+    if not os.path.exists(PROCESSED_TOOLS_PATH):
+        logger.warning("Processed tools file not found. Running the tool pipeline now...")
+        try:
+            run_tool_pipeline()
+        except Exception as e:
+            logger.error(f"Failed to run tool pipeline on startup: {e}", exc_info=True)
+    else:
+        logger.info("Found existing processed tools file.")
+
+    if not os.path.exists(PROCESSED_WORKFLOWS_PATH):
+        logger.warning("Processed workflows file not found. Running the workflow pipeline now...")
+        try:
+            run_workflow_pipeline()
+        except Exception as e:
+            logger.error(f"Failed to run workflow pipeline on startup: {e}", exc_info=True)
+    else:
+        logger.info("Found existing processed workflows file.")
+
+def schedule_monthly_jobs():
+    """Schedules the pipelines to run monthly."""
+    logger.info("Scheduling monthly data refresh jobs.")
+    # We use 'weeks=4' as a simple proxy for 'monthly'
+    scheduler.add_job(run_tool_pipeline, 'interval', weeks=4, id='monthly_tool_pipeline', replace_existing=True)
+    scheduler.add_job(run_workflow_pipeline, 'interval', weeks=4, id='monthly_workflow_pipeline', replace_existing=True)
+    scheduler.start()
+    logger.info("Scheduler started. Pipeline jobs are scheduled to run every 4 weeks.")
+
+
+@asynccontextmanager
+async def lifespan(app: FastMCP):
+    # --- NEW: This block runs on server startup ---
+    run_pipelines_if_needed()
+    schedule_monthly_jobs()
+    yield
+    # --- NEW: This block runs on server shutdown ---
+    logger.info("Shutting down the scheduler.")
+    scheduler.shutdown()
+    
 bioblend_app = FastMCP(
+                        lifespan=lifespan,
                         name="galaxyTools",
                         instructions="Provides tools and resources for interacting with Galaxy instances via BioBlend. "
                                     "Tools that allow querying Galaxy information and retrieving any sort of information on a galaxy instance "

@@ -1,0 +1,22 @@
+[
+  {
+    "query": "Start with trimming adapter sequences from my FASTQ files.",
+    "expected_id": "trimmomatic",
+    "entity_type": "tool"
+  },
+  {
+    "query": "I need to map my RNA-seq reads to a reference genome using a splice-aware aligner.",
+    "expected_id": "hisat2",
+    "entity_type": "tool"
+  },
+  {
+    "query": "Construct a venn diagram to compare two lists of identifiers.",
+    "expected_id": "venn_list",
+    "entity_type": "tool"
+  },
+  {
+    "query": "Convert a BAM file to BigWig format for visualization.",
+    "expected_id": "bam_to_bigwig",
+    "entity_type": "tool"
+  }
+]

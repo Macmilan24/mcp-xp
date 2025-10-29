@@ -5,9 +5,12 @@ import numpy as np
 import logging
 import random
 import json
+import time
+import tqdm
 
 from qdrant_client import QdrantClient, models
 from dotenv import load_dotenv
+import httpx
 
 from app.AI.provider.gemini_provider import GeminiProvider
 from app.AI.llm_config._base_config import LLMModelConfig
@@ -30,7 +33,9 @@ class InformerManager:
         self.client = None
         self.llm = None
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.embedding_size = 768  # Gemini embedding vector size
+        self.embedding_size = 1024  # IMPORTANT: e5-large-v2 uses 1024 dimensions
+        self.hf_token = os.getenv("HUGGING_FACE_TOKEN")
+        self.http_client = None
 
     @classmethod
     async def create(cls):
@@ -39,20 +44,25 @@ class InformerManager:
         load_dotenv()
         configure_logging()
         try:
-            self.logger.info("Qdrant client")
-            # Initialize Qdrant client asynchronously if possible, or run in executor
+            self.logger.info("Initializing Qdrant client...")
             self.client = QdrantClient(os.environ.get('QDRANT_CLIENT', 'http://localhost:6333'))
-            self.logger.info("initialized")
-
-            with open('app/AI/llm_config/llm_config.json', 'r') as f:
-                model = json.load(f)
-            gemini_cfg = LLMModelConfig(model['providers']['gemini'])
-            self.llm = GeminiProvider(model_config=gemini_cfg)
             
+            if not self.hf_token:
+                raise ValueError("HUGGING_FACE_TOKEN environment variable is not set.")
+
+            # Use a persistent httpx client for connection pooling
+            self.http_client = httpx.AsyncClient(
+                headers={"Authorization": f"Bearer {self.hf_token}"},
+                timeout=30.0 
+            )
+            self.logger.info("Hugging Face Inference API client configured.")
             self.logger.info("InformerManager connected to Qdrant successfully.")
         except Exception as e:
-            self.logger.exception(f"Qdrant connection failed: {e}")
+            self.logger.exception(f"InformerManager initialization failed: {e}")
+            if self.http_client:
+                await self.http_client.aclose()
             raise
+        
         return self
    
     async def get_embedding_model(self, input):
@@ -93,18 +103,63 @@ class InformerManager:
         """
         A private helper to generate vector embeddings for the 'content' column of a DataFrame.
         """
-        try:
-            self.logger.info("Generating vector embeddings for entity content.")
-            embeddings = await self.get_embedding_model(df['content'].tolist())
-            embed_array = np.array(embeddings).reshape(-1, self.embedding_size)
-            df['dense'] = embed_array.tolist()
-            self.logger.info("Embeddings generated successfully.")
-            return df
-        except Exception as e:
-            self.logger.error(f"Error generating dense embeddings: {e}")
-            traceback.print_exc()
-            raise 
+        self.logger.info("Generating vector embeddings using Hugging Face Inference API.")
+        api_url = "https://api-inference.huggingface.co/models/intfloat/e5-large-v2"
+        
+        texts_to_embed = ("passage: " + df['content']).tolist()
+        all_embeddings = []
+        batch_size = 128  # Process in batches to avoid overwhelming the API
 
+        for i in range(0, len(texts_to_embed), batch_size):
+            batch = texts_to_embed[i:i + batch_size]
+            payload = {
+                "inputs": batch,
+                "options": {"wait_for_model": True}
+            }
+            
+            try:
+                response = await self.http_client.post(api_url, json=payload)
+                response.raise_for_status() 
+                batch_embeddings = response.json()
+                all_embeddings.extend(batch_embeddings)
+            except httpx.HTTPStatusError as e:
+                self.logger.error(f"API request failed with status {e.response.status_code}: {e.response.text}")
+                # Decide how to handle this: skip batch, retry, or fail completely
+                raise
+            except Exception as e:
+                self.logger.error(f"An unexpected error occurred during embedding batch {i}: {e}")
+                raise
+
+        df['dense'] = all_embeddings
+        self.logger.info("Embeddings generated successfully.")
+        return df
+    
+    async def embed_query(self, query: str) -> list[float]:
+        """
+        Generates an embedding for a single query string using the HF Inference API.
+        """
+        self.logger.info(f"Embedding single query: '{query}'")
+        api_url = "https://api-inference.huggingface.co/models/intfloat/e5-large-v2"
+        
+        prefixed_query = "query: " + query
+        
+        payload = {
+            "inputs": [prefixed_query],
+            "options": {"wait_for_model": True}
+        }
+        
+        try:
+            response = await self.http_client.post(api_url, json=payload)
+            response.raise_for_status()
+            embedding = response.json()[0]
+            return embedding
+        except httpx.HTTPStatusError as e:
+            self.logger.error(f"API request failed for query embedding with status {e.response.status_code}: {e.response.text}")
+            raise
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred during query embedding: {e}")
+            raise
+        
     def _upsert_points(self, collection_name: str, df: pd.DataFrame):
         """
         A private helper to perform the final upsert operation into the Qdrant collection.
@@ -147,11 +202,16 @@ class InformerManager:
         try:
             df = self._prepare_dataframe(entities)
             df_embedded = await self._generate_embeddings(df)
-            if df_embedded is not None:
-                return self._upsert_points(collection_name, df_embedded)
+            
+            if df_embedded is None or 'dense' not in df_embedded.columns or df_embedded.empty:
+                self.logger.error("Embedding failed, aborting Qdrant upsert.")
+                return None 
+
+            return self._upsert_points(collection_name, df_embedded)
         except Exception as e:
             self.logger.error(f"Failed to embed and store entities in '{collection_name}': {e}")
-            traceback.print_exc()
+            
+            return None
 
     def search_by_vector(self, collection: str, query_vector: list, entity_type: str) -> dict:
         """
@@ -178,7 +238,8 @@ class InformerManager:
                         "score": point.score,
                         "description": point.payload.get('description', 'description not available'),
                         "tool_id": point.payload.get('tool_id'),
-                        "name": point.payload.get('name')
+                        "name": point.payload.get('name'),
+                        "available_in_instance": point.payload.get('available_in_instance', False)
 
                     }
             elif entity_type == "workflow":
@@ -190,7 +251,8 @@ class InformerManager:
                         'description': point.payload.get('description', 'unkown'),
                         "owner": point.payload.get('owner', 'unknown'),
                         "workflow_id": point.payload.get('workflow_id'),
-                        "name": point.payload.get('name')
+                        "name": point.payload.get('name'),
+                        "available_in_instance": point.payload.get('available_in_instance', False)
                     }
             elif entity_type == 'dataset':
                 for i, point in enumerate(result):
