@@ -1,7 +1,7 @@
 from sys import path
 path.append('.')
-import tempfile, pathlib, shutil, re, os
-from anyio.to_thread import run_sync
+import tempfile
+import os
 from dotenv import load_dotenv
 import logging
 import uuid
@@ -9,6 +9,7 @@ import redis
 import hashlib
 import json
 import asyncio
+import aiofiles
 
 from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException
 from fastapi.responses import HTMLResponse
@@ -94,8 +95,8 @@ async def upload_workflow(
             tmp.write(await file.read())    
             tmp_path = tmp.name
             
-        with open(tmp_path, 'r') as f:
-            workflow_json: dict= json.loads(f.read())
+        async with aiofiles.open(tmp_path, 'r') as f:
+            workflow_json: dict = json.loads(await f.read())
 
         workflow_name = workflow_json.get("name")
         # Upload the galaxt workflow into the instance
