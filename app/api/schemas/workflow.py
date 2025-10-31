@@ -56,3 +56,8 @@ class WorkflowDetails(BaseModel):
     creator: List[Dict] = []
     steps: Dict[str, Dict[str, Any]]
     inputs: Dict[str,Dict[str, Any]]
+    
+
+class WorkflowUploadResponse(BaseModel):
+    """Response Schema for the Galaxy workflow upload."""
+    workflow_name: str = Field(..., description="The name of the uploaded Galaxy workflow.")

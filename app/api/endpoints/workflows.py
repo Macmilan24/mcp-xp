@@ -71,9 +71,10 @@ async def list_workflows():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list workflows: {e}")
     
+    
 @router.post(
         "/upload-workflow",
-        response_model = workflow.WorkflowDetails,
+        response_model = workflow.WorkflowUploadResponse,
         summary = "Upload an external workflow ga file",
         tags=["Workflows"]
 )
@@ -92,37 +93,29 @@ async def upload_workflow(
         with tempfile.NamedTemporaryFile(delete=False, suffix=file.filename) as tmp:
             tmp.write(await file.read())    
             tmp_path = tmp.name
+            
+        with open(tmp_path, 'r') as f:
+            workflow_json: dict= json.loads(f.read())
 
+        workflow_name = workflow_json.get("name")
         # Upload the galaxt workflow into the instance
-        workflow = await workflow_manager.upload_workflow(path = tmp_path,
-                                                          ws_manager = ws_manager, 
-                                                          tracker_id = tracker_id
-                                                          )
-        # Clean up the temporary file
-        os.remove(tmp_path)
+        asyncio.create_task(
+            workflow_manager.upload_workflow(
+                        workflow_json=workflow_json,
+                        ws_manager=ws_manager,
+                        tracker_id=tracker_id
+                    )
+                )
 
-        if not isinstance(workflow, Workflow):
-            raise HTTPException(status_code=500, detail = workflow.get('error', "workflow uploading failed."))
-        
-        workflow_details  = await run_in_threadpool(workflow_manager.gi_object.gi.workflows.show_workflow, workflow.id)
-       
-        return {
-            "id": workflow_details.get("id"),
-            "tags": workflow_details.get("tags", None),
-            "create_time": workflow_details.get("create_time"),
-            "annotations": workflow_details.get("annotations", None),
-            "published": workflow_details.get("published"),
-            "license": workflow_details.get("license", None),
-            "galaxy_url": workflow_details.get("url"),
-            "creator": workflow_details.get("creator", None),
-            "steps": workflow_details.get("steps"),
-            "inputs": workflow_details.get("inputs"),
-        }
+        # Clean up the temporary file and return the workflow name as response.
+        os.remove(tmp_path)
+        return workflow.WorkflowUploadResponse(workflow_name=workflow_name)
+    
     except Exception as e:
         # Clean up in case of error
         if 'tmp_path' in locals() and os.path.exists(tmp_path):
             os.remove(tmp_path)
-        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")  
  
 @router.get(
     "/{workflow_id}/form",
