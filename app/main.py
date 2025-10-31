@@ -157,7 +157,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(JWTGalaxyKeyMiddleware)
-app.add_middleware(RateLimiterMiddleware, redis_client=redis_client)
+app.add_middleware(RateLimiterMiddleware)
 
 # Include the API router
 app.include_router(api_router, prefix="/api")

@@ -132,9 +132,9 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
     Redis-based rate limiter middleware with per-endpoint and per-user limits
     """
     
-    def __init__(self, app, redis_client: redis.Redis, default_rate_limit: int = 100):
+    def __init__(self, app, default_rate_limit: int = 100):
         super().__init__(app)
-        self.redis = redis_client
+        self.redis = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
         self.default_rate_limit = default_rate_limit
         self.log = logging.getLogger(__class__.__name__)
         
