@@ -65,7 +65,6 @@ class SocketManager:
         self.active_sessions: Dict[str, List[WebSocket]] = {}
         self._lock = asyncio.Lock()
         self.log = logging.getLogger(self.__class__.__name__)
-        self.log.info("SocketManager initialized") 
     
     async def connect(self, websocket: WebSocket, tracker_id:str):
         """Accept a client connection and add it to a room(tracker_id)."""
@@ -111,9 +110,9 @@ class SocketManager:
         async with self._lock:
             connections = list(self.active_sessions.get(tracker_id, []))
         if not connections:
-            self.log.info(f"No active connections in room: {tracker_id} for broadcast")
+            self.log.debug(f"No active connections in room: {tracker_id} for broadcast")
             return
-        self.log.info(f"Broadcasting to {len(connections)} connections in room: {tracker_id}")
+        self.log.debug(f"Broadcasting to {len(connections)} connections in room: {tracker_id}")
         await asyncio.gather(
             *(self._send_json_safe(conn, message, tracker_id) for conn in connections),
             return_exceptions=True,
