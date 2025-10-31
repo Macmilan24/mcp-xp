@@ -200,6 +200,7 @@ class WorkflowManager:
             # return {"error": f"Error installing missing tools in the uploaded workflow: {e}"}
             
         # Reload the tool box after tools are installed
+        asyncio.sleep(3)
         await asyncio.to_thread(self.gi_admin.gi.config.reload_toolbox)
 
         workflow = await asyncio.to_thread(
@@ -239,6 +240,7 @@ class WorkflowManager:
                     )
             else:
                 self.log.error(f"Workflow is not runnable, failed to upload correctly. Retrying... (attempt {retry_count})")
+                asyncio.sleep(5)
                 await self.upload_workflow(workflow_json=workflow_json, ws_manager=ws_manager, tracker_id=tracker_id, retry_count=retry_count)
                 
 
