@@ -134,13 +134,13 @@ class GenericRecommender:
         tool_id = tool.get("id", "")
         try:
             tools_details = self.gi.tools.show_tool(tool_id, io_details=True)
-            
+
             help_text = ""
             raw_tool_url = f"{self.galaxy_url}/api/tools/{tool_id}/raw_tool_source?key={self.galaxy_url_api_key}"
             response = requests.get(raw_tool_url)
             response.raise_for_status()
             tool_xml = response.text
-            
+
             root = ET.fromstring(tool_xml)
             help_elem = root.find("help")
             if help_elem is not None and help_elem.text:
@@ -148,15 +148,43 @@ class GenericRecommender:
                 self.log.info(f"Content Extracted from help section for tool {tool_id}.")
             else:
                 self.log.info(f"No help section found for tool {tool_id}.")
-                
+
+            name = tool.get("name", "").strip()
+            description = tool.get("description", "").strip()
+            categories = tool.get("categories", [])
+            version = tool.get("version", "").strip()
+
+            # Construct a language-model-friendly content field
+            content_parts = [
+                f"Tool Name: {name}.",
+                f"Description: {description}." if description else "",
+                f"Version: {version}." if version else "",
+                f"Categories: {', '.join(categories)}." if categories else "",
+                f"Help Section: {help_text}." if help_text else "",
+            ]
+
+            # Filter empty entries and join into a cohesive, well-structured paragraph
+            content = " ".join([part for part in content_parts if part]).strip()
+
+            # You can make this more natural-language friendly for embeddings:
+            content = (
+                f"This is a Galaxy tool named '{name}'. "
+                f"It is described as follows: {description if description else 'No description available.'} "
+                f"The tool belongs to the following categories: {', '.join(categories) if categories else 'Uncategorized'}. "
+                f"The current version of the tool is {version if version else 'unspecified'}. "
+                f"Here is the help or usage information: {help_text if help_text else 'No help content provided.'}"
+            )
+
             return {
-                "id": tool_id, 
-                "name": tool.get("name", ""),
-                "description": tool.get("description", ""),
-                "categories": tool.get("categories", []),
-                "version": tool.get("version", ""),
-                "help": help_text
+                "id": tool_id,
+                "name": name,
+                "description": description,
+                "categories": categories,
+                "version": version,
+                "help": help_text,
+                "content": content
             }
+
         except Exception as e:
             self.log.error(f"Error fetching details for tool {tool_id}: {e}")
             return None
@@ -317,9 +345,9 @@ class GenericRecommender:
     
 if __name__ == "__main__":
     import asyncio
-    # recommender = GenericRecommender(entity_type="tool")
-    # asyncio.run(recommender.scrape_tool())
+    recommender = GenericRecommender(entity_type="tool")
+    asyncio.run(recommender.scrape_tool())
     
-    recommender_workflow = GenericRecommender(entity_type="workflow")
-    asyncio.run(recommender_workflow.scrape_workflows())
+    # recommender_workflow = GenericRecommender(entity_type="workflow")
+    # asyncio.run(recommender_workflow.scrape_workflows())
     
