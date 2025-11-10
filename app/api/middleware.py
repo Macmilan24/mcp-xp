@@ -16,13 +16,6 @@ import jwt
 
 from app.context import current_api_key
 
-# Environment / secrets
-FERNET_SECRET = os.getenv("SECRET_KEY")
-if not FERNET_SECRET:
-    raise RuntimeError("SECRET_KEY (Fernet secret) is required in env")
-fernet = Fernet(FERNET_SECRET)
-
-
 GALAXY_API_TOKEN = "galaxy_api_token"
 
 
@@ -109,6 +102,13 @@ class JWTGalaxyKeyMiddleware(BaseHTTPMiddleware):
         decrypt and parse JSON for {"apikey": "<value>"} and return the value.
         Returns None if decryption/parsing fails so caller can fallback to raw token.
         """
+        # Environment / secrets
+        FERNET_SECRET = os.getenv("SECRET_KEY")
+        if not FERNET_SECRET:
+            raise RuntimeError("SECRET_KEY (Fernet secret) is required in env")
+        
+        fernet = Fernet(FERNET_SECRET)
+        
         if not isinstance(token_str, str) or not token_str:
             return None
         loop = asyncio.get_running_loop()
@@ -132,9 +132,9 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
     Redis-based rate limiter middleware with per-endpoint and per-user limits
     """
     
-    def __init__(self, app, default_rate_limit: int = 100):
+    def __init__(self, app, default_rate_limit: int = 100, redis_client = None):
         super().__init__(app)
-        self.redis = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
+        self.redis = redis_client or redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
         self.default_rate_limit = default_rate_limit
         self.log = logging.getLogger(__class__.__name__)
         

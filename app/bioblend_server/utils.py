@@ -15,11 +15,6 @@ from fastmcp.server.dependencies import get_http_headers
 
 current_api_key_server: ContextVar[str] = ContextVar("current_api_key_server", default=None)
 
-# Environment / secrets
-FERNET_SECRET = os.getenv("SECRET_KEY")
-if not FERNET_SECRET:
-    raise RuntimeError("SECRET_KEY (Fernet secret) is required in env")
-fernet = Fernet(FERNET_SECRET)
 GALAXY_API_TOKEN = "galaxy_api_token"
 
 class JWTGalaxyKeyMiddleware(Middleware):
@@ -95,6 +90,12 @@ class JWTGalaxyKeyMiddleware(Middleware):
             return None
         loop = asyncio.get_running_loop()
         try:
+            # Environment / secrets
+            FERNET_SECRET = os.getenv("SECRET_KEY")
+            if not FERNET_SECRET:
+                raise RuntimeError("SECRET_KEY (Fernet secret) is required in env")
+            fernet = Fernet(FERNET_SECRET)
+            
             decrypted = await loop.run_in_executor(None, fernet.decrypt, token_str.encode("utf-8"))
             parsed: dict = await loop.run_in_executor(None, json.loads, decrypted.decode("utf-8"))
             apikey = parsed.get("apikey")
