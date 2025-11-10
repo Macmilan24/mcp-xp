@@ -24,7 +24,7 @@ from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.api.schemas import invocation, workflow
-from app.api.socket_manager import ws_manager
+from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 
@@ -288,7 +288,8 @@ async def _format_invocations(username, invocations_data: list[dict], workflow_m
         workflow_name = workflow_info.get('workflow_name', None)
         workflow_id = workflow_info.get("workflow_id", None)
         
-        # Skip if no workflow name : Likely due to the invocation being a subworkflow invocation.
+        # Skip if no workflow name : Likely due to the invocation being a subworkflow invocation or workflow being deleted.
+        # TODO: Maybe in the future if invocation are still needed even after the workflow has been deleted, we can refactor implemenation.
         if not workflow_name:
             length+=1
             continue
@@ -682,6 +683,16 @@ async def background_track_and_cache(
         }
         await invocation_cache.set_invocation_result(username, invocation_id, result_dict)
         logger.info("Invocation results are complete and ready.")
+        if ws_manager:
+            ws_data = {
+                "type": SocketMessageType.INVOCATION_COMPLETE,
+                "payload": {"message": "Invocation results are complete and ready."}
+            }
+            await ws_manager.broadcast(
+                event=SocketMessageEvent.workflow_execute,
+                data=ws_data,
+                tracker_id=invocation_id
+            )
 
 
     except Exception as e:
@@ -710,10 +721,16 @@ async def background_track_and_cache(
     tags=["Invocation"]
 )
 async def show_invocation_result(
-    invocation_id: str = Path(..., description="")
+    invocation_id: str = Path(..., description=""),
+    internal_api: str | None = None
 ):
     try:
-        api_key = current_api_key.get()
+        if internal_api:
+            logger.info("Calling invocation result internally.")
+            api_key = internal_api
+        else:
+            api_key = current_api_key.get()
+            
         galaxy_client = GalaxyClient(api_key)
         username = galaxy_client.whoami
 
