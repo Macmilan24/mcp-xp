@@ -1,18 +1,21 @@
 import os
 from fastmcp import FastMCP
 import logging
-from typing import Any
+from typing import Any, Optional
 import redis
 import asyncio
 import json
 import httpx
 
 from bioblend.galaxy.client import ConnectionError as GalaxyConnectionError
+from qdrant_client.models import PointStruct
+from qdrant_client.http.exceptions import ApiException
 
 from app.log_setup import configure_logging
 from app.bioblend_server.utils import JWTGalaxyKeyMiddleware, current_api_key_server
 from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.informer.informer import GalaxyInformer
+from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.orchestration.invocation_cache import InvocationCache
 from app.api.endpoints.invocation import show_invocation_result
 
@@ -280,3 +283,96 @@ async def fetch_workflow_json_async(url: str) -> dict[str, Any]:
                 response = await http_client.get(url)
                 response.raise_for_status()
                 return json.loads(response.text)
+            
+
+# TODO: Import workflow from the IWC by its name, for now lets use the url for dev, but improve the workflow
+@bioblend_app.tool()
+async def import_workflow_to_galaxy_instance(
+    workflow_name: str
+) -> str:
+    # TODO: No Galaxy duplicate check add that.
+    
+    """
+    Imports a Galaxy workflow from the IWC workflow repository, fetching the workflow JSON,
+    and uploading it to the Galaxy instance. Handles tool installation and ensures the workflow is added to the user's list.
+
+    Args:
+        workflow_name (str): The Full and exact name of the workflow to import.
+
+    Returns:
+        str: A message indicating the import status or an error description.
+    """
+    try:
+        
+        from app.bioblend_server.informer.manager import InformerManager
+        
+        # Validate API key and initialize clients
+        user_api_key: str = current_api_key_server.get()
+        if not user_api_key:
+            raise ValueError("User API key is not provided.")
+        
+        galaxy_client: GalaxyClient = GalaxyClient(user_api_key)
+        workflow_manager: WorkflowManager = WorkflowManager(galaxy_client)
+        qdrant_client: InformerManager = InformerManager().create()
+
+        # TODO: Fill the workflow collection name (has to be user-specific, so ...)
+        workflow_collection_name: str = ""
+
+        # Step 1: Search for the workflow by name in metadata (synchronous call in thread pool)
+        logger.info(f"Searching for workflow '{workflow_name}' in collection '{workflow_collection_name}'")
+        hits = await qdrant_client.match_name_from_collection(
+            workflow_collection_name=workflow_collection_name,
+            workflow_name = workflow_name
+            )
+
+        if not hits or not hits[0]:
+            logger.warning(f"Workflow '{workflow_name}' not found in collection '{workflow_collection_name}'")
+            return f"Workflow '{workflow_name}' not found in available workflow collection for import."
+
+        # Extract workflow download URL from point payload
+        point: PointStruct = hits[0][0]
+        workflow_url: Optional[str] = point.payload.get("raw_download_url")
+        
+        if not workflow_url:
+            logger.error(f"No download link found for workflow '{workflow_name}'")
+            return f"Couldn't import workflow '{workflow_name}'."
+
+        # Fetch the workflow JSON
+        logger.info(f"Fetching workflow JSON from IWC repository using URL: {workflow_url}")
+        workflow_json: dict = await fetch_workflow_json_async(workflow_url)
+
+        # TODO: Ensure that getting the workflow name is correct.
+        ga_workflow_name: str = workflow_json.get("workflow_name", "")
+        if not ga_workflow_name:
+            logger.error(f"Workflow JSON does not contain a 'name' field for '{workflow_name}'")
+            raise ValueError(f"Workflow JSON does not contain a 'name' field for '{workflow_name}'.")
+
+        # Background upload task
+        logger.info(f"Initiating upload of workflow '{ga_workflow_name}'")
+        
+        asyncio.create_task(
+            workflow_manager.upload_workflow(
+                workflow_json=workflow_json
+                )
+            )
+
+        return f"{ga_workflow_name} workflow is being imported, tools are being installed, and the workflow will be added to your workflow list shortly."
+    
+    except GalaxyConnectionError as e:
+        logger.error(f"Failed to connect to Galaxy: {e}")
+        return f"Failed to connect to Galaxy: {e}"
+    except httpx.HTTPStatusError as http_err:
+        logger.error(f"HTTP error fetching workflow from IWC repository: {str(http_err)}")
+        return f"HTTP error occurred while fetching workflow from IWC repository: {str(http_err)}"
+    except httpx.RequestError as req_err:
+        logger.error(f"Network error fetching workflow from IWC repository: {str(req_err)}")
+        return f"Request HTTP error occurred while fetching workflow from IWC repository: {str(req_err)}"
+    except ApiException as qdrant_err:
+        logger.error(f"Qdrant error during workflow search: {str(qdrant_err)}")
+        return f"Qdrant error occurred during workflow search: {str(qdrant_err)}"
+    except ValueError as val_err:
+        logger.error(f"Validation error: {str(val_err)}")
+        return f"Value error: {str(val_err)}"
+    except Exception as exc:
+        logger.exception(f"Unexpected error during workflow import: {str(exc)}")
+        return f"An unexpected error occurred during workflow import: {str(exc)}"
