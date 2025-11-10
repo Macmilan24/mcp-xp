@@ -254,6 +254,9 @@ async def get_create_galaxy_user_and_key(
         galaxy_user_id = resp.json()["id"]
         username= resp.json()["username"]
         logger.info(f"Galaxy account created with username {username}")
+    
+    except httpx.ConnectError as e:
+        logger.error(f"Error connecting to galaxy instance when generating api: {e}")
 
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 400:
@@ -272,6 +275,9 @@ async def get_create_galaxy_user_and_key(
                 galaxy_user_id = users[0]["id"]
                 username= users[0]["username"]
                 logger.info(f"Galaxy User fetched with username {username}")
+            
+            except httpx.ConnectError as e:
+                logger.error(f"Error connecting to galaxy instance when generating api: {e}")   
 
             except HTTPException as e: 
                 raise HTTPException(status_code=400, detail= f"error getting/creating galaxy user: {e}")
