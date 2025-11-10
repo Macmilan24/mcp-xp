@@ -1,18 +1,27 @@
 import os
 from fastmcp import FastMCP
 import logging
-from typing import Literal
+from typing import Any
+import redis
+import asyncio
+import json
+import httpx
+
+from bioblend.galaxy.client import ConnectionError as GalaxyConnectionError
 
 from app.log_setup import configure_logging
 from app.bioblend_server.utils import JWTGalaxyKeyMiddleware, current_api_key_server
-
 from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.informer.informer import GalaxyInformer
+from app.orchestration.invocation_cache import InvocationCache
+from app.api.endpoints.invocation import show_invocation_result
 
 configure_logging()
 logger = logging.getLogger("fastmcp_bioblend_server")
 
-if not os.environ.get("GALAXY_API_KEY"):
+redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
+
+if not os.environ.get("GALAXY_API_KEY") or not os.environ.get("QDRANT_HTTP_PORT"):
     logger.warning("GALAXY_API_KEY environment variable is not set. GalaxyClient functionality may fail.")
 
 
@@ -71,6 +80,203 @@ async def get_galaxy_information_tool(
         result = await informer.get_entity_info(search_query = query, entity_id = entity_id)
         return result
     
+    except GalaxyConnectionError as e:
+        logger.error(f"Failed to connect to Galaxy: {e}")
+        return f"Failed to connect to Galaxy: {e}"
     except Exception as e:
         logger.error(f"Error in get_galaxy_information_tool: {e}", exc_info=True)
         return f"An error occurred while fetching Galaxy information: {str(e)}"
+    
+
+@bioblend_app.tool()
+async def explain_galaxy_workflow_invocation(
+    invocation_id: str,
+    failure: bool
+) -> str:
+    """
+    Generates a detailed explanation of a Galaxy workflow invocation.
+
+    This function retrieves and analyzes metadata, input parameters, and job execution 
+    details for a given Galaxy workflow invocation. Depending on the `failure` flag, 
+    it either summarizes successful outputs or provides diagnostic details for failed jobs.
+    The analysis includes concurrent fetching of invocation data, workflow reports, 
+    and job details for efficient execution.
+
+    Args:
+        invocation_id (str): 
+            The unique identifier of the Galaxy workflow invocation to analyze.
+        failure (bool): 
+            Indicates whether to focus on failed job diagnostics (`True`) or 
+            output dataset summaries (`False`).
+
+    Returns:
+        str: 
+            A formatted explanation containing:
+                - Workflow metadata (ID, name, and state)
+                - Input datasets and parameters
+                - If `failure=True`: failure summaries for each failed job, including 
+                tool ID, exit code, stderr output, executed command, and parameters
+                - If `failure=False`: lists of output datasets and collections
+    """
+    logger.info(f"Loading workflow Invocation with ID: {invocation_id} for explanation.")
+    
+    # Get current user
+    user_api_key = current_api_key_server.get()
+    if user_api_key is None:
+        raise ValueError("current user api-key is missing")
+    
+    try:
+        
+        # instantiate galaxy client and invocation cacher classes
+        galaxy_client = GalaxyClient(user_api_key)
+        username = galaxy_client.whoami
+        invocation_cache = InvocationCache(redis_client)
+        
+        logger.info(f"current Galaxy MCP server user: {username}")
+        
+        # Retrieve invocation details and workflow title concurrently
+        try:
+            def get_invocation_details():
+                return galaxy_client.gi_client.invocations.show_invocation(invocation_id)
+            
+            def get_invocation_report():
+                return galaxy_client.gi_client.invocations.get_invocation_report(invocation_id)
+            
+            invocation_details, invocation_report = await asyncio.gather(
+                asyncio.to_thread(get_invocation_details),
+                asyncio.to_thread(get_invocation_report)
+            )
+        except Exception as e:
+            logger.error(f"Error retrieving invocation details or report: {str(e)}")
+            return f"Error retrieving invocation details or report for ID {invocation_id}: {str(e)}"
+        
+        # Retrieve workflow details using the invocation report
+        workflow_name = invocation_report.get("title", "Unknown")
+        
+        # Initialize explanation string
+        explanation = "\n\n**Invocation details**"
+        explanation += f"\n\nWorkflow Invocation ID: {invocation_id}\nWorkflow Name: {workflow_name}\n"
+        
+        # Check invocation state
+        invocation_state = await invocation_cache.get_invocation_state(username, invocation_id)
+        if invocation_state is None:
+            invocation_raw_state = invocation_details.get('state', "Unknown")
+        
+            if invocation_raw_state == "scheduled":
+                invocation_state = "Pending"
+                
+                try:
+                    asyncio.create_task(show_invocation_result(invocation_id=invocation_id, internal_api=user_api_key))
+                except Exception as e:
+                    logger.error(f"Error retrieving or tracking scheduled invocation: {str(e)}")
+                    explanation += f"\nError tracking scheduled invocation: {str(e)}\n"
+            else:
+                invocation_state = "Failed"
+        
+        invocation_inputs: dict = invocation_details.get("inputs", {})
+        invocation_input_parameters: dict = invocation_details.get("input_step_parameters", {})
+        if invocation_inputs:
+            explanation += "\n\nInvocation input datasets:\n"
+            explanation += "\n".join(f"  - {label.get('label')}" for label in invocation_inputs.values()) + "\n"
+
+        if invocation_input_parameters:
+            explanation += "\n\nInvocation input parameters:\n"
+            explanation += "\n".join(f"  - {label.get('label')}: {label.get('parameter_value')}" for label in invocation_input_parameters.values()) + "\n"
+        
+        explanation += f"\n\nInvocation State: {invocation_state}\n\n"
+        
+        # If failure is indicated, focus on errors; otherwise, report on outputs
+        if failure or invocation_state not in ["Pending", "Complete"]:
+            explanation += "Analyzing for failures in the workflow invocation:\n"
+            failed_job_descriptions = []
+            
+            # Get invocation jobs
+            try:
+                invocation_jobs = galaxy_client.gi_client.jobs.get_jobs(invocation_id=invocation_id)
+            except Exception as e:
+                logger.error(f"Error retrieving invocation jobs: {str(e)}")
+                explanation += f"Error retrieving invocation jobs: {str(e)}\n"
+                return explanation
+            
+            # Prepare concurrent tasks for failed jobs
+            failed_job_tasks = []
+            for inv_job in invocation_jobs:
+                if inv_job.get("state") == 'error':
+                    job_id = inv_job.get("id")
+                    if job_id:
+                        def get_job_details():
+                            return galaxy_client.gi_client.jobs.show_job(job_id, full_details=True)
+                        failed_job_tasks.append(asyncio.to_thread(get_job_details))
+            
+            if failed_job_tasks:
+                try:
+                    job_details_list = await asyncio.gather(*failed_job_tasks)
+                    logger.info(f"Number of failed jobs in invocation {len(job_details_list)}")
+                except Exception as e:
+                    logger.error(f"Error retrieving job details concurrently: {str(e)}")
+                    explanation += f"Error retrieving failed job details: {str(e)}\n"
+                    return explanation
+                
+                for job_details in job_details_list:
+                    try:
+                        # Extract the key error describers
+                        tool_id = job_details.get('tool_id', "Unknown")
+                        stderr_output = job_details.get('stderr') or job_details.get('tool_stderr') or job_details.get('job_stderr') or ""
+                        std_out = job_details.get('stdout') or job_details.get('tool_stdout') or ""
+                        exit_code = job_details.get('exit_code')
+
+                        # Create a structured failure summary
+                        error_description = f"Tool `{tool_id}` failed during execution.\n"
+                        
+                        if std_out:
+                            error_description += f"  - Job Message Logs: {std_out}\n"
+                        if exit_code:
+                            error_description += f"  - Exit code: {exit_code}\n"
+                        if stderr_output:
+                            error_description += f"  - Error message: {stderr_output.strip()}\n"
+
+                        
+                        failed_job_descriptions.append(error_description)
+                    except Exception as e:
+                        logger.error(f"Error processing job details: {str(e)}")
+                        explanation += f"Error processing failed job details: {str(e)}\n"
+            
+            if failed_job_descriptions:
+                explanation += "\n\nFailed Jobs Detected:\n" + "\n".join(failed_job_descriptions) + "\n"
+            else:
+                explanation += "\nNo failed jobs detected in this invocation.\n"
+            
+            return explanation
+        
+        explanation += "\n\nInvocation completed without indicated failure. Analyzing output datasets:\n"
+        invocation_outputs = invocation_details.get('outputs', {})
+        invocation_output_collections = invocation_details.get("output_collections", {})
+        
+        if invocation_outputs:
+            explanation += "\n\nInvocation output datasets:\n"
+            explanation += "\n".join(f"  - {label}" for label in invocation_outputs.keys()) + "\n"
+        
+        if invocation_output_collections:
+            explanation += "\n\nInvocation output dataset collections:\n"
+            explanation += "\n".join(f"  - {label}" for label in invocation_output_collections.keys()) + "\n" 
+            
+        if not invocation_outputs and not invocation_output_collections:
+            explanation += "\nNo output datasets or collections found for this invocation.\n"
+        
+        return explanation
+    
+    except GalaxyConnectionError as e:
+        logger.error(f"Failed to connect to Galaxy: {e}")
+        return f"Failed to connect to Galaxy: {e}"
+    except Exception as e:
+        logger.error(f"Error caused whn trying to fetch invocation details: {e}")
+        return f"Error caused whn trying to fetch invocation details: {e}"
+        
+
+async def fetch_workflow_json_async(url: str) -> dict[str, Any]:
+            """Fetch and load JSON from a given URL using httpx (async)."""
+            
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                response = await http_client.get(url)
+                response.raise_for_status()
+                return json.loads(response.text)
