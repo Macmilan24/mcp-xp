@@ -200,7 +200,7 @@ class WorkflowManager:
             # return {"error": f"Error installing missing tools in the uploaded workflow: {e}"}
             
         # Reload the tool box after tools are installed
-        asyncio.sleep(3)
+        await asyncio.sleep(3)
         await asyncio.to_thread(self.gi_admin.gi.config.reload_toolbox)
 
         workflow = await asyncio.to_thread(
@@ -240,7 +240,7 @@ class WorkflowManager:
                     )
             else:
                 self.log.error(f"Workflow is not runnable, failed to upload correctly. Retrying... (attempt {retry_count})")
-                asyncio.sleep(5)
+                await asyncio.sleep(5)
                 await self.upload_workflow(workflow_json=workflow_json, ws_manager=ws_manager, tracker_id=tracker_id, retry_count=retry_count)
                 
 
@@ -387,8 +387,8 @@ class WorkflowManager:
                             invocation: Invocation,
                             tracker_id: str = None,
                             ws_manager: SocketManager = None,
-                            base_extension: int = 30,
-                            initial_wait: int = 120,
+                            base_extension: int = 300,
+                            initial_wait: int = 2400,
                             invocation_check: bool = False
                         ) -> Tuple[
                             Dict[str,List],
@@ -448,7 +448,7 @@ class WorkflowManager:
         ))
         num_steps = len(inv["steps"])
         num_completed_steps = 0
-        estimated_wait = 60 * num_steps  # assume ~60s per step
+        estimated_wait = 1800 * num_steps  # assume ~30 min per step TODO: Fix time logic here
         effective_initial_wait = max(estimated_wait, initial_wait)  # Renamed for clarity
         deadline = start_time + effective_initial_wait
         max_extension = effective_initial_wait // 2
@@ -611,7 +611,7 @@ class WorkflowManager:
             
             if ws_manager:
                 ws_data = {
-                    "type": SocketMessageType.INVOCATION_COMPLETE,
+                    "type": SocketMessageType.INVOCATION_STEP_UPDATE,
                     "payload": {"message": "All steps completed successfully"}
                 }
                 await ws_manager.broadcast(
@@ -788,7 +788,7 @@ class WorkflowManager:
                 
                 if ws_manager:
                     ws_data = {
-                        "type": SocketMessageType.INVOCATION_COMPLETE,
+                        "type": SocketMessageType.INVOCATION_STEP_UPDATE,
                         "payload": {"message": "All steps completed successfully"}
                     }
                     await ws_manager.broadcast(
