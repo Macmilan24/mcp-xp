@@ -11,10 +11,10 @@ import json
 import asyncio
 import aiofiles
 
-from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException
+from fastapi import APIRouter, UploadFile, File, Path, Query, Form, Request, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from fastapi.concurrency import run_in_threadpool
-from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation, Workflow
+from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
 
 from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
@@ -60,18 +60,25 @@ async def list_workflows():
         # Step 2: Check for cached responses
         cached_data = await invocation_cache.get_workflows_cache(username)
         if cached_data:
+            deleted_workflow_ids = await invocation_cache.get_deleted_workflows(username)
+            # Filter out deleted workflows
+            filtered_workflows = [
+                w for w in cached_data if w.get("id") not in deleted_workflow_ids
+            ]
+             
             logger.info("Serving workflows from cache")
-            return workflow.WorkflowList(workflows=cached_data)
+            return workflow.WorkflowList(workflows=filtered_workflows)
 
+        # Step 3: If no cache is found then retreive workflows list from galaxy, and set cache.
         workflow_manager = WorkflowManager(galaxy_client)
-        
         workflow_list = await invocation_background.fetch_workflows_safely(workflow_manager, fetch_details=True)
         await invocation_cache.set_workflows_cache(username,workflow_list)
-
+        
+        # Remove and clear deleted workflow list cache
+        await invocation_cache.clear_deleted_workflows(username)
         return workflow.WorkflowList(workflows=workflow_list)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list workflows: {e}")
-    
     
 @router.post(
         "/upload-workflow",
@@ -344,3 +351,52 @@ async def get_workflow_details(
     except Exception as e:
         # detailed error responses
         raise HTTPException(status_code = 500 , detail= f'Show workflow failed {e}')
+    
+@router.delete(
+   "/DELETE",
+    summary="Delete workflows",
+    tags=["Workflows"],
+    status_code=204
+)
+async def delete_workflows(
+    workflow_ids: str = Path(..., description="Comma-separated IDs of the Galaxy workflows to delete")
+) -> Response:
+    """ Delete a galaxy workflow from a users galaxy instance. """
+    
+    api_key = current_api_key.get()
+    galaxy_client = GalaxyClient(api_key)
+    username = galaxy_client.whoami
+    workflow_manager = WorkflowManager(galaxy_client)
+
+    try:
+        # Parse comma-separated string into list
+        ids_list = [i.strip() for i in workflow_ids.split(",") if i.strip()]
+
+        # Define semaphore with a limit
+        semaphore = asyncio.Semaphore(5)
+
+        # Define background task for deleting workflows with semaphore
+        async def delete_workflow_with_semaphore(workflow_id: str):
+            async with semaphore:
+                await asyncio.to_thread(workflow_manager.gi_object.gi.workflows.delete_workflow, workflow_id)
+
+        async def delete_workflows_task():
+            try:
+                await asyncio.gather(
+                    *[delete_workflow_with_semaphore(workflow_id) for workflow_id in ids_list]
+                )
+                logger.info(f"Workflows successfully deleted: {ids_list}")
+            except Exception as e:
+                workflow_manager.log.error(f"Background task failed to delete workflows {ids_list} for user {username}: {e}")
+
+        # Schedule deletion task in the background
+        asyncio.create_task(delete_workflows_task())
+
+        # Add workflow IDs44 to deleted set in Redis (foreground)
+        await invocation_cache.add_deleted_workflows(username, ids_list)
+
+        return Response(status_code=204)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process workflow deletion: {e}")
+        # TODO: Need to find way to make the deletion not affect the published workflow usecase(workflow publication).

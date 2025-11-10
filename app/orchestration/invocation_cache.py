@@ -78,8 +78,8 @@ class InvocationCache:
             return None
     
     async def set_response_cache(self, username: str, response: Dict, workflow_id: str = None, 
-                               history_id: str = None, ttl: int = 20):
-        """Cache response for specific filter combination with 20 seconds TTL"""
+                               history_id: str = None, ttl: int = 10):
+        """Cache response for specific filter combination with 10 seconds TTL"""
         try:
             cache_key = f"invocations_response:{username}:{workflow_id or 'all'}:{history_id or 'all'}"
             await asyncio.to_thread(self.redis.setex, cache_key, ttl, json.dumps(response))
@@ -115,7 +115,7 @@ class InvocationCache:
             return None
     
     async def set_invocations_cache(self, username: str, invocations: List[Dict], 
-                                  filters: Dict, ttl: int = 60):
+                                  filters: Dict, ttl: int = 20):
         """Cache invocations list with 1-minute TTL"""
         try:
             filter_str = "_".join([f"{k}:{v}" for k, v in sorted(filters.items()) if v is not None])
@@ -207,3 +207,37 @@ class InvocationCache:
             await asyncio.to_thread(self.redis.hdel, cache_key, invocation_id)
         except Exception as e:
             self.log.error(f"Error deleting invocation state: {e}")
+    
+    async def add_deleted_workflows(self, username: str, workflow_ids: list[str]):
+        """ Add multiple deleted workflow IDs to the user's deleted workflows set in Redis. """
+        try:
+            cache_key = f"deleted_workflows:{username}"
+            def _add_to_set():
+                pipe = self.redis.pipeline()
+                pipe.sadd(cache_key, *workflow_ids)
+                pipe.expire(cache_key, 86400)
+                pipe.execute()
+            await asyncio.to_thread(_add_to_set)
+        except Exception as e:
+            self.log.error(f"Failed to add deleted workflow IDs {workflow_ids} for user: {username}: {e}")
+
+    async def get_deleted_workflows(self, username: str) -> list:
+        """ Retrieve the set of deleted workflow IDs for a user from Redis. """
+        try:
+            cache_key = f"deleted_workflows:{username}"
+            def _get_set_members():
+                return list(self.redis.smembers(cache_key))
+            return await asyncio.to_thread(_get_set_members)
+        
+        except Exception as e:
+            self.log.error(f"Failed to retrieve deleted workflows for user: {username}: {e}")
+            return []
+
+    async def clear_deleted_workflows(self, username: str):
+        """ Clear the deleted workflows set for a user in Redis. """
+        try:
+            cache_key = f"deleted_workflows:{username}"
+            await asyncio.to_thread(self.redis.delete, cache_key)
+            
+        except Exception as e:
+            self.log.error(f"Failed to clear deleted workflows for user: {username}: {e}")
