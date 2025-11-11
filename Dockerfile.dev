@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# We do NOT copy source code here because we will mount it from host
+COPY start.sh ./
+RUN chmod +x start.sh
+
+EXPOSE 8895 8897
+
+CMD ["./start.sh"]

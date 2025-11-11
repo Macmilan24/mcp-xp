@@ -1,0 +1,56 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    platform: linux/amd64
+    container_name: mcp-app
+    env_file:
+      - .env
+    environment:
+      - APP_PORT=${APP_PORT}
+      - MCP_PORT=${MCP_PORT}
+      - REDIS_PORT=${REDIS_PORT}
+      - REDIS_HOST=redis
+      - QDRANT_HOST=qdrant
+      - QDRANT_HTTP_PORT=${QDRANT_HTTP_PORT}
+      - CURRENT_LLM=${CURRENT_LLM:-openai} # Set current LLM to run the MCP server with, defaults to openai.
+    ports:
+      - "${APP_PORT}:8895" # Uvicorn
+      - "${MCP_PORT}:8897" # bioblend_server
+    depends_on:
+      - redis
+      - qdrant
+    volumes:
+      - ./logs:/app/logs
+      - ./app:/app/app            # Live code sync
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    platform: linux/amd64
+    container_name: redis
+    command: ["redis-server", "--port", "${REDIS_PORT}"]
+    ports:
+      - "${REDIS_PORT}:${REDIS_PORT}"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant
+    platform: linux/amd64
+    container_name: qdrant
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=${QDRANT_HTTP_PORT}
+      - QDRANT__SERVICE__GRPC_PORT=${QDRANT_GRPC_PORT}
+    ports:
+      - "${QDRANT_HTTP_PORT}:${QDRANT_HTTP_PORT}" # HTTP
+      - "${QDRANT_GRPC_PORT}:${QDRANT_GRPC_PORT}" # gRPC
+    volumes:
+      - vectordata:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  vectordata:
+  redis_data:

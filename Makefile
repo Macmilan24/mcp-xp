@@ -1,5 +1,23 @@
+# Set runtime environment (default: prod)
+ENV ?= prod
+
+COMPOSE = 
+
+# Select correct compose file based on ENV
+ifeq ($(ENV),dev)
+	COMPOSE_FILE = docker-compose.dev.yml
+	COMPOSE_PROJECT_NAME = mcp-xp-app-dev
+	COMPOSE := docker compose -f $(COMPOSE_FILE) -p $(COMPOSE_PROJECT_NAME)
+else
+	COMPOSE_FILE = docker-compose.yml
+	COMPOSE := docker compose -f $(COMPOSE_FILE)
+endif
+
 # Define Docker Compose command
-COMPOSE := docker compose
+
+
+# Define Docker Compose command
+# COMPOSE := docker compose
 
 # Load environment variables from .env file
 ifneq (,$(wildcard .env))
@@ -81,6 +99,10 @@ docker-rebuild:
 docker-prune:
 	docker system prune -f
 	docker volume prune -f
+
+docker-logs:
+	$(COMPOSE) logs -f app
+
 
 # Inspect MCP (unchanged)
 mcp-inspect:
