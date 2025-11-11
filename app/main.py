@@ -330,7 +330,9 @@ async def get_create_galaxy_user_and_key(
         api_token = api_token
     )
     
-@app.post("/galaxy_auth")
+@app.post("/galaxy_auth", 
+          tags =["Signup Auth"]
+          )
 async def galaxy_proxy_login(request: Request):
     
     """ CORS proxy for Galaxy user authentication endpoint. """
