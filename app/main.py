@@ -14,7 +14,7 @@ from cryptography.fernet import Fernet
 from contextlib import asynccontextmanager
 
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, Request, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, HTTPException, Query, WebSocket, WebSocketDisconnect, Response
 from fastapi.openapi.utils import get_openapi
 from app.AI.chatbot import ChatSession, initialize_session
 
@@ -329,6 +329,63 @@ async def get_create_galaxy_user_and_key(
         username = username,
         api_token = api_token
     )
+    
+@app.post("/galaxy_auth")
+async def galaxy_proxy_login(request: Request):
+    
+    """ CORS proxy for Galaxy user authentication endpoint. """
+    
+    try:
+        # Read the body
+        body = await request.body()
+        
+        # Forward only necessary headers
+        headers = {
+            "content-type": "application/json",
+            "authorization": request.headers.get("authorization", ""),
+        }
+        
+        logger.info(f"Forwarding login request to {GALAXY_URL}/user/login")
+        
+        # Forward to Galaxy
+        async with httpx.AsyncClient() as client:
+            target_response = await client.post(
+                f"{GALAXY_URL}/user/login",
+                content=body,
+                headers=headers,
+                follow_redirects=False,
+            )
+            
+        # Create response
+        proxy_response = Response(
+            content=target_response.content,
+            status_code=target_response.status_code,
+            media_type=target_response.headers.get("content-type")
+        )
+        
+        # Forward Set-Cookie headers from Galaxy to client for session management
+        for key, value in target_response.headers.multi_items():
+            if key.lower() == "set-cookie":
+                proxy_response.headers.append(key, value)
+        
+        # Forward other important headers
+        important_headers = ["content-type", "www-authenticate"]
+        for header in important_headers:
+            if header in target_response.headers:
+                proxy_response.headers[header] = target_response.headers[header]
+        
+        logger.info(f"Login response: {target_response.status_code}")
+        return proxy_response
+    
+    except httpx.ConnectError as e:
+        logger.error(f"Connection error: {e}")
+        raise HTTPException(status_code=500, detail=f"Proxy connetcion error: {e}")
+    except httpx.RequestError as e:
+        logger.error(f"Error connecting to Galaxy: {e}")
+        raise HTTPException(status_code=502, detail=f"Galaxy server error: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=f"Proxy error: {e}")
 
 @app.websocket("/ws/{tracker_id}")
 async def websocket_endpoint(websocket: WebSocket, tracker_id: str):
