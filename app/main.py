@@ -13,14 +13,13 @@ from pydantic import BaseModel
 from cryptography.fernet import Fernet
 from contextlib import asynccontextmanager
 
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, Request, HTTPException, Query, WebSocket, WebSocketDisconnect, Response
 from fastapi.openapi.utils import get_openapi
 from app.AI.chatbot import ChatSession, initialize_session
 
 from app.utils import import_published_workflows
 from app.log_setup import configure_logging
-from app.api.middleware import JWTGalaxyKeyMiddleware, RateLimiterMiddleware
+from app.api.middleware import JWTGalaxyKeyMiddleware, RateLimiterMiddleware, DomainCORSMiddleware
 from app.api.api import api_router 
 from app.api.socket_manager import ws_manager, SocketMessageEvent
 from app.orchestration.invocation_cache import InvocationCache
@@ -146,18 +145,10 @@ async def lifespan(app: FastAPI):
 # Initialize the FastAPI application with a lifespan context
 app = FastAPI(lifespan=lifespan)
 
-
-
-# Add middlewares
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-app.add_middleware(JWTGalaxyKeyMiddleware)
+# Add Middlewares, in the order CORS - Rate limiter - Auth
+app.add_middleware(DomainCORSMiddleware, trust_proxy_headers=True)
 app.add_middleware(RateLimiterMiddleware)
+app.add_middleware(JWTGalaxyKeyMiddleware)
 
 # Include the API router
 app.include_router(api_router, prefix="/api")

@@ -4,15 +4,18 @@ import logging
 import asyncio
 import time
 import redis
+import jwt
 from datetime import datetime
 
 from typing import Optional, Dict
 
 from fastapi import Request, HTTPException, status, Response
 from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from cryptography.fernet import Fernet, InvalidToken
-import jwt
+from urllib.parse import urlparse
+from starlette.types import ASGIApp
 
 from app.context import current_api_key
 
@@ -357,3 +360,134 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
             active_users_key,
             {api_key: current_time}
         )
+
+class DomainCORSMiddleware(CORSMiddleware):
+    """ CORS middleware that only allows requests from the same domain/hostname. """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        allow_methods: list[str] = ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers: list[str] = ["Authorization", "Content-Type", "X-Requested-With"],
+        max_age: int = 600,
+        allow_schemes: list[str] = ["http", "https"],
+        trust_proxy_headers: bool = False,  # Set True if behind reverse proxy
+    ):
+        super().__init__(
+            app,
+            allow_origins=[],  # We handle dynamically
+            allow_origin_regex=None,
+            allow_methods=allow_methods,
+            allow_headers=allow_headers,
+            allow_credentials=True,
+            max_age=max_age,
+        )
+        self.allow_schemes = set(scheme.lower() for scheme in allow_schemes)
+        self.trust_proxy_headers = trust_proxy_headers
+        self.log = logging.getLogger(__class__.__name__)
+
+    def _get_server_hostname(self, request: Request) -> str:
+        """Extract server hostname, handling proxy headers if configured."""
+        if self.trust_proxy_headers:
+            host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+        else:
+            host = request.headers.get("host", "")
+        
+        # Handle IPv6 and port parsing safely
+        try:
+            parsed = urlparse(f"http://{host}")
+            return (parsed.hostname or host).lower()
+        except Exception as e:
+            self.log.error(f"Failed to parse host header: {host}, error: {e}")
+            return host.split(":")[0].lower()  # Fallback
+
+    def _validate_origin(self, origin_str: str | None, server_hostname: str) -> str | None:
+        """
+        Validate origin against server hostname.
+        Returns the origin if valid, None otherwise.
+        """
+        if not origin_str:
+            return None
+
+        # Handle null origin (file://, sandboxed contexts)
+        if origin_str == "null":
+            self.log.warning("Blocked null origin request")
+            return None
+
+        try:
+            origin_parsed = urlparse(origin_str)
+            
+            # Validate origin has all required components
+            if not origin_parsed.hostname or not origin_parsed.scheme:
+                self.log.warning(f"Invalid origin format: {origin_str}")
+                return None
+
+            # Check scheme is allowed
+            if origin_parsed.scheme.lower() not in self.allow_schemes:
+                self.log.warning(
+                    f"Origin scheme not allowed: {origin_parsed.scheme} (origin: {origin_str})"
+                )
+                return None
+
+            # Check hostname matches (case-insensitive)
+            origin_hostname = origin_parsed.hostname.lower()
+    
+            # Exact match or subdomain match (e.g., api.example.com matches example.com)
+            if origin_hostname == server_hostname or origin_hostname.endswith(f".{server_hostname}"):
+                return origin_str
+            
+            self.log.warning(f"Origin hostname mismatch: {origin_parsed.hostname} != {server_hostname}")
+            return None
+
+        except Exception as e:
+            self.log.error(f"Failed to parse origin: {origin_str}, error: {e}")
+            return None
+
+    async def dispatch(self, request: Request, call_next):
+        origin_str = request.headers.get("origin")
+        server_hostname = self._get_server_hostname(request)
+        
+        # Validate origin
+        allow_origin = self._validate_origin(origin_str, server_hostname)
+
+        # Handle preflight requests
+        if request.method == "OPTIONS":
+            if allow_origin:
+                return self._preflight_response(allow_origin)
+            else:
+                # Return 204 with no CORS headers - browser will block
+                return Response(status_code=204)
+
+        # Process actual request
+        response = await call_next(request)
+
+        # Add CORS headers if origin is valid
+        if allow_origin:
+            self._add_cors_headers(response, allow_origin)
+
+        return response
+
+    def _add_cors_headers(self, response: Response, origin: str):
+        """Add CORS headers to response."""
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        
+        # Append to existing Vary header if present
+        existing_vary = response.headers.get("Vary", "")
+        if existing_vary:
+            if "Origin" not in existing_vary:
+                response.headers["Vary"] = f"{existing_vary}, Origin"
+        else:
+            response.headers["Vary"] = "Origin"
+
+    def _preflight_response(self, origin: str) -> Response:
+        """Create preflight response with CORS headers."""
+        headers = {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": ", ".join(self.allow_methods),
+            "Access-Control-Allow-Headers": ", ".join(self.allow_headers),
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Max-Age": str(self.max_age),
+            "Vary": "Origin",
+        }
+        return Response(status_code=204, headers=headers)
