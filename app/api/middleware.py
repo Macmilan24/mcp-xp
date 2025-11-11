@@ -11,7 +11,6 @@ from typing import Optional, Dict
 
 from fastapi import Request, HTTPException, status, Response
 from starlette.middleware.base import BaseHTTPMiddleware
-from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from cryptography.fernet import Fernet, InvalidToken
 from urllib.parse import urlparse
@@ -37,6 +36,10 @@ class JWTGalaxyKeyMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         # Allow public paths if you need them (adjust to your app). Remove if unwanted.
+        if request.method == "OPTIONS":
+            self.log.info("Skipping options method")
+            return await call_next(request)
+        
         public_paths = {"/", "/docs", "/redoc", "/openapi.json", "/register-user"}
         if request.url.path in public_paths or request.url.path.startswith("/static/"):
             return await call_next(request)
@@ -360,8 +363,7 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
             active_users_key,
             {api_key: current_time}
         )
-
-class DomainCORSMiddleware(CORSMiddleware):
+class DomainCORSMiddleware(BaseHTTPMiddleware):
     """ CORS middleware that only allows requests from the same domain/hostname. """
 
     def __init__(
@@ -373,15 +375,10 @@ class DomainCORSMiddleware(CORSMiddleware):
         allow_schemes: list[str] = ["http", "https"],
         trust_proxy_headers: bool = False,  # Set True if behind reverse proxy
     ):
-        super().__init__(
-            app,
-            allow_origins=[],  # We handle dynamically
-            allow_origin_regex=None,
-            allow_methods=allow_methods,
-            allow_headers=allow_headers,
-            allow_credentials=True,
-            max_age=max_age,
-        )
+        super().__init__(app)
+        self.allow_methods = allow_methods
+        self.allow_headers = allow_headers
+        self.max_age = max_age
         self.allow_schemes = set(scheme.lower() for scheme in allow_schemes)
         self.trust_proxy_headers = trust_proxy_headers
         self.log = logging.getLogger(__class__.__name__)
@@ -449,6 +446,9 @@ class DomainCORSMiddleware(CORSMiddleware):
         
         # Validate origin
         allow_origin = self._validate_origin(origin_str, server_hostname)
+        self.log.debug(f"Origin: {origin_str}")
+        self.log.debug(f"Server hostname: {server_hostname}")
+        self.log.debug(f"Allow origin: {allow_origin}")
 
         # Handle preflight requests
         if request.method == "OPTIONS":

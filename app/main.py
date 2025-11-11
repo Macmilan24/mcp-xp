@@ -146,9 +146,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # Add Middlewares, in the order CORS - Rate limiter - Auth
-app.add_middleware(DomainCORSMiddleware, trust_proxy_headers=True)
-app.add_middleware(RateLimiterMiddleware)
 app.add_middleware(JWTGalaxyKeyMiddleware)
+app.add_middleware(RateLimiterMiddleware)
+app.add_middleware(DomainCORSMiddleware)
 
 # Include the API router
 app.include_router(api_router, prefix="/api")
