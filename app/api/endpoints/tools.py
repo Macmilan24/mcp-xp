@@ -18,12 +18,12 @@ log = logging.getLogger("tool_endpoints")
 
 router = APIRouter()
 
-@router.get(
-    "/{tool_id:path}/form",
-    response_class=HTMLResponse,
-    summary = "Get dynamic galaxy tool form",
-    tags = ['Tools']
-)
+# @router.get(
+#     "/{tool_id:path}/form",
+#     response_class=HTMLResponse,
+#     summary = "Get dynamic galaxy tool form",
+#     tags = ['Tools']
+# )
 async def get_tool_form(
     tool_id: str = Path(..., description="The Id of the Galaxy Tool"),
     history_id: str = Query(..., description="The Id of the history to select inputs from.") 
@@ -50,12 +50,12 @@ async def get_tool_form(
     except Exception as e:
         raise HTTPException(status_code = 500 , detail = f"failed to build tool form: {e}")
     
-@router.post(
-    "/{tool_id:path}/histories/{history_id}/execute",
-    response_model= ToolExecutionResponse,
-    summary="Execute a Galaxy tool",
-    tags=["Tools"]   
-)
+# @router.post(
+#     "/{tool_id:path}/histories/{history_id}/execute",
+#     response_model= ToolExecutionResponse,
+#     summary="Execute a Galaxy tool",
+#     tags=["Tools"]   
+# )
 async def execute_tool(
     request: Request,
     tool_id: str = Path(..., description="The ID of the Galaxy tool to execute."),

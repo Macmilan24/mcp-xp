@@ -22,12 +22,12 @@ from app.api.schemas import dataset, history
 
 router = APIRouter()
 
-@router.get(
-    "/",
-    response_model = List[history.HistoryResponse],
-    summary="List all Galaxy histories",
-    tags=["Histories & Data"]
-)
+# @router.get(
+#     "/",
+#     response_model = List[history.HistoryResponse],
+#     summary="List all Galaxy histories",
+#     tags=["Histories & Data"]
+# )
 async def list_histories():
     """
     Retrieve a list of all Galaxy histories for the current API key.
@@ -48,12 +48,12 @@ async def list_histories():
         raise HTTPException(status_code=500, detail=f"Failed to list histories: {e}")
 
 
-@router.post(
-    "/create",
-    response_model = history.HistoryResponse,
-    summary="Create a new Galaxy history",
-    tags=["Histories & Data"]
-)
+# @router.post(
+#     "/create",
+#     response_model = history.HistoryResponse,
+#     summary="Create a new Galaxy history",
+#     tags=["Histories & Data"]
+# )
 async def create_history(
     name: str | None = Query(None, description="Name of the new history")
 ):
@@ -74,12 +74,12 @@ async def create_history(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create history: {e}")
 
-@router.post(
-    "/{history_id}/upload-file",
-    response_model=dataset.FileUploadResponse,
-    summary="Upload a Single File",
-    tags=["Histories & Data"]
-)
+# @router.post(
+#     "/{history_id}/upload-file",
+#     response_model=dataset.FileUploadResponse,
+#     summary="Upload a Single File",
+#     tags=["Histories & Data"]
+# )
 async def upload_file_to_history(
     history_id: str = Path(..., description="The ID of the Galaxy history."),
     file: UploadFile = File(..., description="The file to upload.")
@@ -116,12 +116,12 @@ async def upload_file_to_history(
         raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
 
 
-@router.post(
-    "/{history_id}/upload-collection",
-    response_model=dataset.CollectionResponse,
-    summary="Create a Dataset Collection from new files",
-    tags=["Histories & Data"]
-)
+# @router.post(
+#     "/{history_id}/upload-collection",
+#     response_model=dataset.CollectionResponse,
+#     summary="Create a Dataset Collection from new files",
+#     tags=["Histories & Data"]
+# )
 async def upload_dataset_collection(
     history_id: str = Path(..., description="The ID of the Galaxy history."),
     files: List[UploadFile] = File(..., description="The file(s) to upload for the collection."),
@@ -210,12 +210,12 @@ async def upload_dataset_collection(
         cleanup_task = functools.partial(shutil.rmtree, tmpdir, ignore_errors=True)
         await to_thread.run_sync(cleanup_task)
 
-@router.get(
-    "/{history_id}/contents",
-    response_model=dataset.HistoryContentsResponse,
-    summary="List History Contents",
-    tags=["Histories & Data"]
-)
+# @router.get(
+#     "/{history_id}/contents",
+#     response_model=dataset.HistoryContentsResponse,
+#     summary="List History Contents",
+#     tags=["Histories & Data"]
+# )
 async def list_history_contents(
     history_id: str = Path(..., description="The ID of the Galaxy history.")
 ):
@@ -238,12 +238,12 @@ async def list_history_contents(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list history contents: {e}")
 
-@router.post(
-    "/{history_id}/create_collection",
-    response_model=dataset.CollectionResponse,
-    summary="Create a Dataset Collection from pre-existing history",
-    tags=["Histories & Data"]
-)
+# @router.post(
+#     "/{history_id}/create_collection",
+#     response_model=dataset.CollectionResponse,
+#     summary="Create a Dataset Collection from pre-existing history",
+#     tags=["Histories & Data"]
+# )
 async def create_dataset_collection(
     history_id: str = Path(..., description="The ID of the Galaxy history."),
     collection_details: dataset.CollectionCreate = Body(...)

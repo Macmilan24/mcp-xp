@@ -125,12 +125,12 @@ async def upload_workflow(
             os.remove(tmp_path)
         raise HTTPException(status_code=500, detail=f"An error occurred: {e}")  
  
-@router.get(
-    "/{workflow_id}/form",
-    response_class=HTMLResponse,
-    summary="Get Dynamic Workflow Form",
-    tags=["Workflows"]
-)
+# @router.get(
+#     "/{workflow_id}/form",
+#     response_class=HTMLResponse,
+#     summary="Get Dynamic Workflow Form",
+#     tags=["Workflows"]
+# )
 async def get_workflow_form(
     workflow_id: str = Path(..., description="The ID of the Galaxy workflow."),
     history_id: str = Query(..., description="The ID of the history to select inputs from.")
@@ -158,12 +158,12 @@ async def get_workflow_form(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build workflow form: {e}")
 
-@router.post(
-    "/{workflow_id}/histories/{history_id}/execute",
-    response_model=workflow.WorkflowExecutionResponse,
-    summary="Execute a Workflow",
-    tags=["Workflows"]
-)
+# @router.post(
+#     "/{workflow_id}/histories/{history_id}/execute",
+#     response_model=workflow.WorkflowExecutionResponse,
+#     summary="Execute a Workflow",
+#     tags=["Workflows"]
+# )
 async def execute_workflow(
     request: Request,
     dummy_input: str = Form(None, description="Dummy input to force form rendering the form input for the galaxy execution"), # Adding dummy form value to input request form.
