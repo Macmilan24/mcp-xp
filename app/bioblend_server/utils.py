@@ -2,16 +2,19 @@ import os
 import json
 import logging
 import asyncio
-import jwt  # PyJWT
+import jwt
 
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
-
 from contextvars import ContextVar
 from cryptography.fernet import Fernet, InvalidToken
 
 from fastmcp.server.middleware import Middleware, MiddlewareContext, CallNext
 from fastmcp.server.dependencies import get_http_headers
+
+from app.AI.llm_config._base_config import LLMModelConfig
+from app.AI.provider.gemini_provider import GeminiProvider
+from app.AI.provider.openai_provider import OpenAIProvider
 
 current_api_key_server: ContextVar[str] = ContextVar("current_api_key_server", default=None)
 
@@ -107,3 +110,19 @@ class JWTGalaxyKeyMiddleware(Middleware):
             # Not a fernet payload or parse failed; return None so fallback can apply
             self.log.debug("Fernet decryption/parsing failed for JWT claim: %s", e)
             return None
+        
+async def get_llm_response(message, llm_provider = os.environ.get("CURRENT_LLM", "gemini")):
+    with open('app/AI/llm_config/llm_config.json', 'r') as f:
+        model_config_data = json.load(f)
+    
+    if llm_provider == "gemini":
+        gemini_cfg = LLMModelConfig(model_config_data['providers']['gemini'])
+        llm = GeminiProvider(model_config=gemini_cfg)
+    elif llm_provider == "openai":
+        openai_cfg = LLMModelConfig(model_config_data['providers']['openai'])
+        llm = OpenAIProvider(model_config=openai_cfg)
+
+    # Accept either a raw string or already-formatted list[dict]
+    if isinstance(message, str):
+        message = [{"role": "user", "content": message}]
+    return await llm.get_response(message)
