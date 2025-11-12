@@ -24,7 +24,7 @@ from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessage
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 
-
+from exceptions import InternalServerErrorException
 
 load_dotenv()
 
@@ -78,7 +78,7 @@ async def list_workflows():
         await invocation_cache.clear_deleted_workflows(username)
         return workflow.WorkflowList(workflows=workflow_list)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list workflows: {e}")
+        raise InternalServerErrorException("Failed to list workflows")
     
 @router.post(
         "/upload-workflow",
@@ -123,7 +123,7 @@ async def upload_workflow(
         # Clean up in case of error
         if 'tmp_path' in locals() and os.path.exists(tmp_path):
             os.remove(tmp_path)
-        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")  
+        raise InternalServerErrorException("An error occurred")  
  
 # @router.get(
 #     "/{workflow_id}/form",
@@ -156,7 +156,7 @@ async def get_workflow_form(
         )
         return HTMLResponse(content=html_form)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to build workflow form: {e}")
+        raise InternalServerErrorException("Failed to build workflow form")
 
 # @router.post(
 #     "/{workflow_id}/histories/{history_id}/execute",
@@ -313,7 +313,7 @@ async def execute_workflow(
             tracker_id = tracker_id
         )
         # Provide a detailed error message for debugging
-        raise HTTPException(status_code=500, detail=f"Workflow execution failed: {e}")
+        raise InternalServerErrorException("Workflow execution failed")
     
 @router.get(
     "/{workflow_id}/details",
@@ -350,7 +350,7 @@ async def get_workflow_details(
                 
     except Exception as e:
         # detailed error responses
-        raise HTTPException(status_code = 500 , detail= f'Show workflow failed {e}')
+        raise InternalServerErrorException('Show workflow failed')
     
 @router.delete(
    "/DELETE",
@@ -398,5 +398,5 @@ async def delete_workflows(
         return Response(status_code=204)
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to process workflow deletion: {e}")
+        raise InternalServerErrorException("Failed to process workflow deletion request")
         # TODO: Need to find way to make the deletion not affect the published workflow usecase(workflow publication).

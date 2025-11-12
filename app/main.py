@@ -25,6 +25,13 @@ from app.api.socket_manager import ws_manager, SocketMessageEvent
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 
+from app.exceptions import (
+    http_exception_handler,
+    generic_exception_handler,  
+    UnauthorizedException,
+    InternalServerErrorException
+    )
+
 load_dotenv()
 
 # Global variables for cache and background tasks
@@ -150,6 +157,9 @@ app.add_middleware(JWTGalaxyKeyMiddleware)
 app.add_middleware(RateLimiterMiddleware)
 app.add_middleware(DomainCORSMiddleware)
 
+app.add_exception_handler(HTTPException, http_exception_handler)
+app.add_exception_handler(Exception, generic_exception_handler)
+
 # Include the API router
 app.include_router(api_router, prefix="/api")
 
@@ -271,19 +281,19 @@ async def get_create_galaxy_user_and_key(
                 logger.error(f"Error connecting to galaxy instance when generating api: {e}")   
 
             except HTTPException as e: 
-                raise HTTPException(status_code=400, detail= f"error getting/creating galaxy user: {e}")
+                raise InternalServerErrorException("Error getting/creating galaxy user")
             except Exception as e:
                 logger.error(f"Error: {e}")
                 raise
         elif e.response.status_code == 401:
             logger.error(f"Unauthorized admin id: {e}")
-            raise HTTPException(status_code=401, detail= f"Unauthorized admin id: {e}")
+            raise UnauthorizedException("Unauthorized admin id")
         else:
-            raise Exception(f"error caused during getting api_key for the user: {e}")
+            raise InternalServerErrorException("Error caused during getting api_key for the user")
 
     except HTTPException as e:
         logger.error(f"errror creating user acount: {e}")
-        raise HTTPException(status_code= 500, detail=f"error creating user account: {str(e)}")
+        raise InternalServerErrorException("error creating user account")
     except Exception as e:
         logger.error(f"Error: {e}")
         raise
@@ -309,7 +319,7 @@ async def get_create_galaxy_user_and_key(
 
     except HTTPException as e:
         logger.error(f"error creating galaxy user api key: {e}")
-        raise HTTPException(status=500, detail= f"error getting galaxy user api-key: {e}")
+        raise InternalServerErrorException("error getting galaxy user api-key")
     except Exception as e:
         logger.error(f"Error: {e}")
 

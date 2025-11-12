@@ -16,6 +16,8 @@ from cryptography.fernet import Fernet, InvalidToken
 from urllib.parse import urlparse
 from starlette.types import ASGIApp
 
+import jwt
+from exceptions import UnauthorizedException
 from app.context import current_api_key
 
 GALAXY_API_TOKEN = "galaxy_api_token"
@@ -100,7 +102,7 @@ class JWTGalaxyKeyMiddleware(BaseHTTPMiddleware):
             return payload
         except jwt.InvalidTokenError as e:
             self.log.error("Invalid JWT: %s", e)
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid JWT: {e}")
+            raise UnauthorizedException("Invalid JWT token")
 
     async def _decrypt_api_token(self, token_str: str) -> Optional[str]:
         """

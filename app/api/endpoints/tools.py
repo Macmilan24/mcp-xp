@@ -14,6 +14,8 @@ from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.executor.tool_manager import ToolManager
 from app.api.socket_manager import ws_manager
 
+from exceptions import InternalServerErrorException
+
 log = logging.getLogger("tool_endpoints")
 
 router = APIRouter()
@@ -48,7 +50,7 @@ async def get_tool_form(
 
         return HTMLResponse(content = html_form)
     except Exception as e:
-        raise HTTPException(status_code = 500 , detail = f"failed to build tool form: {e}")
+        raise InternalServerErrorException("Failed to build tool form")
     
 # @router.post(
 #     "/{tool_id:path}/histories/{history_id}/execute",
@@ -148,4 +150,4 @@ async def execute_tool(
     
     except Exception as e:
         log.error(f"Error executing tool: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Tool execution failed: {str(e)}")
+        raise InternalServerErrorException("Tool execution failed")

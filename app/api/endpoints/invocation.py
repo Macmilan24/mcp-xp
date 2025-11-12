@@ -28,6 +28,7 @@ from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessage
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 
+from exceptions import InternalServerErrorException, NotFoundException
 
 # Helper functions and redis instantiation
 logger = logging.getLogger("invocation")
@@ -165,10 +166,7 @@ async def list_invocations(
             return await _handle_partial_failure(api_key, workflow_id, history_id)
         except Exception as fallback_error:
             logger.error(f"Fallback also failed: {fallback_error}")
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Failed to list invocations: {str(e)}"
-            )
+            raise InternalServerErrorException("Failed to list invocations")
 
 
 async def _fetch_core_data(cache: InvocationCache, username: str, workflow_manager: WorkflowManager, workflow_id: str, history_id: str):
@@ -473,7 +471,7 @@ async def invocation_report_pdf(
     except Exception as exc:
         # Clean up immediately on error
         await run_sync(_rmtree_sync, tmpdir)
-        raise HTTPException(status_code=500, detail=f"Failed to get PDF invocation report: {exc}")
+        raise InternalServerErrorException("Failed to get PDF invocation report")
   
   
 async def structure_outputs(_invocation: Invocation, outputs: Dict[str, list], workflow_manager: WorkflowManager, failure: bool = False):
@@ -652,7 +650,7 @@ async def structure_inputs(inv: Dict, workflow_manager: WorkflowManager):
         
         logger.info("Structuring invocation inputs for result.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"structuring input structure failed: {e}")
+        raise InternalServerErrorException("structuring input structure failed")
     
     return inputs_formatted
 
@@ -835,7 +833,7 @@ async def show_invocation_result(
         # Step 1: Check if deleted
         deleted = await invocation_cache.get_deleted_invocations(username)
         if invocation_id in deleted:
-            raise HTTPException(status_code=404, detail="Invocation not found")
+            raise NotFoundException("Invocation not found")
 
         # Step 2: Check cache for full result
         cached_result = await invocation_cache.get_invocation_result(username, invocation_id)
@@ -856,7 +854,7 @@ async def show_invocation_result(
             )
         )
         if not _invocation:
-            raise HTTPException(status_code=404, detail="Invocation not found")
+            raise NotFoundException("Invocation not found")
 
         # Fetch common details for partial response
         mapping = await invocation_cache.get_invocation_workflow_mapping(username)
@@ -866,7 +864,7 @@ async def show_invocation_result(
             mapping = await invocation_cache.get_invocation_workflow_mapping(username)
             
         if not mapping or invocation_id not in mapping:
-            raise HTTPException(status_code=500, detail = "could not find workflow details with the invocation id inputted.")
+            raise InternalServerErrorException("could not find workflow details with the invocation id inputted.")
         
         stored_workflow_id = mapping.get(invocation_id, {}).get('workflow_id')
 
@@ -883,7 +881,7 @@ async def show_invocation_result(
                     logger.warning(f"coudn't retreive from cache: {e}")
                     
         if workflow_description is None:
-            raise HTTPException(500, detail="Could not locate workflow description in cache.")
+            raise InternalServerErrorException("Could not locate workflow description in cache.")
 
         inputs_formatted = await structure_inputs(inv=invocation_details, workflow_manager=workflow_manager)
         
@@ -964,7 +962,7 @@ async def show_invocation_result(
         return invocation.InvocationResult(**invocation_result)
     except Exception as e:
         logger.error(f"Error getting invocation result: {e}")
-        raise HTTPException(status_code=500, detail= f"Error getting invocation result: {e}")
+        raise InternalServerErrorException("Error getting invocation result")
 
 
 async def _cancel_invocation_and_delete_data(invocation_ids: List[str], workflow_manager: WorkflowManager, username: str):
@@ -1046,4 +1044,4 @@ async def delete_invocations(
 
         return Response(status_code=204)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete invocations: {e}")
+        raise InternalServerErrorException("Failed to delete invocations")
