@@ -460,8 +460,8 @@ async def invocation_report_pdf(
         raise HTTPException(status_code=500, detail=f"Failed to get PDF invocation report: {exc}")
   
   
-async def structure_outputs(_invocation: Invocation, outputs: Dict[str, list], workflow_manager: WorkflowManager):
-
+async def structure_outputs(_invocation: Invocation, outputs: Dict[str, list], workflow_manager: WorkflowManager, failure: bool = False):
+    """Strcucture invocation result outputs, datasets, collection and reports"""
     # Prepare workflow invocation results
     invocation_report = workflow_manager.gi_object.gi.invocations.get_invocation_report(_invocation.id)
     
@@ -536,8 +536,19 @@ async def structure_outputs(_invocation: Invocation, outputs: Dict[str, list], w
         
         logger.info(f"output datasets formatted: {len(final_output_dataset)}, collection datasets formatted: {len(final_collection_dataset)}")
         
-        
-        
+        if failure:
+            return final_output_dataset + final_collection_dataset, None
+        else:
+            # Prepare workflow invocation results
+            invocation_report_dict = await asyncio.to_thread(
+                    workflow_manager.gi_object.gi.invocations.get_invocation_report,
+                    invocation_id = _invocation.id
+                    )
+            invocation_report = (
+                f"### {invocation_report_dict.get('title', '')}\n\n"
+                f"{invocation_report_dict.get('markdown', '')}"
+            )
+                
         return final_output_dataset + final_collection_dataset, invocation_report
 
     except Exception as e:
@@ -629,6 +640,71 @@ async def structure_inputs(inv: Dict, workflow_manager: WorkflowManager):
     
     return inputs_formatted
 
+async def report_invocation_failure(galaxy_client: GalaxyClient, invocation_id: str)-> str:
+    """Report falure error for an invocation"""
+    
+    explanation = ""
+    failed_job_descriptions = []
+    
+    # Get invocation jobs
+    try:
+        invocation_jobs = galaxy_client.gi_client.jobs.get_jobs(invocation_id=invocation_id)
+    except Exception as e:
+        logger.error(f"Error retrieving invocation jobs: {str(e)}")
+        explanation += f"Error retrieving invocation jobs: {str(e)}\n"
+        return explanation
+    
+    # Prepare concurrent tasks for failed jobs
+    failed_job_tasks = []
+    for inv_job in invocation_jobs:
+        if inv_job.get("state") == 'error':
+            job_id = inv_job.get("id")
+            if job_id:
+                failed_job_tasks.append(
+                            asyncio.to_thread(galaxy_client.gi_client.jobs.show_job, job_id = job_id, full_details=True)
+                        )
+        
+    if failed_job_tasks:
+        try:
+            job_details_list = await asyncio.gather(*failed_job_tasks)
+            logger.info(f"Number of failed jobs in invocation {len(job_details_list)}")
+        except Exception as e:
+            logger.error(f"Error retrieving job details concurrently: {str(e)}")
+            explanation += f"Error retrieving failed job details: {str(e)}\n"
+            return explanation
+        
+        for job_details in job_details_list:
+            try:
+                # Extract the key error describers
+                tool_id = job_details.get('tool_id', "Unknown")
+                stderr_output = job_details.get('stderr') or job_details.get('tool_stderr') or job_details.get('job_stderr') or ""
+                std_out = job_details.get('stdout') or job_details.get('tool_stdout') or ""
+                exit_code = job_details.get('exit_code')
+
+                # Create a structured failure summary
+                error_description = f"Tool `{tool_id}` failed during execution.\n"
+                
+                if std_out:
+                    error_description += f"  - Job Message Logs: {std_out}\n"
+                if exit_code:
+                    error_description += f"  - Exit code: {exit_code}\n"
+                if stderr_output:
+                    error_description += f"  - Error message: {stderr_output.strip()}\n"
+
+                
+                failed_job_descriptions.append(error_description)
+            except Exception as e:
+                logger.error(f"Error processing job details: {str(e)}")
+                explanation += f"Error processing failed job details: {str(e)}\n"
+    
+    if failed_job_descriptions:
+        explanation += "\n\nFailed Jobs Detected:\n" + "\n".join(failed_job_descriptions) + "\n"
+    
+    else:
+        explanation += "\nNo failed jobs detected in this invocation.\n"
+        
+    return explanation
+
 async def background_track_and_cache(
     invocation_id: str,
     galaxy_client: GalaxyClient,
@@ -665,11 +741,17 @@ async def background_track_and_cache(
         # Set invocation to cache
         await invocation_cache.set_invocation_state(username, invocation_id, inv_state)
 
-        workflow_result, invocation_report = await structure_outputs(
+        if inv_state == "Failed":
+            
+            invocation_report = await report_invocation_failure(galaxy_client, invocation_id)
+            workflow_result, _ = await structure_outputs(
+            _invocation=_invocation, outputs=outputs, workflow_manager=workflow_manager, failure = True
+            )
+        else:
+            workflow_result, invocation_report = await structure_outputs(
             _invocation=_invocation, outputs=outputs, workflow_manager=workflow_manager
-        )
-
-               
+            )
+            
         result_dict = {
             "invocation_id": invocation_id,
             "state": inv_state,
