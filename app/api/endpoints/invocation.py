@@ -35,8 +35,23 @@ redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.en
 invocation_cache = InvocationCache(redis_client)
 invocation_background = InvocationBackgroundTasks(cache = invocation_cache, redis_client=redis_client)
 
+# Helper functions
 def _rmtree_sync(path: pathlib.Path):
     shutil.rmtree(path, ignore_errors=True)
+    
+def log_task_error(task: asyncio.Task, *, task_name: str) -> None:
+    """Log errors from completed background tasks."""
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        logger.info(f"Background task '{task_name}' was cancelled.")
+        return
+    
+    if exc is not None:
+        logger.error(
+            f"Background task '{task_name}' failed",
+            exc_info=exc,
+        )
 
 router = APIRouter()
 
@@ -272,7 +287,7 @@ async def _fetch_core_data(cache: InvocationCache, username: str, workflow_manag
         
     except Exception as e:
         logger.error(f"Error in parallel data fetching: {e}")
-        return [], [], set()
+        return [], []
 
 async def _format_invocations(username, invocations_data: list[dict], workflow_mapping: dict[str, dict]):
     """Format invocations with optimized state mapping"""
@@ -848,19 +863,26 @@ async def show_invocation_result(
             logger.warning("workflow to invocation map not found, warming user cache.")
             await invocation_background.warm_user_cache(token = "dummytoken", api_key=api_key) # using a dummy token to fill the functionality
             mapping = await invocation_cache.get_invocation_workflow_mapping(username)
-        if mapping:
-            stored_workflow_id = mapping.get(invocation_id, {}).get('workflow_id')
-
-            workflow_description_list = await invocation_cache.get_workflows_cache(username)
-            if workflow_description_list:
-                for _workflow in workflow_description_list:
-                    try:
-                        if stored_workflow_id == _workflow.get("id"):
-                            workflow_description = workflow.WorkflowListItem(**_workflow)
-                    except Exception as e:
-                        logger.warning(f"coudn't retreive from cache: {e}")
-        if not mapping:
+            
+        if not mapping or invocation_id not in mapping:
             raise HTTPException(status_code=500, detail = "could not find workflow details with the invocation id inputted.")
+        
+        stored_workflow_id = mapping.get(invocation_id, {}).get('workflow_id')
+
+        # Retrieve workflow description
+        workflow_description_list = await invocation_cache.get_workflows_cache(username)
+        workflow_description = None
+        
+        if workflow_description_list:
+            for _workflow in workflow_description_list:
+                try:
+                    if stored_workflow_id == _workflow.get("id"):
+                        workflow_description = workflow.WorkflowListItem(**_workflow)
+                except Exception as e:
+                    logger.warning(f"coudn't retreive from cache: {e}")
+                    
+        if workflow_description is None:
+            raise HTTPException(500, detail="Could not locate workflow description in cache.")
 
         inputs_formatted = await structure_inputs(inv=invocation_details, workflow_manager=workflow_manager)
         
@@ -873,35 +895,36 @@ async def show_invocation_result(
         else:
             logger.warning(f"Unknown invocation state: {state}")
             inv_state = "Failed"
-
-      
-        invocation_result = {
-            "invocation_id" : invocation_details.get("id"),
-            "state" : inv_state,
-            "history_id" : invocation_details.get("history_id"),
-            "create_time" : invocation_details.get("create_time"),
-            "update_time" :invocation_details.get("update_time"),
-            "inputs" : inputs_formatted,
-            "result" : [],
-            "workflow" : workflow_description.model_dump(),
-            "report" : None 
-        }
-        
-        await invocation_cache.set_invocation_result(
-            username = username, 
-            invocation_id = invocation_details.get("id"),
-            result = invocation_result,
-            )
         
         # If pending-like, trigger background tracking if not already
         tracking_key = f"tracking:{api_key}:{invocation_id}"
         
         if inv_state == "Pending":
-            exists = await run_in_threadpool(redis_client.exists, tracking_key)
-            if not exists:
-                await run_in_threadpool(redis_client.setex, tracking_key, 3600, "1")
+            
+            invocation_result = {
+                "invocation_id" : invocation_details.get("id"),
+                "state" : inv_state,
+                "history_id" : invocation_details.get("history_id"),
+                "create_time" : invocation_details.get("create_time"),
+                "update_time" :invocation_details.get("update_time"),
+                "inputs" : inputs_formatted,
+                "result" : [],
+                "workflow" : workflow_description.model_dump(),
+                "report" : None 
+            }
+            
+            await invocation_cache.set_invocation_result(
+                username = username, 
+                invocation_id = invocation_details.get("id"),
+                result = invocation_result,
+                )
+            
+            set_result = await run_in_threadpool(
+                redis_client.set, tracking_key, "1", ex=3600, nx=True
+            )
+            if set_result: 
                 
-                asyncio.create_task(
+                background_task = asyncio.create_task(
                     background_track_and_cache(
                         invocation_id = invocation_id,
                         galaxy_client = galaxy_client,
@@ -915,14 +938,31 @@ async def show_invocation_result(
                         tracking_key = tracking_key
                         )
                     )
+                background_task.add_done_callback(lambda t: log_task_error(t, task_name="track invocation"))
+        else:
+            logger.info(f"Loading invocation failure report for invocation {invocation_id}")
+            invocation_report = await report_invocation_failure(galaxy_client = galaxy_client, invocation_id = invocation_id)
+            invocation_result = {
+                "invocation_id" : invocation_details.get("id"),
+                "state" : inv_state,
+                "history_id" : invocation_details.get("history_id"),
+                "create_time" : invocation_details.get("create_time"),
+                "update_time" :invocation_details.get("update_time"),
+                "inputs" : inputs_formatted,
+                "result" : [],
+                "workflow" : workflow_description.model_dump(),
+                "report" : invocation_report 
+            }
+            
+            await invocation_cache.set_invocation_result(
+                username = username, 
+                invocation_id = invocation_details.get("id"),
+                result = invocation_result,
+                )
         
         return invocation.InvocationResult(**invocation_result)
     except Exception as e:
-        import traceback
-        import sys
-
-        # Print the full traceback
-        traceback.print_exception(type(e), e, e.__traceback__, file=sys.stderr)
+        logger.error(f"Error getting invocation result: {e}")
         raise HTTPException(status_code=500, detail= f"Error getting invocation result: {e}")
 
 
@@ -1000,7 +1040,8 @@ async def delete_invocations(
         
 
         # Spawn async deletion tasks
-        asyncio.create_task(_cancel_invocation_and_delete_data(ids_list, workflow_manager, username))
+        background_task = asyncio.create_task(_cancel_invocation_and_delete_data(ids_list, workflow_manager, username))
+        background_task.add_done_callback(lambda t: log_task_error(t, task_name="Invocation cancelling and data deletion"))
 
         return Response(status_code=204)
     except Exception as e:
