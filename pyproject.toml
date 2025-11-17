@@ -9,3 +9,6 @@ dependencies = [
     "requests>=2.32.3",
     "beeai-framework==0.1.4",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
