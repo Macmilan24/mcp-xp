@@ -104,8 +104,9 @@ async def list_invocations(
 
             return invocation.InvocationList(**response_data)
         
-        # Step 3: Initialize Galaxy client and workflow manager
-        
+        # Step 3: Initialize Galaxy client and workflow manager give it time for new invocations to be registerd under list
+        # TODO: sleeping is a temporary solution, find a permanent solution for this.
+        await asyncio.sleep(2)
         workflow_manager = WorkflowManager(galaxy_client)
         
         # Step 4: Fetch data with parallel processing and caching
