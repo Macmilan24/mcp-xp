@@ -17,8 +17,9 @@ from urllib.parse import urlparse
 from starlette.types import ASGIApp
 
 import jwt
-from exceptions import UnauthorizedException
 from app.context import current_api_key
+
+from exceptions import UnauthorizedException
 
 GALAXY_API_TOKEN = "galaxy_api_token"
 
@@ -48,10 +49,7 @@ class JWTGalaxyKeyMiddleware(BaseHTTPMiddleware):
 
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "Authorization header with Bearer token is required."},
-            )
+            return UnauthorizedException("Authorization header with Bearer token is required.")
 
         token = auth.split(" ")[1].strip()
         try:
@@ -62,18 +60,12 @@ class JWTGalaxyKeyMiddleware(BaseHTTPMiddleware):
         # Extract the API token claim
         if GALAXY_API_TOKEN not in payload:
             self.log.error("JWT missing API key claim '%s'", GALAXY_API_TOKEN)
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": f"JWT missing required claim '{GALAXY_API_TOKEN}'."},
-            )
+            return UnauthorizedException("JWT missing required claim")
 
         galaxy_jwt_token = payload[GALAXY_API_TOKEN]
         if not galaxy_jwt_token:
             self.log.error("Empty API key claim")
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "API key claim is empty."},
-            )
+            return UnauthorizedException("API key claim is empty.")
 
         # Try to decrypt claim_value (it might be the fernet token string produced by register-user)
         apikey = await self._decrypt_api_token(galaxy_jwt_token)
@@ -83,10 +75,7 @@ class JWTGalaxyKeyMiddleware(BaseHTTPMiddleware):
                 apikey = galaxy_jwt_token.strip()
             else:
                 self.log.error("Unable to obtain Galaxy API key from JWT claim")
-                return JSONResponse(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"detail": "Invalid API key in JWT claim."},
-                )
+                return UnauthorizedException("Invalid API key in JWT claim.")
 
         # set the context for downstream handlers
         current_api_key.set(apikey)
