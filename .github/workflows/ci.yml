@@ -44,6 +44,16 @@ jobs:
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics --verbose --format='%(path)s:%(row)d:%(col)d: %(code)s %(text)s'
     
     - name: Run tests with coverage
+      env:
+          # Dummy env values for testing and ci
+          SECRET_KEY: this-is-a-dummy-key-for-ci-only-1234567890==
+          GALAXY_URL: http://test-galaxy
+          GALAXY_API_KEY: test-galaxy-key
+          APP_PORT: "8895"
+          MCP_PORT: "8897"
+          REDIS_PORT: "6389"
+          QDRANT_HTTP_PORT: "6555"
+          QDRANT_GRPC_PORT: "6556"
       run: |
         chmod +x ./run_tests.sh
         ./run_tests.sh
