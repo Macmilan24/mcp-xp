@@ -201,6 +201,7 @@ class TestExplainGalaxyWorkflowInvocationTool:
         }
         report_data = {'title': 'Test Workflow', 'markdown' : 'reports'}
         
+        
         mock_client_instance.gi_client.invocations.show_invocation.return_value = invocation_data
         mock_client_instance.gi_client.invocations.get_invocation_report.return_value = report_data
         mock_galaxy_client.return_value = mock_client_instance
@@ -213,14 +214,18 @@ class TestExplainGalaxyWorkflowInvocationTool:
         def side_effect(func):
             return func()
         mock_to_thread.side_effect = side_effect
-        
-        result = await explain_galaxy_workflow_invocation(
-            invocation_id="inv_123",
-            failure=False
-        ) 
+
+        with patch("app.bioblend_server.server.get_llm_response", new_callable=AsyncMock) as mock_llm_response:     
+            
+            mock_llm_response.return_value = "successful invocation report"
+            result = await explain_galaxy_workflow_invocation(
+                invocation_id="inv_123",
+                failure=False
+            ) 
         
         assert f"Loading workflow Invocation with ID:" in caplog.text
         assert f"Loading summarized report for successful invocation." in caplog.text
+        assert result == "successful invocation report"
         inv_explainer_test_log.info("TEST: test_successful_invocation_explanation PASSED.")
     
     @pytest.mark.asyncio
@@ -268,14 +273,17 @@ class TestExplainGalaxyWorkflowInvocationTool:
             return func()
 
         mock_to_thread.side_effect = lambda func: mock_thread_sync(func)
-        
-        result = await explain_galaxy_workflow_invocation(
-            invocation_id="inv_456",
-            failure=True
-        )
-        
+        with patch("app.bioblend_server.server.get_llm_response", new_callable=AsyncMock) as mock_llm_response:     
+            
+            mock_llm_response.return_value = "Failed invocation report"
+            result = await explain_galaxy_workflow_invocation(
+                invocation_id="inv_456",
+                failure=True
+            )
+            
         assert f"Loading workflow Invocation with ID:" in caplog.text
         assert f"Loading failure explanation and suggestions for invocation." in caplog.text
+        assert result == "Failed invocation report"
         
         inv_explainer_test_log.info("TEST: test_failed_invocation_with_error_jobs PASSED.")
         
@@ -311,13 +319,17 @@ class TestExplainGalaxyWorkflowInvocationTool:
 
         mock_to_thread.side_effect = lambda func: mock_thread_sync(func)
         
-        result = await explain_galaxy_workflow_invocation(
-            invocation_id="inv_789",
-            failure=False
-        )
+        with patch("app.bioblend_server.server.get_llm_response", new_callable=AsyncMock) as mock_llm_response:     
+            
+            mock_llm_response.return_value = "Pending invocation report"
+            result = await explain_galaxy_workflow_invocation(
+                invocation_id="inv_789",
+                failure=False
+            )
         
         assert f"Loading workflow Invocation with ID:" in caplog.text
         assert f"Loading summarized report for successful invocation." in caplog.text
+        assert result == "Pending invocation report"
         mock_create_task.assert_called_once()
         inv_explainer_test_log.info("TEST: test_scheduled_invocation PASSED.")
     
