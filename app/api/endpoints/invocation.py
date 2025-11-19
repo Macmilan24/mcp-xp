@@ -30,7 +30,7 @@ from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 from app.orchestration.utils import NumericLimits
 
-from exceptions import InternalServerErrorException, NotFoundException
+from app.exceptions import InternalServerErrorException, NotFoundException
 
 # Helper functions and redis instantiation
 logger = logging.getLogger("invocation")
