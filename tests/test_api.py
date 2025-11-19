@@ -16,6 +16,7 @@ path.append(".")
 
 from app.log_setup import configure_logging
 from app.context import current_api_key
+from app.exceptions import InternalServerErrorException
 
 # Configure test logging
 configure_logging()
@@ -370,37 +371,34 @@ class TestRegisterUserEndpoint:
         caplog.set_level(logging.INFO)
         client.mock_import_workflows.reset_mock()
         
-        with patch('httpx.AsyncClient') as mock_httpx:
-            mock_client = AsyncMock()
-            mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_httpx.return_value.__aexit__ = AsyncMock(return_value=None)
+        with patch('app.main.httpx.AsyncClient') as mock_async_client_cls:
+            mock_instance = AsyncMock()
+            mock_async_client_cls.return_value.__aenter__.return_value = mock_instance
 
-            # Mock 500 error response
-            mock_bad_resp = MagicMock()
-            mock_bad_resp.status_code = 500
-            create_error = httpx.HTTPStatusError(
-                message="Internal Server Error", 
-                request=MagicMock(), 
-                response=mock_bad_resp
-            )
-            mock_bad_resp.raise_for_status = MagicMock(side_effect=create_error)
-            mock_client.post = AsyncMock(return_value=mock_bad_resp)
-
-            logger.debug("Making error request")
-            # The endpoint raises a generic Exception for 500 errors
-            with pytest.raises(Exception, match="error caused during getting api_key for the user"):
-                client.post(
-                    "/register-user",
-                    params={"email": "error@example.com", "password": "pass"}
-                )
-            logger.debug("Exception raised as expected")
+            mock_resp = MagicMock()
+            mock_resp.status_code = 500
+            mock_resp.json = MagicMock(return_value={})
             
-            # import_published_workflows should NOT be called on error
+            mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+                message="Internal Server Error",
+                request=MagicMock(),
+                response=mock_resp,
+            )
+
+            mock_instance.post.return_value = mock_resp
+
+            # The app catches InternalServerErrorException and returns a 500 response.
+            response = client.post(
+                "/register-user",
+                params={"email": "error@example.com", "password": "pass"},
+            )
+                
+            # Expect a 500 HTTP status code
+            assert response.status_code == 500
             client.mock_import_workflows.assert_not_called()
 
             # Verify endpoint logs
             assert "creating galaxy user account from galaxy service." in caplog.text
-            
             logger.info("TEST: test_register_user_generic_error PASSED")
 
     def test_register_user_api_key_creation_fails(self, client, caplog):

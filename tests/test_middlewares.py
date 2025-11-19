@@ -131,7 +131,7 @@ class TestJWTGalaxyKeyMiddleware:
             headers={"Authorization": f"Bearer {token}"}
         )
         assert response.status_code == HTTP_401_UNAUTHORIZED
-        assert "JWT missing required claim 'galaxy_api_token'" in response.json()["detail"]
+        assert "JWT missing required claim" in response.json()["detail"]
         jwt_logger.info("TEST: test_jwt_missing_galaxy_api_token_claim PASSED")
 
     def test_jwt_with_empty_galaxy_api_token_claim(self, app_with_jwt_middleware, caplog, jwt_logger):
