@@ -15,6 +15,7 @@ from starlette.responses import JSONResponse
 from cryptography.fernet import Fernet, InvalidToken
 from urllib.parse import urlparse
 from starlette.types import ASGIApp
+from starlette.status import HTTP_204_NO_CONTENT
 
 import jwt
 from app.context import current_api_key
@@ -447,7 +448,7 @@ class DomainCORSMiddleware(BaseHTTPMiddleware):
                 return self._preflight_response(allow_origin)
             else:
                 # Return 204 with no CORS headers - browser will block
-                return Response(status_code=204)
+                return Response(status_code=HTTP_204_NO_CONTENT)
 
         # Process actual request
         response = await call_next(request)
@@ -481,4 +482,4 @@ class DomainCORSMiddleware(BaseHTTPMiddleware):
             "Access-Control-Max-Age": str(self.max_age),
             "Vary": "Origin",
         }
-        return Response(status_code=204, headers=headers)
+        return Response(status_code=HTTP_204_NO_CONTENT, headers=headers)

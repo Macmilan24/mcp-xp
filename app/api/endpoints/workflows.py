@@ -15,6 +15,7 @@ from fastapi import APIRouter, UploadFile, File, Path, Query, Form, Request, HTT
 from fastapi.responses import HTMLResponse
 from fastapi.concurrency import run_in_threadpool
 from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
+from starlette.status import HTTP_204_NO_CONTENT
 
 from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
@@ -23,6 +24,7 @@ from app.api.schemas import workflow
 from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
+from app.orchestration.utils import NumericLimits
 
 from exceptions import InternalServerErrorException
 
@@ -356,7 +358,7 @@ async def get_workflow_details(
    "/DELETE",
     summary="Delete workflows",
     tags=["Workflows"],
-    status_code=204
+    status_code=HTTP_204_NO_CONTENT
 )
 async def delete_workflows(
     workflow_ids: str = Path(..., description="Comma-separated IDs of the Galaxy workflows to delete")
@@ -373,7 +375,7 @@ async def delete_workflows(
         ids_list = [i.strip() for i in workflow_ids.split(",") if i.strip()]
 
         # Define semaphore with a limit
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT)
 
         # Define background task for deleting workflows with semaphore
         async def delete_workflow_with_semaphore(workflow_id: str):
@@ -395,7 +397,7 @@ async def delete_workflows(
         # Add workflow IDs44 to deleted set in Redis (foreground)
         await invocation_cache.add_deleted_workflows(username, ids_list)
 
-        return Response(status_code=204)
+        return Response(status_code=HTTP_204_NO_CONTENT)
 
     except Exception as e:
         raise InternalServerErrorException("Failed to process workflow deletion request")

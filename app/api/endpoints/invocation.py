@@ -19,6 +19,7 @@ from fastapi import APIRouter, Path, Query, HTTPException, BackgroundTasks, Resp
 from fastapi.responses import  FileResponse
 from fastapi.concurrency import run_in_threadpool
 from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation, Invocation
+from starlette.status import HTTP_204_NO_CONTENT
 
 from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
@@ -27,6 +28,7 @@ from app.api.schemas import invocation, workflow
 from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
+from app.orchestration.utils import NumericLimits
 
 from exceptions import InternalServerErrorException, NotFoundException
 
@@ -107,7 +109,7 @@ async def list_invocations(
         
         # Step 3: Initialize Galaxy client and workflow manager give it time for new invocations to be registerd under list
         # TODO: sleeping is a temporary solution, find a permanent solution for this.
-        await asyncio.sleep(2)
+        await asyncio.sleep(NumericLimits.SHORT_SLEEP)
         workflow_manager = WorkflowManager(galaxy_client)
         
         # Step 4: Fetch data with parallel processing and caching
@@ -185,24 +187,24 @@ async def _fetch_core_data(cache: InvocationCache, username: str, workflow_manag
                     workflow_manager.gi_object.gi.invocations.get_invocations,
                     workflow_id=workflow_id,
                     history_id=history_id,
-                    limit = 100
+                    limit = NumericLimits.INVOCATION_LIMIT
                 )
             elif history_id:
                 invocations = await run_in_threadpool(
                     workflow_manager.gi_object.gi.invocations.get_invocations,
                     history_id=history_id,
-                    limit = 100
+                    limit = NumericLimits.INVOCATION_LIMIT
                 )
             elif workflow_id:
                 invocations = await run_in_threadpool(
                     workflow_manager.gi_object.gi.invocations.get_invocations,
                     workflow_id=workflow_id,
-                    limit = 100
+                    limit = NumericLimits.INVOCATION_LIMIT
                 )
             else:
                 invocations = await run_in_threadpool(
                     workflow_manager.gi_object.gi.invocations.get_invocations,
-                    limit = 100
+                    limit = NumericLimits.INVOCATION_LIMIT
                 )
 
             # Cache the results
@@ -225,7 +227,7 @@ async def _fetch_core_data(cache: InvocationCache, username: str, workflow_manag
         recent = await run_in_threadpool(
             workflow_manager.gi_object.gi.invocations.get_invocations,
             **filter_params,
-            limit = 100
+            limit = NumericLimits.INVOCATION_LIMIT
         )
         
         has_new_or_updated = False
@@ -488,7 +490,7 @@ async def structure_outputs(_invocation: Invocation, outputs: Dict[str, list], w
         # Format the outputs (Pydantic schemas could be added here for validation)
         final_output_dataset = []
         final_collection_dataset = []
-        semaphore = asyncio.Semaphore(15)
+        semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT)
         
         async def structure_and_append(output_id: str, store_list: list, collection: bool):
             async with semaphore:
@@ -919,7 +921,7 @@ async def show_invocation_result(
                 )
             
             set_result = await run_in_threadpool(
-                redis_client.set, tracking_key, "1", ex=3600, nx=True
+                redis_client.set, tracking_key, "1", ex=NumericLimits.BACKGROUND_INVOCATION_TRACK, nx=True
             )
             if set_result: 
                 
@@ -985,7 +987,7 @@ async def _cancel_invocation_and_delete_data(invocation_ids: List[str], workflow
                     invocation_id=invocation_id
                 )
                 # Short wait for cancellation to propagate (or implement polling for state change)
-                await asyncio.sleep(2)
+                await asyncio.sleep(NumericLimits.SHORT_SLEEP)
 
             # Get outputs and purge datasets/collections to free space
             outputs, _, _ = await workflow_manager.track_invocation(
@@ -1012,7 +1014,7 @@ async def _cancel_invocation_and_delete_data(invocation_ids: List[str], workflow
     "/DELETE",
     summary="Delete workflow invocations",
     tags=["Invocation"],
-    status_code=204
+    status_code=HTTP_204_NO_CONTENT
 )
 async def delete_invocations(
     invocation_ids: str = Query(..., description="Comma-separated IDs of the workflow invocations to delete")
@@ -1042,6 +1044,6 @@ async def delete_invocations(
         background_task = asyncio.create_task(_cancel_invocation_and_delete_data(ids_list, workflow_manager, username))
         background_task.add_done_callback(lambda t: log_task_error(t, task_name="Invocation cancelling and data deletion"))
 
-        return Response(status_code=204)
+        return Response(status_code=HTTP_204_NO_CONTENT)
     except Exception as e:
         raise InternalServerErrorException("Failed to delete invocations")

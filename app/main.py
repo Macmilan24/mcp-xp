@@ -12,6 +12,11 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 from cryptography.fernet import Fernet
 from contextlib import asynccontextmanager
+from starlette.status import (
+    HTTP_401_UNAUTHORIZED, 
+    HTTP_500_INTERNAL_SERVER_ERROR, 
+    HTTP_502_BAD_GATEWAY
+    )
 
 from fastapi import FastAPI, Request, HTTPException, Query, WebSocket, WebSocketDisconnect, Response
 from fastapi.openapi.utils import get_openapi
@@ -285,7 +290,7 @@ async def get_create_galaxy_user_and_key(
             except Exception as e:
                 logger.error(f"Error: {e}")
                 raise
-        elif e.response.status_code == 401:
+        elif e.response.status_code == HTTP_401_UNAUTHORIZED:
             logger.error(f"Unauthorized admin id: {e}")
             raise UnauthorizedException("Unauthorized admin id")
         else:
@@ -382,13 +387,13 @@ async def galaxy_proxy_login(request: Request):
     
     except httpx.ConnectError as e:
         logger.error(f"Connection error: {e}")
-        raise HTTPException(status_code=500, detail=f"Proxy connetcion error: {e}")
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Proxy connetcion error: {e}")
     except httpx.RequestError as e:
         logger.error(f"Error connecting to Galaxy: {e}")
-        raise HTTPException(status_code=502, detail=f"Galaxy server error: {e}")
+        raise HTTPException(status_code=HTTP_502_BAD_GATEWAY, detail=f"Galaxy server error: {e}")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
-        raise HTTPException(status_code=500, detail=f"Proxy error: {e}")
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Proxy error: {e}")
 
 @app.websocket("/ws/{tracker_id}")
 async def websocket_endpoint(websocket: WebSocket, tracker_id: str):

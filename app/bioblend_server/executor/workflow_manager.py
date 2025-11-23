@@ -26,6 +26,8 @@ from app.bioblend_server.executor.form_generator import WorkflowFormGenerator
 
 from app.api.socket_manager import SocketManager, SocketMessageType, SocketMessageEvent
 
+from app.orchestration.utils import NumericLimits
+
 class JobState(str, Enum):
     NEW = "new"
     RESUBMITTED = "resubmitted"
@@ -400,7 +402,7 @@ class WorkflowManager:
         """Tracks invocation steps and waits for the invocation reaches a terminal state and returns with the invocation results""" 
         
         # Safety: Semaphore to limit concurrent API calls (prevent overwhelming Galaxy server)
-        semaphore = asyncio.Semaphore(15)  # Adjust based on server capacity
+        semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT)  # Adjust based on server capacity
         
         # Helper: Fetch with semaphore
         async def _fetch_with_semaphore(coro):
