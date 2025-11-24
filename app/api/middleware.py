@@ -4,6 +4,7 @@ import logging
 import asyncio
 import time
 import redis
+import jwt
 from datetime import datetime
 
 from typing import Optional, Dict
@@ -12,16 +13,14 @@ from fastapi import Request, HTTPException, status, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from cryptography.fernet import Fernet, InvalidToken
-import jwt
+from urllib.parse import urlparse
+from starlette.types import ASGIApp
+from starlette.status import HTTP_204_NO_CONTENT
 
+import jwt
 from app.context import current_api_key
 
-# Environment / secrets
-FERNET_SECRET = os.getenv("SECRET_KEY")
-if not FERNET_SECRET:
-    raise RuntimeError("SECRET_KEY (Fernet secret) is required in env")
-fernet = Fernet(FERNET_SECRET)
-
+from exceptions import UnauthorizedException
 
 GALAXY_API_TOKEN = "galaxy_api_token"
 
@@ -41,16 +40,17 @@ class JWTGalaxyKeyMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         # Allow public paths if you need them (adjust to your app). Remove if unwanted.
+        if request.method == "OPTIONS":
+            self.log.info("Skipping options method")
+            return await call_next(request)
+        
         public_paths = {"/", "/docs", "/redoc", "/openapi.json", "/register-user"}
         if request.url.path in public_paths or request.url.path.startswith("/static/"):
             return await call_next(request)
 
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "Authorization header with Bearer token is required."},
-            )
+            return UnauthorizedException("Authorization header with Bearer token is required.")
 
         token = auth.split(" ")[1].strip()
         try:
@@ -61,18 +61,12 @@ class JWTGalaxyKeyMiddleware(BaseHTTPMiddleware):
         # Extract the API token claim
         if GALAXY_API_TOKEN not in payload:
             self.log.error("JWT missing API key claim '%s'", GALAXY_API_TOKEN)
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": f"JWT missing required claim '{GALAXY_API_TOKEN}'."},
-            )
+            return UnauthorizedException("JWT missing required claim")
 
         galaxy_jwt_token = payload[GALAXY_API_TOKEN]
         if not galaxy_jwt_token:
             self.log.error("Empty API key claim")
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "API key claim is empty."},
-            )
+            return UnauthorizedException("API key claim is empty.")
 
         # Try to decrypt claim_value (it might be the fernet token string produced by register-user)
         apikey = await self._decrypt_api_token(galaxy_jwt_token)
@@ -82,10 +76,7 @@ class JWTGalaxyKeyMiddleware(BaseHTTPMiddleware):
                 apikey = galaxy_jwt_token.strip()
             else:
                 self.log.error("Unable to obtain Galaxy API key from JWT claim")
-                return JSONResponse(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    content={"detail": "Invalid API key in JWT claim."},
-                )
+                return UnauthorizedException("Invalid API key in JWT claim.")
 
         # set the context for downstream handlers
         current_api_key.set(apikey)
@@ -101,7 +92,7 @@ class JWTGalaxyKeyMiddleware(BaseHTTPMiddleware):
             return payload
         except jwt.InvalidTokenError as e:
             self.log.error("Invalid JWT: %s", e)
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid JWT: {e}")
+            raise UnauthorizedException("Invalid JWT token")
 
     async def _decrypt_api_token(self, token_str: str) -> Optional[str]:
         """
@@ -109,6 +100,13 @@ class JWTGalaxyKeyMiddleware(BaseHTTPMiddleware):
         decrypt and parse JSON for {"apikey": "<value>"} and return the value.
         Returns None if decryption/parsing fails so caller can fallback to raw token.
         """
+        # Environment / secrets
+        FERNET_SECRET = os.getenv("SECRET_KEY")
+        if not FERNET_SECRET:
+            raise RuntimeError("SECRET_KEY (Fernet secret) is required in env")
+        
+        fernet = Fernet(FERNET_SECRET)
+        
         if not isinstance(token_str, str) or not token_str:
             return None
         loop = asyncio.get_running_loop()
@@ -132,9 +130,9 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
     Redis-based rate limiter middleware with per-endpoint and per-user limits
     """
     
-    def __init__(self, app, redis_client: redis.Redis, default_rate_limit: int = 100):
+    def __init__(self, app, default_rate_limit: int = 100, redis_client = None):
         super().__init__(app)
-        self.redis = redis_client
+        self.redis = redis_client or redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
         self.default_rate_limit = default_rate_limit
         self.log = logging.getLogger(__class__.__name__)
         
@@ -357,3 +355,131 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
             active_users_key,
             {api_key: current_time}
         )
+class DomainCORSMiddleware(BaseHTTPMiddleware):
+    """ CORS middleware that only allows requests from the same domain/hostname. """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        allow_methods: list[str] = ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers: list[str] = ["Authorization", "Content-Type", "X-Requested-With"],
+        max_age: int = 600,
+        allow_schemes: list[str] = ["http", "https"],
+        trust_proxy_headers: bool = False,  # Set True if behind reverse proxy
+    ):
+        super().__init__(app)
+        self.allow_methods = allow_methods
+        self.allow_headers = allow_headers
+        self.max_age = max_age
+        self.allow_schemes = set(scheme.lower() for scheme in allow_schemes)
+        self.trust_proxy_headers = trust_proxy_headers
+        self.log = logging.getLogger(__class__.__name__)
+
+    def _get_server_hostname(self, request: Request) -> str:
+        """Extract server hostname, handling proxy headers if configured."""
+        if self.trust_proxy_headers:
+            host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+        else:
+            host = request.headers.get("host", "")
+        
+        # Handle IPv6 and port parsing safely
+        try:
+            parsed = urlparse(f"http://{host}")
+            return (parsed.hostname or host).lower()
+        except Exception as e:
+            self.log.error(f"Failed to parse host header: {host}, error: {e}")
+            return host.split(":")[0].lower()  # Fallback
+
+    def _validate_origin(self, origin_str: str | None, server_hostname: str) -> str | None:
+        """
+        Validate origin against server hostname.
+        Returns the origin if valid, None otherwise.
+        """
+        if not origin_str:
+            return None
+
+        # Handle null origin (file://, sandboxed contexts)
+        if origin_str == "null":
+            self.log.warning("Blocked null origin request")
+            return None
+
+        try:
+            origin_parsed = urlparse(origin_str)
+            
+            # Validate origin has all required components
+            if not origin_parsed.hostname or not origin_parsed.scheme:
+                self.log.warning(f"Invalid origin format: {origin_str}")
+                return None
+
+            # Check scheme is allowed
+            if origin_parsed.scheme.lower() not in self.allow_schemes:
+                self.log.warning(
+                    f"Origin scheme not allowed: {origin_parsed.scheme} (origin: {origin_str})"
+                )
+                return None
+
+            # Check hostname matches (case-insensitive)
+            origin_hostname = origin_parsed.hostname.lower()
+    
+            # Exact match or subdomain match (e.g., api.example.com matches example.com)
+            if origin_hostname == server_hostname or origin_hostname.endswith(f".{server_hostname}"):
+                return origin_str
+            
+            self.log.warning(f"Origin hostname mismatch: {origin_parsed.hostname} != {server_hostname}")
+            return None
+
+        except Exception as e:
+            self.log.error(f"Failed to parse origin: {origin_str}, error: {e}")
+            return None
+
+    async def dispatch(self, request: Request, call_next):
+        origin_str = request.headers.get("origin")
+        server_hostname = self._get_server_hostname(request)
+        
+        # Validate origin
+        allow_origin = self._validate_origin(origin_str, server_hostname)
+        self.log.debug(f"Origin: {origin_str}")
+        self.log.debug(f"Server hostname: {server_hostname}")
+        self.log.debug(f"Allow origin: {allow_origin}")
+
+        # Handle preflight requests
+        if request.method == "OPTIONS":
+            if allow_origin:
+                return self._preflight_response(allow_origin)
+            else:
+                # Return 204 with no CORS headers - browser will block
+                return Response(status_code=HTTP_204_NO_CONTENT)
+
+        # Process actual request
+        response = await call_next(request)
+
+        # Add CORS headers if origin is valid
+        if allow_origin:
+            self._add_cors_headers(response, allow_origin)
+
+        return response
+
+    def _add_cors_headers(self, response: Response, origin: str):
+        """Add CORS headers to response."""
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        
+        # Append to existing Vary header if present
+        existing_vary = response.headers.get("Vary", "")
+        if existing_vary:
+            if "Origin" not in existing_vary:
+                response.headers["Vary"] = f"{existing_vary}, Origin"
+        else:
+            response.headers["Vary"] = "Origin"
+
+    def _preflight_response(self, origin: str) -> Response:
+        """Create preflight response with CORS headers."""
+        headers = {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": ", ".join(self.allow_methods),
+            "Access-Control-Allow-Headers": ", ".join(self.allow_headers),
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Max-Age": str(self.max_age),
+            "Vary": "Origin",
+        }
+        return Response(status_code=HTTP_204_NO_CONTENT, headers=headers)

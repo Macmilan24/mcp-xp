@@ -26,6 +26,8 @@ from app.bioblend_server.executor.form_generator import WorkflowFormGenerator
 
 from app.api.socket_manager import SocketManager, SocketMessageType, SocketMessageEvent
 
+from app.orchestration.utils import NumericLimits
+
 class JobState(str, Enum):
     NEW = "new"
     RESUBMITTED = "resubmitted"
@@ -56,42 +58,151 @@ class WorkflowManager:
         self.tool_manager = ToolManager(galaxy_client = self.galaxy_client)
         self.data_manager = self.tool_manager.data_manager
         self.log = logging.getLogger(self.__class__.__name__)
+        
+        
+    async def tool_exists(self, step: dict) -> bool:
+        """Checks if a specific version of a tool is installed within the galaxy instance"""
 
-    async def upload_workflow(self, path: str, ws_manager: SocketManager, tracker_id: str)-> Workflow:
-        """Upload workflow from a ga file"""
+        tool_id = step.get('tool_id')
+        if not tool_id:
+            return True
 
-        with open(path, 'r') as f:
-            workflow_json: dict= json.loads(f.read())
+        try:
+            tool = await asyncio.to_thread(self.gi_admin.gi.tools.show_tool, tool_id)
+        except Exception as e:
+            self.log.debug(f"Could not find tool in search: {e}")
+            return False
+        if not tool:
+            return False
 
-        await ws_manager.broadcast(
-            event = SocketMessageEvent.workflow_upload,
-            data = {
-                "type": SocketMessageType.UPLOAD_WORKFLOW,
-                "payload": {"message": "Workflow upload started, checking and installing missing tools."}
-                },
-            tracker_id=tracker_id
-        )
+        # Grab repository info (None if local tool)
+        step_repo = step.get('tool_shed_repository')
+        tool_repo = tool.get('tool_shed_repository')
+        
+        # If the step was defined to come from a Tool Shed, enforce that
+        if step_repo:
+            # tool must also be from a Tool Shed
+            if not tool_repo:
+                return False
+            # revisions must match exactly
+            if tool_repo.get('changeset_revision') != step_repo.get('changeset_revision'):
+                return False
+
+        return True
+
+    # Function that installs tools missing in the galaxy instance for the workflow invocation
+    # Need  administrator api        
+    async def tool_check_install(self, step: dict, ws_manager: SocketManager, tracker_id: str):
+        """Check and install if a tool in a workflow is missing"""
+
+        # Recurse into subworkflow steps
+        if step.get('type') == 'subworkflow':
+            for sub_step in step['subworkflow']['steps'].values():
+                await self.tool_check_install(sub_step, ws_manager, tracker_id)
+            return  # Skip install for subworkflow container itself
+
+        # Skip steps without a tool_id
+        if not step.get('tool_id'):
+            return
+
+        # Check if tool is already installed
+        if not await self.tool_exists(step):
+            self.log.info(f"Installing tool for step {step['id']}")
+            toolshed_info = step['tool_shed_repository']
+            try:
+                install_result = await asyncio.to_thread( self.toolshed.install_repository_revision,
+                    tool_shed_url=f'https://{toolshed_info["tool_shed"]}',
+                    name=toolshed_info["name"],
+                    owner=toolshed_info["owner"],
+                    changeset_revision=toolshed_info["changeset_revision"],
+                    install_tool_dependencies=True,
+                    install_repository_dependencies=True,
+                    install_resolver_dependencies=True,
+                    tool_panel_section_id=None,
+                    new_tool_panel_section_label=None
+                )
+
+                if isinstance(install_result, dict):
+                    self.log.info(f"status: {install_result.get('status')}, message: {install_result.get('message')}")
+                    if ws_manager:
+                        await ws_manager.broadcast(
+                            event= SocketMessageEvent.workflow_upload,
+                            data = {
+                                "type": SocketMessageType.TOOL_INSTALL,
+                                "payload": {"message": f"{install_result.get('message')}"}
+                            },
+                            tracker_id = tracker_id
+                        )
+
+                elif isinstance(install_result, list):
+                    for repo_info in install_result:
+                        status = repo_info.get('status', 'unknown')
+                        error_msg = repo_info.get('error_message', 'None') if status != 'installed' else 'None'
+
+                        self.log.info(f"Tool Name: {repo_info.get('name', 'N/A')}, installed successfully.")
+                        self.log.debug(
+                            f"Tool install result - Name: {repo_info.get('name', 'N/A')}, "
+                            f"Owner: {repo_info.get('owner', 'N/A')}, "
+                            f"Status: {status}, "
+                            f"Error: {error_msg}"
+                        )
+                        if ws_manager:
+                            await ws_manager.broadcast(
+                                event=SocketMessageEvent.workflow_upload,
+                                data = {
+                                    "type" : SocketMessageType.TOOL_INSTALL,
+                                    "payload" : {"message": f"Tool Name: {repo_info.get('name', 'N/A')}, installed successfully."}
+                                },
+                                tracker_id = tracker_id
+                                )
+
+            except Exception as e:
+                self.log.error(f"Failed to install tool '{toolshed_info['name']}': {str(e)}  traceback:{traceback.format_exc()}")
+                raise
+        else:
+            pass
+
+    async def upload_workflow(self, workflow_json: dict, ws_manager: SocketManager = None, tracker_id: str = None, retry_count: int = 1, installer_count = 1):
+        """Upload workflow from a ga file json."""
+        
+        semaphore = asyncio.Semaphore(installer_count) # Limit semaphores for tool installation.
+        async def limited_install(step):
+            async with semaphore:
+                return await self.tool_check_install(step, ws_manager, tracker_id)
+
+        if ws_manager:
+            await ws_manager.broadcast(
+                event = SocketMessageEvent.workflow_upload,
+                data = {
+                    "type": SocketMessageType.UPLOAD_WORKFLOW,
+                    "payload": {"message": "Workflow upload started, checking and installing missing tools."}
+                    },
+                tracker_id=tracker_id
+            )
         self.log.info("Workflow upload started, checking and installing missing tools.")
         # Check if the tools are installed and install all missing tools
         try:
             workflow_steps=workflow_json.get('steps', None)
+
             if workflow_steps:
-                for step in workflow_steps.values():
-                    await self.tool_check_install(step, ws_manager, tracker_id)
+                    await asyncio.gather(*[limited_install(step) for step in workflow_steps.values()])
+                    
         except Exception as e:
-            await ws_manager.broadcast(
-                event = SocketMessageEvent.workflow_upload,
-                data = {
-                    "type": SocketMessageType.UPLOAD_FAILURE,
-                    "payload": {"message": f"Error installing missing tools in the uploaded workflow: {e}"}
-                    },
-                tracker_id=tracker_id
-            )
+            if ws_manager:
+                await ws_manager.broadcast(
+                    event = SocketMessageEvent.workflow_upload,
+                    data = {
+                        "type": SocketMessageType.UPLOAD_FAILURE,
+                        "payload": {"message": f"Error installing missing tools in the uploaded workflow: {e}"}
+                        },
+                    tracker_id=tracker_id
+                )
             self.log.error(f"Error installing missing tools in the uploaded workflow: {e} traceback:{traceback.format_exc()}")
             
             # return {"error": f"Error installing missing tools in the uploaded workflow: {e}"}
             
         # Reload the tool box after tools are installed
+        await asyncio.sleep(3)
         await asyncio.to_thread(self.gi_admin.gi.config.reload_toolbox)
 
         workflow = await asyncio.to_thread(
@@ -99,21 +210,42 @@ class WorkflowManager:
             src=workflow_json, 
             publish=False
             )
-
+        
+        # Extract workflow id for uploaded worklflow checking.
+        workflow_id = workflow.id
+        
+        retry_count += 1
         # Check if the workflow is considered runnable by the instance
         if workflow.is_runnable:
-            await ws_manager.broadcast(
-                event = SocketMessageEvent.workflow_upload,
-                data = {
-                    "type": SocketMessageType.UPLOAD_COMPLETE,
-                    "payload": {"message": "Workflow successfully uploaded."}
-                    },
-                tracker_id=tracker_id
-                )
-            return workflow
+            if ws_manager:
+                self.log.info("workflow Uploaded successfully")
+                await ws_manager.broadcast(
+                    event = SocketMessageEvent.workflow_upload,
+                    data = {
+                        "type": SocketMessageType.UPLOAD_COMPLETE,
+                        "payload": {"message": "Workflow successfully uploaded."}
+                        },
+                    tracker_id=tracker_id
+                    )
         else:
-            return {'error': 'uploaded workflow is not runnable'}
-    
+            self.log.debug("Workflow is not runnable, deleting failed workflow.")
+            await asyncio.to_thread(self.gi_object.gi.workflows.delete_workflow, workflow_id=workflow_id)
+            if retry_count > 3:
+                self.log.error("Workflow is not runnable, failed to upload correctly.")
+                await ws_manager.broadcast(
+                    event = SocketMessageEvent.workflow_upload,
+                    data = {
+                        "type": SocketMessageType.UPLOAD_FAILURE,
+                        "payload": {"message": "Workflow upload failed."}
+                        },
+                    tracker_id=tracker_id
+                    )
+            else:
+                self.log.error(f"Workflow is not runnable, failed to upload correctly. Retrying... (attempt {retry_count})")
+                await asyncio.sleep(5)
+                await self.upload_workflow(workflow_json=workflow_json, ws_manager=ws_manager, tracker_id=tracker_id, retry_count=retry_count)
+                
+
     def get_worlflow_by_name(self, name: str, score_cutoff: int = 70) -> Workflow | None:
         """Get workflow by its name (fuzzy match)."""
         workflow_list = self.gi_object.gi.workflows.get_workflows()
@@ -142,112 +274,6 @@ class WorkflowManager:
         except:
             return None
         
-    def tool_exists(self, step: dict) -> bool:
-        """Checks if a specific version of a tool is installed within the galaxy instance"""
-
-        tool_id = step.get('tool_id')
-        if not tool_id:
-            return True
-
-        try:
-            tool = self.gi_admin.gi.tools.show_tool(tool_id)
-        except Exception:
-            return False
-        if not tool:
-            return False
-
-        # Grab repository info (None if local tool)
-        step_repo = step.get('tool_shed_repository')
-        tool_repo = tool.get('tool_shed_repository')
-        # If the step was defined to come from a Tool Shed, enforce that
-        if step_repo:
-            # tool must also be from a Tool Shed
-            if not tool_repo:
-                return False
-            # revisions must match exactly
-            if tool_repo.get('changeset_revision') != step_repo.get('changeset_revision'):
-                return False
-
-        # If step_repo is None, we’re happy with any existing tool (shed or local)
-        return True
-
-    # Function that installs tools missing in the galaxy instance for the workflow invocation
-    # Need  administrator api        
-    async def tool_check_install(self, step: dict, ws_manager: SocketManager, tracker_id: str):
-        """Check and install if a tool in a workflow is missing"""
-
-        # Recurse into subworkflow steps
-        if step.get('type') == 'subworkflow':
-            for sub_step in step['subworkflow']['steps'].values():
-                await self.tool_check_install(sub_step, ws_manager, tracker_id)
-            return  # Skip install for subworkflow container itself
-
-        # Skip steps without a tool_id
-        if not step.get('tool_id'):
-            return
-
-        # Check if tool is already installed
-        if not self.tool_exists(step):
-            self.log.info(f"Installing tool for step {step['id']}")
-            toolshed_info = step['tool_shed_repository']
-            try:
-                install_result = self.toolshed.install_repository_revision(
-                    tool_shed_url=f'https://{toolshed_info["tool_shed"]}',
-                    name=toolshed_info["name"],
-                    owner=toolshed_info["owner"],
-                    changeset_revision=toolshed_info["changeset_revision"],
-                    install_tool_dependencies=True,
-                    install_repository_dependencies=True,
-                    install_resolver_dependencies=True,
-                    tool_panel_section_id=None,
-                    new_tool_panel_section_label=None
-                )
-
-                # Since reloading specific tools is not working, gone with refreshing the full toolbox after all the tools are installed 
-                # self.gi_object.gi.tools.reload(step['tool_id'])
-
-                if isinstance(install_result, dict):
-                    self.log.info(f"status: {install_result.get('status')}, message: {install_result.get('message')}")
-                    await ws_manager.broadcast(
-                        event= SocketMessageEvent.workflow_upload,
-                        data = {
-                            "type": SocketMessageType.TOOL_INSTALL,
-                            "payload": {"message": f"{install_result.get('message')}"}
-                        },
-                        tracker_id = tracker_id
-                    )
-
-                elif isinstance(install_result, list):
-                    for repo_info in install_result:
-                        status = repo_info.get('status', 'unknown')
-                        error_msg = repo_info.get('error_message', 'None') if status != 'installed' else 'None'
-
-                        self.log.info(
-                            f"Tool install result - Name: {repo_info.get('name', 'N/A')}, "
-                            f"Owner: {repo_info.get('owner', 'N/A')}, "
-                            f"Status: {status}, "
-                            f"Error: {error_msg}"
-                        )
-                        await ws_manager.broadcast(
-                            event=SocketMessageEvent.workflow_upload,
-                            data = {
-                                "type" : SocketMessageType.TOOL_INSTALL,
-                                "payload" : {
-                                    "name": repo_info.get('name', 'N/A'),
-                                    "owner": repo_info.get('owner', 'N/A'),
-                                    "status": status,
-                                    "error" : error_msg
-                                            }
-                            },
-                            tracker_id = tracker_id
-                            )
-
-            except Exception as e:
-                self.log.error(f"Failed to install tool '{toolshed_info['name']}': {str(e)}  traceback:{traceback.format_exc()}")
-                raise
-        else:
-            self.log.info(f"Tool found for step {step['id']}, skipping installation")
-
     def get_workflow_io(self, workflow: Workflow)-> dict:
         """get input structure of a workflow to be filled"""
         
@@ -359,12 +385,13 @@ class WorkflowManager:
         html_form = form_generator._build_html()
         return html_form
     
+    # TODO(less priority): invocation tracker must also consider workflows that have PAUSE steps. But this can wait since pause steps are almost never used.
     async def track_invocation(self, 
                             invocation: Invocation,
-                            tracker_id: str,
-                            ws_manager: SocketManager,
-                            base_extension: int = 30,
-                            initial_wait: int = 120,
+                            tracker_id: str = None,
+                            ws_manager: SocketManager = None,
+                            base_extension: int = 300,
+                            initial_wait: int = 2400,
                             invocation_check: bool = False
                         ) -> Tuple[
                             Dict[str,List],
@@ -375,7 +402,7 @@ class WorkflowManager:
         """Tracks invocation steps and waits for the invocation reaches a terminal state and returns with the invocation results""" 
         
         # Safety: Semaphore to limit concurrent API calls (prevent overwhelming Galaxy server)
-        semaphore = asyncio.Semaphore(15)  # Adjust based on server capacity
+        semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT)  # Adjust based on server capacity
         
         # Helper: Fetch with semaphore
         async def _fetch_with_semaphore(coro):
@@ -386,42 +413,93 @@ class WorkflowManager:
                     self.log.error(f"API fetch error: {e}")
                     return None
         
-        # # Helper: Wait for dataset safe
-        # async def _wait_for_dataset_safe(dataset_id):
-        #     try:
-        #         coro = asyncio.to_thread(
-        #             self.gi_object.datasets.get, dataset_id
-        #         )
-        #         return await _fetch_with_semaphore(coro)
-        #     except Exception as e:
-        #         self.log.error(f"Failed to wait for dataset {dataset_id}: {e}")
-        #         return None
-        # async def _wait_for_dataset_collection_safe(collection_id):
-        #     try:
-        #         coro = asyncio.to_thread(
-        #         self.gi_object.dataset_collections.get, collection_id
-        #         )
-        #         return await _fetch_with_semaphore(coro)
+        async def cancel_invocation_background(invocation: Invocation):
+            await asyncio.to_thread(invocation.cancel)
+            self.log.info(f"Invocation {invocation.id} has been cancelled.")
         
+        # Helper: Analyze job states within a single step
+        def _analyze_step_jobs(step: dict, step_id: str) -> dict:
+            """Analyze job states within a single step."""
+            
+            states = step.get('states', {})
+            
+            # Count jobs by state
+            total_jobs = sum(states.values())
+            
+            if total_jobs == 0:
+                return {
+                    'total_jobs': 0,
+                    'completed_jobs': 0,
+                    'failed_jobs': 0,
+                    'running_jobs': 0,
+                    'all_jobs_failed': False,
+                    'step_state': 'pending'
+                }
+            
+            ok_count = states.get(JobState.OK, 0)
+            skipped_count = states.get(JobState.SKIPPED, 0)
+            failed_count = states.get(JobState.FAILED, 0)
+            error_count = states.get(JobState.ERROR, 0)
+            running_count = states.get(JobState.RUNNING, 0)
+            
+            completed_jobs = ok_count + skipped_count
+            failed_jobs = failed_count + error_count
+            
+            # CRITICAL: All jobs failed check
+            all_jobs_failed = (failed_jobs == total_jobs and total_jobs > 0)
+            
+            # Determine step state
+            if all_jobs_failed:
+                step_state = JobState.ERROR
+            elif completed_jobs == total_jobs:
+                step_state = JobState.OK
+            elif running_count > 0:
+                step_state = JobState.RUNNING
+            elif failed_jobs > 0 and failed_jobs < total_jobs:
+                # Partial failure - some jobs failed but not all
+                step_state = JobState.RUNNING  # Still in progress
+            else:
+                step_state = 'pending'
+            
+            return {
+                'total_jobs': total_jobs,
+                'completed_jobs': completed_jobs,
+                'failed_jobs': failed_jobs,
+                'running_jobs': running_count,
+                'all_jobs_failed': all_jobs_failed,
+                'step_state': step_state
+            }
         
-        #     except Exception as e:
-        #         self.log.error(f"Failed to wait for collection {collection_id}: {e}")
-        #         return None
-        
+        # Initialize tracking variables
         previous_states = {}
-        invocation_outputs = [] 
+        
+        output_ids=[]
+        collection_output_ids=[]
+        
+        invocation_outputs = {
+            "output_datasets": [],
+            "collection_datasets": []
+        }
+        
+        # Job-level tracking
+        total_scheduled_jobs_in_invocation = 0
+        completed_jobs_in_invocation = 0
+        failed_jobs_in_invocation = 0
+        step_job_tracking = {}
 
         start_time = time.time()
         inv = await _fetch_with_semaphore(asyncio.to_thread(
             self.gi_object.gi.invocations.show_invocation, invocation_id=invocation.id
         ))
-        num_steps = len(inv["steps"])
-        num_completed_steps = 0
-        estimated_wait = 20 * num_steps  # assume ~20s per step
-        effective_initial_wait = max(estimated_wait, initial_wait)  # Renamed for clarity
+        
+        num_input_steps = len(inv.get("inputs")) + len(inv.get("input_step_parameters"))
+        num_steps = len(inv.get("steps")) - num_input_steps
+        completed_step_count = 0
+        estimated_wait = 1800 * (num_steps + num_input_steps)  # assume ~30 min per step TODO: Fix time logic here
+        effective_initial_wait = max(estimated_wait, initial_wait)
         deadline = start_time + effective_initial_wait
         max_extension = effective_initial_wait // 2
-        poll_interval = max(3, min(5, num_steps // 10))  # Optimization: Start higher for large workflows
+        poll_interval = max(3, min(5, num_steps // 10))  # Start higher for large workflows
 
         invocation_state_result = "Failed"
 
@@ -437,13 +515,12 @@ class WorkflowManager:
         invocation_update_time = inv.get("update_time", None)
         invocation_state = inv.get("state")
         
-        self.log.debug(json.dumps(inv, indent=4))  # Demoted to debug to reduce I/O
+        self.log.debug(f"invocation details: {json.dumps(inv, indent=4)}")
 
         if invocation_state in ("failed", "error"):
             invocation_state_result = "Failed"
             
-            if ws_manager:
-                self.log.error("workflow invocation has failed.")
+            self.log.error("workflow invocation has failed.")
             
             if ws_manager:
                 ws_data = {
@@ -481,92 +558,97 @@ class WorkflowManager:
                 step_jobs = []  # Safety fallback
             self.log.debug(json.dumps(step_jobs, indent=4))
 
+        # Calculate total jobs on first fetch
+        if total_scheduled_jobs_in_invocation == 0 and step_jobs:
+            for step in step_jobs:
+                states = step.get('states', {})
+                step_total = sum(states.values())
+                total_scheduled_jobs_in_invocation += step_total
+                step_id = step.get('id')
+                step_job_tracking[step_id] = {
+                    'total': step_total,
+                    'completed': 0,
+                    'failed': 0,
+                    'running': 0
+                }
+            self.log.info(f"Invocation currently has {total_scheduled_jobs_in_invocation} scheduled jobs across {num_steps} steps")
+
         # Initial processing of steps (handles already-completed case)
         all_ok = True
         progress_made = False
-        # newly_completed = []
         has_error = False
-        step_index = 0
 
         for step in step_jobs:
             step_id: str = step.get('id')
-            states: dict = step.get('states', {})
-            populated: str = step.get("populated_state", "Unknown")
             
-            if populated in (JobState.FAILED) or populated not in (JobState.OK, JobState.WAITING, JobState.SKIPPED, JobState.RESUBMITTED, JobState.RUNNING, JobState.QUEUED):
-                self.log.error(f"Step {step_index} with id {step_id} {populated}; cancelling invocation")
-                current_state=JobState.ERROR
-            else:
-                # Pending/running/other
-                if states.get(JobState.RUNNING, 0) > 0:
-                    current_state = JobState.RUNNING
-                elif states.get(JobState.ERROR, 0) > 0 or states.get(JobState.FAILED, 0) > 0:
-                    current_state = JobState.ERROR
-                elif states.get(JobState.SKIPPED, 0) > 0:
-                    current_state = JobState.OK
-                elif states.get(JobState.OK, 0) > 0:
-                    current_state = JobState.OK
-                else:
-                    current_state = 'pending'
-
-            # Log only on transitions (unchanged)
+            # Analyze this step's jobs
+            step_analysis = _analyze_step_jobs(step, step_id)
+            
+            current_state = step_analysis['step_state']
+            step_total_jobs = step_analysis['total_jobs']
+            step_completed = step_analysis['completed_jobs']
+            step_failed = step_analysis['failed_jobs']
+            step_running = step_analysis['running_jobs']
+            all_jobs_failed_in_step = step_analysis['all_jobs_failed']
+            
+            # Initialize tracking for this step if not exists
+            if step_id not in step_job_tracking:
+                step_job_tracking[step_id] = {
+                    'total': step_total_jobs,
+                    'completed': 0,
+                    'failed': 0,
+                    'running': 0
+                }
+            
+            # Track changes from previous state
             prev = previous_states.get(step_id)
+            prev_tracking = step_job_tracking[step_id]
             
-            if current_state != prev:   
+            # Calculate newly completed/failed jobs for this step
+            newly_completed = step_completed - prev_tracking['completed']
+            newly_failed = step_failed - prev_tracking['failed']
+            
+            # Update invocation-wide counters
+            if newly_completed > 0:
+                completed_jobs_in_invocation += newly_completed
+                prev_tracking['completed'] = step_completed
+            
+            if newly_failed > 0:
+                failed_jobs_in_invocation += newly_failed
+                prev_tracking['failed'] = step_failed
+            
+            prev_tracking['running'] = step_running
+            
+            # Log state transitions
+            if current_state != prev:
                 if current_state == JobState.RUNNING:
-                    self.log.debug(f"Step {step_index} with Job id {step_id} started running.")
-                    previous_states[step_id] = current_state
-                    progress_made = True
-                    
-                        
-                if current_state == JobState.OK:
-                    self.log.info(f"Step {step_index} with Job id {step_id} has completed succesfully.")
-                    previous_states[step_id] = current_state
-                    progress_made = True
-                    # Add to number of completed steps.
-                    num_completed_steps +=1
-                    
-                    # Broadcast information
-                    if ws_manager:
-                        ws_data = {
-                            "type": SocketMessageType.INVOCATION_STEP_UPDATE,
-                            "payload": {
-                                "Workflow_steps": num_steps,
-                                "Completed step_index": step_index,
-                                "Completed steps": num_completed_steps 
-                            }
-                        }
-                        await ws_manager.broadcast(
-                            event=SocketMessageEvent.workflow_execute,
-                            data=ws_data,
-                            tracker_id=tracker_id
-                        )
-
-            if current_state == JobState.ERROR:
-                self.log.error(f"Step {step_index} with Job id {step_id} failed; cancelling invocation.")
-                all_ok = False  # Ensure all_ok is False on error
-                
-                if ws_manager:
-                    ws_data = {
-                        "type": SocketMessageType.INVOCATION_FAILURE,
-                        "payload": {"message": "Invocation failed or has error"}
-                    }
-                    await ws_manager.broadcast(
-                        event=SocketMessageEvent.workflow_execute, 
-                        data=ws_data, 
-                        tracker_id=tracker_id
+                    self.log.debug(
+                        f"Step (ID: {step_id}) started running. "
+                        f"Jobs: {step_running}/{step_total_jobs} running"
                     )
-                    
-                cancel_coro = asyncio.to_thread(self.gi_object.gi.invocations.cancel_invocation, invocation_id=invocation.id)
-                asyncio.create_task(cancel_coro)
-                error_occurred = True
+                    previous_states[step_id] = current_state
+                    progress_made = True
+                
+                if current_state == JobState.OK:
+                    previous_states[step_id] = current_state
+                    progress_made = True
+                    completed_step_count += 1
+            
+            # CANCELLATION LOGIC: Cancel if ALL jobs in THIS step failed
+            if all_jobs_failed_in_step:
+                self.log.error(
+                    f"Step (ID: {step_id}) COMPLETELY FAILED - "
+                    f"ALL {step_total_jobs} jobs failed. Cancelling invocation."
+                )
+                all_ok = False
+                
+                asyncio.create_task(cancel_invocation_background(invocation))
                 has_error = True
                 break
-
+            
             if current_state != JobState.OK:
                 all_ok = False
-            step_index += 1
-
+            
         if has_error:
             # Early exit if error (collected prior steps)
             invocation_state_result = "Failed"
@@ -576,21 +658,12 @@ class WorkflowManager:
                 return invocation_outputs
 
         if all_ok:
-            self.log.info("All steps completed successfully.")
+            self.log.info(
+                f"All steps completed successfully. "
+                f"Jobs: {completed_jobs_in_invocation}/{total_scheduled_jobs_in_invocation} completed"
+            )
             invocation_state_result = "Complete"
             
-            if ws_manager:
-                ws_data = {
-                    "type": SocketMessageType.INVOCATION_COMPLETE,
-                    "payload": {"message": "All steps completed successfully"}
-                }
-                await ws_manager.broadcast(
-                    event=SocketMessageEvent.workflow_execute,
-                    data=ws_data,
-                    tracker_id=tracker_id
-                )
-            
-            # Final full collection if completed (overrides partial for consistency - BioBlend opt)
             final_inv_coro = asyncio.to_thread(
                 self.gi_object.gi.invocations.show_invocation, invocation_id=invocation.id
             )
@@ -615,7 +688,7 @@ class WorkflowManager:
                         "output_datasets": output_ids,
                         "collection_datasets": collection_output_ids
                     }
-                self.log.info(f"Collected {len(output_ids)} dataset outputs and {len(collection_output_ids)} collection outputs")
+                self.log.info(f"Outputted {len(output_ids)} dataset outputs and {len(collection_output_ids)} collection from invocation")
                     
                 #Update invocation update time
                 invocation_update_time = final_inv.get("update_time", None)
@@ -628,17 +701,17 @@ class WorkflowManager:
                 return invocation_outputs, invocation_state_result, invocation_update_time
             else:
                 return invocation_outputs
-
+        
+        # Boolean value to convfirm the pooling check and that all jobs are indeed done and not just unscheduled.
+        confirmation_check = False
+        
         # If not completed/failed initially, enter polling loop
         while True:
             
             # Reset for this poll cycle
-            num_completed_steps = 0
             progress_made = False
-            # newly_completed = []
             has_error = False
             all_ok = True
-            step_index = 0
 
             inv_coro = asyncio.to_thread(
                 self.gi_object.gi.invocations.show_invocation, invocation_id=invocation.id
@@ -651,6 +724,7 @@ class WorkflowManager:
             self.log.debug(json.dumps(inv, indent=4))
             if invocation_state in ("failed", "error"):
                 self.log.error("workflow invocation has failed.")
+                invocation_state_result = "Failed"
                 if ws_manager:
                     ws_data = {
                         "type": SocketMessageType.INVOCATION_FAILURE,
@@ -672,52 +746,84 @@ class WorkflowManager:
             if step_jobs is None:
                 step_jobs = []  # Safety fallback
             self.log.debug(json.dumps(step_jobs, indent=4))
-
+            
+            total_scheduled_jobs_in_invocation = 0
+            for step in step_jobs:
+                states = step.get('states', {})
+                total_scheduled_jobs_in_invocation += sum(states.values())
+                
             for step in step_jobs:
                 step_id: str = step.get('id')
-                states: dict = step.get('states', {})
-                populated: str = step.get("populated_state", "Unknown")
                 
-                if populated in (JobState.FAILED) or populated not in (JobState.OK, JobState.WAITING, JobState.SKIPPED, JobState.RESUBMITTED, JobState.RUNNING, JobState.QUEUED):
-                    self.log.error(f"Step {step_index} with id {step_id} {populated}; cancelling invocation")
-                    current_state=JobState.ERROR
-                else:
-                    # Pending/running/other
-                    if states.get(JobState.RUNNING, 0) > 0:
-                        current_state = JobState.RUNNING
-                    elif states.get(JobState.ERROR, 0) > 0 or states.get(JobState.FAILED, 0) > 0:
-                        current_state = JobState.ERROR
-                    elif states.get(JobState.SKIPPED, 0) > 0:
-                        current_state = JobState.OK
-                    elif states.get(JobState.OK, 0) > 0:
-                        current_state = JobState.OK
-                    else:
-                        current_state = 'pending'
-
-                # Log only on transitions (unchanged)
+                # Analyze this step's jobs
+                step_analysis = _analyze_step_jobs(step, step_id)
+                
+                current_state = step_analysis['step_state']
+                step_total_jobs = step_analysis['total_jobs']
+                step_completed = step_analysis['completed_jobs']
+                step_failed = step_analysis['failed_jobs']
+                step_running = step_analysis['running_jobs']
+                all_jobs_failed_in_step = step_analysis['all_jobs_failed']
+                
+                # Initialize tracking for this step if not exists
+                if step_id not in step_job_tracking:
+                    step_job_tracking[step_id] = {
+                        'total': step_total_jobs,
+                        'completed': 0,
+                        'failed': 0,
+                        'running': 0
+                    }
+                
+                # Track changes from previous state
                 prev = previous_states.get(step_id)
-                if current_state != prev:   
+                prev_tracking = step_job_tracking[step_id]
+                
+                # Calculate newly completed/failed jobs for this step
+                newly_completed = step_completed - prev_tracking['completed']
+                newly_failed = step_failed - prev_tracking['failed']
+                
+                # Update invocation-wide counters
+                if newly_completed > 0:
+                    completed_jobs_in_invocation += newly_completed
+                    prev_tracking['completed'] = step_completed
+                    self.log.info(
+                        f"Job: {step_completed}/{step_total_jobs} in current step completed. "
+                        f"Invocation Job progress: {completed_jobs_in_invocation}/{total_scheduled_jobs_in_invocation}"
+                        )
+                
+                if newly_failed > 0:
+                    failed_jobs_in_invocation += newly_failed
+                    prev_tracking['failed'] = step_failed
+                
+                prev_tracking['running'] = step_running
+                
+                # Log state transitions
+                if current_state != prev:
                     if current_state == JobState.RUNNING:
-                        self.log.debug(f"Step {step_index} with Job id {step_id} started running.")
+                        self.log.debug(
+                            f"Step (ID: {step_id}) started running. "
+                            f"Jobs: {step_running}/{step_total_jobs} running"
+                        )
                         previous_states[step_id] = current_state
                         progress_made = True
-                        
-                            
+                    
                     if current_state == JobState.OK:
-                        self.log.info(f"Step {step_index} with Job id {step_id} has completed succesfully.")
+                        self.log.info(f"Step (ID: {step_id}): {completed_step_count}/{num_steps} total steps completed successfully. "
+                        )
                         previous_states[step_id] = current_state
                         progress_made = True
-                        # Add to number of completed steps.
-                        num_completed_steps +=1
+                        completed_step_count += 1
                         
-                        # Broadcast information
+                        # Broadcast with job-level information
                         if ws_manager:
                             ws_data = {
                                 "type": SocketMessageType.INVOCATION_STEP_UPDATE,
                                 "payload": {
-                                    "Workflow_steps": num_steps,
-                                    "Completed step_index": step_index,
-                                    "Completed steps": num_completed_steps 
+                                    "workflow_steps": num_steps,
+                                    "completed_steps": completed_step_count,
+                                    "total_jobs": total_scheduled_jobs_in_invocation,
+                                    "completed_jobs": completed_jobs_in_invocation,
+                                    "failed_jobs": failed_jobs_in_invocation
                                 }
                             }
                             await ws_manager.broadcast(
@@ -725,41 +831,59 @@ class WorkflowManager:
                                 data=ws_data,
                                 tracker_id=tracker_id
                             )
-
-                if current_state == JobState.ERROR:
-                    self.log.error(f"Step {step_index} with id {step_id} failed; cancelling invocation.")
-                    all_ok = False  # Ensure all_ok is False on error
+                
+                # CANCELLATION LOGIC: Cancel if ALL jobs in THIS step failed
+                if all_jobs_failed_in_step:
+                    self.log.error(
+                        f"Step (ID: {step_id}) COMPLETELY FAILED - "
+                        f"ALL {step_total_jobs} jobs failed. Cancelling invocation."
+                    )
+                    all_ok = False
                     
                     if ws_manager:
                         ws_data = {
                             "type": SocketMessageType.INVOCATION_FAILURE,
-                            "payload": {"message": "Invocation failed or has error"}
+                            "payload": {
+                                "message": f"Step completely failed - all {step_total_jobs} jobs in step failed",
+                                "failed_step_id": step_id,
+                                "total_failed_jobs_in_invocation": failed_jobs_in_invocation
+                            }
                         }
                         await ws_manager.broadcast(
-                            event=SocketMessageEvent.workflow_execute, 
-                            data=ws_data, 
+                            event=SocketMessageEvent.workflow_execute,
+                            data=ws_data,
                             tracker_id=tracker_id
                         )
-                    cancel_coro = asyncio.to_thread(self.gi_object.gi.invocations.cancel_invocation, invocation_id=invocation.id)
-                    asyncio.create_task(cancel_coro)
+                    
+                    asyncio.create_task(cancel_invocation_background(invocation))
                     has_error = True
                     break
-
+                
                 if current_state != JobState.OK:
                     all_ok = False
-                step_index += 1
-            
+                
             if has_error:
                 invocation_state_result = "Failed"
                 break
-            if all_ok:
-                self.log.info("All steps completed successfully.")
+            
+            if not all_ok or not confirmation_check:
+                confirmation_check = False
+                               
+            if all_ok and confirmation_check:
+                self.log.info(
+                    f"All Jobs completed successfully. "
+                    f"Jobs: {completed_jobs_in_invocation}/{total_scheduled_jobs_in_invocation} completed"
+                )
                 invocation_state_result = "Complete"
                 
                 if ws_manager:
                     ws_data = {
-                        "type": SocketMessageType.INVOCATION_COMPLETE,
-                        "payload": {"message": "All steps completed successfully"}
+                        "type": SocketMessageType.INVOCATION_STEP_UPDATE,
+                        "payload": {
+                            "message": "All Jobs completed successfully",
+                            "total_jobs": total_scheduled_jobs_in_invocation,
+                            "completed_jobs": completed_jobs_in_invocation
+                        }
                     }
                     await ws_manager.broadcast(
                         event=SocketMessageEvent.workflow_execute,
@@ -800,6 +924,11 @@ class WorkflowManager:
                 
                 break
             
+            if all_ok:
+                confirmation_check = True
+                self.log.info("Scheduled jobs are complete, confirming there are no more jobs to be sheduling")
+                await asyncio.sleep(2)
+                
             now = time.time()
             if progress_made:
                 # Extend deadline if progress was made, capped by hard max_wait
@@ -819,8 +948,10 @@ class WorkflowManager:
                         data=ws_data, 
                         tracker_id=tracker_id
                     )
-                cancel_coro = asyncio.to_thread(self.gi_object.gi.invocations.cancel_invocation, invocation_id=invocation.id)
-                asyncio.create_task(cancel_coro)
+                    
+                asyncio.create_task(cancel_invocation_background(invocation))
+                self.log.info(f"invocation: {invocation.id} cancelled")
+                invocation_state_result = "Failed"
                 break
             
             # Adaptive polling interval based on progress made (fixed assignment)
@@ -835,7 +966,7 @@ class WorkflowManager:
             return invocation_outputs, invocation_state_result, invocation_update_time
         else:
             return invocation_outputs
-
+        
     def invoke_workflow(self, inputs: dict, workflow: Workflow, history: History ) -> Invocation:
         """
         Invoke a Galaxy workflow with specified inputs.

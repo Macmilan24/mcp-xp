@@ -1,7 +1,7 @@
 from sys import path
 path.append('.')
-import tempfile, pathlib, shutil, re, os
-from anyio.to_thread import run_sync
+import tempfile
+import os
 from dotenv import load_dotenv
 import logging
 import uuid
@@ -9,11 +9,13 @@ import redis
 import hashlib
 import json
 import asyncio
+import aiofiles
 
-from fastapi import APIRouter, UploadFile,File, Path, Query, Form, Request, HTTPException
+from fastapi import APIRouter, UploadFile, File, Path, Query, Form, Request, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from fastapi.concurrency import run_in_threadpool
-from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation, Workflow
+from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
+from starlette.status import HTTP_204_NO_CONTENT
 
 from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
@@ -22,14 +24,15 @@ from app.api.schemas import workflow
 from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
+from app.orchestration.utils import NumericLimits
 
-
+from exceptions import InternalServerErrorException
 
 load_dotenv()
 
 logger = logging.getLogger('workflow_endpoint')
 router = APIRouter()
-redis_client = redis.Redis(host='localhost', port=os.environ.get("REDIS_PORT"), db=0, decode_responses=True)
+redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.environ.get("REDIS_PORT"), db=0, decode_responses=True)
 invocation_cache = InvocationCache(redis_client)
 invocation_background = InvocationBackgroundTasks(cache = invocation_cache, redis_client=redis_client)
 
@@ -59,21 +62,29 @@ async def list_workflows():
         # Step 2: Check for cached responses
         cached_data = await invocation_cache.get_workflows_cache(username)
         if cached_data:
+            deleted_workflow_ids = await invocation_cache.get_deleted_workflows(username)
+            # Filter out deleted workflows
+            filtered_workflows = [
+                w for w in cached_data if w.get("id") not in deleted_workflow_ids
+            ]
+             
             logger.info("Serving workflows from cache")
-            return workflow.WorkflowList(workflows=cached_data)
+            return workflow.WorkflowList(workflows=filtered_workflows)
 
+        # Step 3: If no cache is found then retreive workflows list from galaxy, and set cache.
         workflow_manager = WorkflowManager(galaxy_client)
-        
         workflow_list = await invocation_background.fetch_workflows_safely(workflow_manager, fetch_details=True)
         await invocation_cache.set_workflows_cache(username,workflow_list)
-
+        
+        # Remove and clear deleted workflow list cache
+        await invocation_cache.clear_deleted_workflows(username)
         return workflow.WorkflowList(workflows=workflow_list)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list workflows: {e}")
+        raise InternalServerErrorException("Failed to list workflows")
     
 @router.post(
         "/upload-workflow",
-        response_model = workflow.WorkflowDetails,
+        response_model = workflow.WorkflowUploadResponse,
         summary = "Upload an external workflow ga file",
         tags=["Workflows"]
 )
@@ -92,44 +103,36 @@ async def upload_workflow(
         with tempfile.NamedTemporaryFile(delete=False, suffix=file.filename) as tmp:
             tmp.write(await file.read())    
             tmp_path = tmp.name
+            
+        async with aiofiles.open(tmp_path, 'r') as f:
+            workflow_json: dict = json.loads(await f.read())
 
+        workflow_name = workflow_json.get("name")
         # Upload the galaxt workflow into the instance
-        workflow = await workflow_manager.upload_workflow(path = tmp_path,
-                                                          ws_manager = ws_manager, 
-                                                          tracker_id = tracker_id
-                                                          )
-        # Clean up the temporary file
-        os.remove(tmp_path)
+        asyncio.create_task(
+            workflow_manager.upload_workflow(
+                        workflow_json=workflow_json,
+                        ws_manager=ws_manager,
+                        tracker_id=tracker_id
+                    )
+                )
 
-        if not isinstance(workflow, Workflow):
-            raise HTTPException(status_code=500, detail = workflow.get('error', "workflow uploading failed."))
-        
-        workflow_details  = await run_in_threadpool(workflow_manager.gi_object.gi.workflows.show_workflow, workflow.id)
-       
-        return {
-            "id": workflow_details.get("id"),
-            "tags": workflow_details.get("tags", None),
-            "create_time": workflow_details.get("create_time"),
-            "annotations": workflow_details.get("annotations", None),
-            "published": workflow_details.get("published"),
-            "license": workflow_details.get("license", None),
-            "galaxy_url": workflow_details.get("url"),
-            "creator": workflow_details.get("creator", None),
-            "steps": workflow_details.get("steps"),
-            "inputs": workflow_details.get("inputs"),
-        }
+        # Clean up the temporary file and return the workflow name as response.
+        os.remove(tmp_path)
+        return workflow.WorkflowUploadResponse(workflow_name=workflow_name)
+    
     except Exception as e:
         # Clean up in case of error
         if 'tmp_path' in locals() and os.path.exists(tmp_path):
             os.remove(tmp_path)
-        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+        raise InternalServerErrorException("An error occurred")  
  
-@router.get(
-    "/{workflow_id}/form",
-    response_class=HTMLResponse,
-    summary="Get Dynamic Workflow Form",
-    tags=["Workflows"]
-)
+# @router.get(
+#     "/{workflow_id}/form",
+#     response_class=HTMLResponse,
+#     summary="Get Dynamic Workflow Form",
+#     tags=["Workflows"]
+# )
 async def get_workflow_form(
     workflow_id: str = Path(..., description="The ID of the Galaxy workflow."),
     history_id: str = Query(..., description="The ID of the history to select inputs from.")
@@ -155,14 +158,14 @@ async def get_workflow_form(
         )
         return HTMLResponse(content=html_form)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to build workflow form: {e}")
+        raise InternalServerErrorException("Failed to build workflow form")
 
-@router.post(
-    "/{workflow_id}/histories/{history_id}/execute",
-    response_model=workflow.WorkflowExecutionResponse,
-    summary="Execute a Workflow",
-    tags=["Workflows"]
-)
+# @router.post(
+#     "/{workflow_id}/histories/{history_id}/execute",
+#     response_model=workflow.WorkflowExecutionResponse,
+#     summary="Execute a Workflow",
+#     tags=["Workflows"]
+# )
 async def execute_workflow(
     request: Request,
     dummy_input: str = Form(None, description="Dummy input to force form rendering the form input for the galaxy execution"), # Adding dummy form value to input request form.
@@ -312,7 +315,7 @@ async def execute_workflow(
             tracker_id = tracker_id
         )
         # Provide a detailed error message for debugging
-        raise HTTPException(status_code=500, detail=f"Workflow execution failed: {e}")
+        raise InternalServerErrorException("Workflow execution failed")
     
 @router.get(
     "/{workflow_id}/details",
@@ -349,4 +352,53 @@ async def get_workflow_details(
                 
     except Exception as e:
         # detailed error responses
-        raise HTTPException(status_code = 500 , detail= f'Show workflow failed {e}')
+        raise InternalServerErrorException('Show workflow failed')
+    
+@router.delete(
+   "/DELETE",
+    summary="Delete workflows",
+    tags=["Workflows"],
+    status_code=HTTP_204_NO_CONTENT
+)
+async def delete_workflows(
+    workflow_ids: str = Path(..., description="Comma-separated IDs of the Galaxy workflows to delete")
+) -> Response:
+    """ Delete a galaxy workflow from a users galaxy instance. """
+    
+    api_key = current_api_key.get()
+    galaxy_client = GalaxyClient(api_key)
+    username = galaxy_client.whoami
+    workflow_manager = WorkflowManager(galaxy_client)
+
+    try:
+        # Parse comma-separated string into list
+        ids_list = [i.strip() for i in workflow_ids.split(",") if i.strip()]
+
+        # Define semaphore with a limit
+        semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT)
+
+        # Define background task for deleting workflows with semaphore
+        async def delete_workflow_with_semaphore(workflow_id: str):
+            async with semaphore:
+                await asyncio.to_thread(workflow_manager.gi_object.gi.workflows.delete_workflow, workflow_id)
+
+        async def delete_workflows_task():
+            try:
+                await asyncio.gather(
+                    *[delete_workflow_with_semaphore(workflow_id) for workflow_id in ids_list]
+                )
+                logger.info(f"Workflows successfully deleted: {ids_list}")
+            except Exception as e:
+                workflow_manager.log.error(f"Background task failed to delete workflows {ids_list} for user {username}: {e}")
+
+        # Schedule deletion task in the background
+        asyncio.create_task(delete_workflows_task())
+
+        # Add workflow IDs44 to deleted set in Redis (foreground)
+        await invocation_cache.add_deleted_workflows(username, ids_list)
+
+        return Response(status_code=HTTP_204_NO_CONTENT)
+
+    except Exception as e:
+        raise InternalServerErrorException("Failed to process workflow deletion request")
+        # TODO: Need to find way to make the deletion not affect the published workflow usecase(workflow publication).

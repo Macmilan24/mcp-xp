@@ -12,25 +12,36 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 from cryptography.fernet import Fernet
 from contextlib import asynccontextmanager
+from starlette.status import (
+    HTTP_401_UNAUTHORIZED, 
+    HTTP_500_INTERNAL_SERVER_ERROR, 
+    HTTP_502_BAD_GATEWAY
+    )
 
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, Request, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, HTTPException, Query, WebSocket, WebSocketDisconnect, Response
 from fastapi.openapi.utils import get_openapi
 from app.AI.chatbot import ChatSession, initialize_session
 
 from app.utils import import_published_workflows
 from app.log_setup import configure_logging
-from app.api.middleware import JWTGalaxyKeyMiddleware, RateLimiterMiddleware
+from app.api.middleware import JWTGalaxyKeyMiddleware, RateLimiterMiddleware, DomainCORSMiddleware
 from app.api.api import api_router 
 from app.api.socket_manager import ws_manager, SocketMessageEvent
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 
+from app.exceptions import (
+    http_exception_handler,
+    generic_exception_handler,  
+    UnauthorizedException,
+    InternalServerErrorException
+    )
+
 load_dotenv()
 
 # Global variables for cache and background tasks
 # Initialize Redis client
-redis_client = redis.Redis(host='localhost', port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
+redis_client = None
 invocation_cache = None
 background_tasks = None
 sessions = {}
@@ -100,6 +111,7 @@ async def lifespan(app: FastAPI):
     # Startup
     try:        
         # Test Redis connection
+        redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
         await asyncio.get_event_loop().run_in_executor(None, redis_client.ping)
         logger.info("Redis connection established")
         
@@ -145,18 +157,13 @@ async def lifespan(app: FastAPI):
 # Initialize the FastAPI application with a lifespan context
 app = FastAPI(lifespan=lifespan)
 
-
-
-# Add middlewares
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Add Middlewares, in the order CORS - Rate limiter - Auth
 app.add_middleware(JWTGalaxyKeyMiddleware)
-app.add_middleware(RateLimiterMiddleware, redis_client=redis_client)
+app.add_middleware(RateLimiterMiddleware)
+app.add_middleware(DomainCORSMiddleware)
+
+app.add_exception_handler(HTTPException, http_exception_handler)
+app.add_exception_handler(Exception, generic_exception_handler)
 
 # Include the API router
 app.include_router(api_router, prefix="/api")
@@ -188,8 +195,6 @@ async def get_chat_history(request: Request):
 @app.post("/send_message", tags=["Agent"])
 async def send_message(request: Request, message: MessageRequest):
     """Conversate with the Galaxy Agent"""
-    from app.context import current_api_key
-    logger.info(f"Current user api: ******{current_api_key.get()[-4:]}")
 
     user_ip = request.client.host
     if user_ip not in sessions:
@@ -198,7 +203,7 @@ async def send_message(request: Request, message: MessageRequest):
             # return {"error": "Chat session not initiated for this IP"}
 
     chat_session = sessions[user_ip]
-    response = await chat_session.respond(model_id="openai", user_input=message.message)
+    response = await chat_session.respond(model_id=os.getenv("CURRENT_LLM", "gemini"), user_input=message.message)
     return {"response": response}
 
 
@@ -218,8 +223,8 @@ async def list_tools(request: Request):
     for server in chat_session.servers:
         logger.info(f"server {server.name}")
         tools = await server.list_tools()   
-        logger.info(f'found tools: {[tool.name for tool in tools.tools]}')
-        all_tools.extend([tool for tool in tools.tools])
+        logger.info(f'found tools: {[tool.name for tool in tools]}')
+        all_tools.extend([tool.__dict__ for tool in tools])
     return {"tools": all_tools}
 
 
@@ -255,6 +260,9 @@ async def get_create_galaxy_user_and_key(
         galaxy_user_id = resp.json()["id"]
         username= resp.json()["username"]
         logger.info(f"Galaxy account created with username {username}")
+    
+    except httpx.ConnectError as e:
+        logger.error(f"Error connecting to galaxy instance when generating api: {e}")
 
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 400:
@@ -273,21 +281,24 @@ async def get_create_galaxy_user_and_key(
                 galaxy_user_id = users[0]["id"]
                 username= users[0]["username"]
                 logger.info(f"Galaxy User fetched with username {username}")
+            
+            except httpx.ConnectError as e:
+                logger.error(f"Error connecting to galaxy instance when generating api: {e}")   
 
             except HTTPException as e: 
-                raise HTTPException(status_code=400, detail= f"error getting/creating galaxy user: {e}")
+                raise InternalServerErrorException("Error getting/creating galaxy user")
             except Exception as e:
                 logger.error(f"Error: {e}")
                 raise
-        elif e.response.status_code == 401:
+        elif e.response.status_code == HTTP_401_UNAUTHORIZED:
             logger.error(f"Unauthorized admin id: {e}")
-            raise HTTPException(status_code=401, detail= f"Unauthorized admin id: {e}")
+            raise UnauthorizedException("Unauthorized admin id")
         else:
-            raise Exception(f"error caused during getting api_key for the user: {e}")
+            raise InternalServerErrorException("Error caused during getting api_key for the user")
 
     except HTTPException as e:
         logger.error(f"errror creating user acount: {e}")
-        raise HTTPException(status_code= 500, detail=f"error creating user account: {e}")
+        raise InternalServerErrorException("error creating user account")
     except Exception as e:
         logger.error(f"Error: {e}")
         raise
@@ -313,7 +324,7 @@ async def get_create_galaxy_user_and_key(
 
     except HTTPException as e:
         logger.error(f"error creating galaxy user api key: {e}")
-        raise HTTPException(status=500, detail= f"error getting galaxy user api-key: {e}")
+        raise InternalServerErrorException("error getting galaxy user api-key")
     except Exception as e:
         logger.error(f"Error: {e}")
 
@@ -324,6 +335,65 @@ async def get_create_galaxy_user_and_key(
         username = username,
         api_token = api_token
     )
+    
+@app.post("/galaxy_auth", 
+          tags =["Signup Auth"]
+          )
+async def galaxy_proxy_login(request: Request):
+    
+    """ CORS proxy for Galaxy user authentication endpoint. """
+    
+    try:
+        # Read the body
+        body = await request.body()
+        
+        # Forward only necessary headers
+        headers = {
+            "content-type": "application/json",
+            "authorization": request.headers.get("authorization", ""),
+        }
+        
+        logger.info(f"Forwarding login request to {GALAXY_URL}/user/login")
+        
+        # Forward to Galaxy
+        async with httpx.AsyncClient() as client:
+            target_response = await client.post(
+                f"{GALAXY_URL}/user/login",
+                content=body,
+                headers=headers,
+                follow_redirects=False,
+            )
+            
+        # Create response
+        proxy_response = Response(
+            content=target_response.content,
+            status_code=target_response.status_code,
+            media_type=target_response.headers.get("content-type")
+        )
+        
+        # Forward Set-Cookie headers from Galaxy to client for session management
+        for key, value in target_response.headers.multi_items():
+            if key.lower() == "set-cookie":
+                proxy_response.headers.append(key, value)
+        
+        # Forward other important headers
+        important_headers = ["content-type", "www-authenticate"]
+        for header in important_headers:
+            if header in target_response.headers:
+                proxy_response.headers[header] = target_response.headers[header]
+        
+        logger.info(f"Login response: {target_response.status_code}")
+        return proxy_response
+    
+    except httpx.ConnectError as e:
+        logger.error(f"Connection error: {e}")
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Proxy connetcion error: {e}")
+    except httpx.RequestError as e:
+        logger.error(f"Error connecting to Galaxy: {e}")
+        raise HTTPException(status_code=HTTP_502_BAD_GATEWAY, detail=f"Galaxy server error: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Proxy error: {e}")
 
 @app.websocket("/ws/{tracker_id}")
 async def websocket_endpoint(websocket: WebSocket, tracker_id: str):

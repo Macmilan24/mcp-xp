@@ -19,24 +19,42 @@ from fastapi import APIRouter, Path, Query, HTTPException, BackgroundTasks, Resp
 from fastapi.responses import  FileResponse
 from fastapi.concurrency import run_in_threadpool
 from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation, Invocation
+from starlette.status import HTTP_204_NO_CONTENT
 
 from app.context import current_api_key
 from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.api.schemas import invocation, workflow
-from app.api.socket_manager import ws_manager
+from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
+from app.orchestration.utils import NumericLimits
 
+from exceptions import InternalServerErrorException, NotFoundException
 
 # Helper functions and redis instantiation
 logger = logging.getLogger("invocation")
-redis_client = redis.Redis(host='localhost', port=os.environ.get("REDIS_PORT"), db=0, decode_responses=True)
+redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.environ.get("REDIS_PORT"), db=0, decode_responses=True)
 invocation_cache = InvocationCache(redis_client)
 invocation_background = InvocationBackgroundTasks(cache = invocation_cache, redis_client=redis_client)
 
+# Helper functions
 def _rmtree_sync(path: pathlib.Path):
     shutil.rmtree(path, ignore_errors=True)
+    
+def log_task_error(task: asyncio.Task, *, task_name: str) -> None:
+    """Log errors from completed background tasks."""
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        logger.info(f"Background task '{task_name}' was cancelled.")
+        return
+    
+    if exc is not None:
+        logger.error(
+            f"Background task '{task_name}' failed",
+            exc_info=exc,
+        )
 
 router = APIRouter()
 
@@ -89,8 +107,9 @@ async def list_invocations(
 
             return invocation.InvocationList(**response_data)
         
-        # Step 3: Initialize Galaxy client and workflow manager
-        
+        # Step 3: Initialize Galaxy client and workflow manager give it time for new invocations to be registerd under list
+        # TODO: sleeping is a temporary solution, find a permanent solution for this.
+        await asyncio.sleep(NumericLimits.SHORT_SLEEP)
         workflow_manager = WorkflowManager(galaxy_client)
         
         # Step 4: Fetch data with parallel processing and caching
@@ -149,10 +168,7 @@ async def list_invocations(
             return await _handle_partial_failure(api_key, workflow_id, history_id)
         except Exception as fallback_error:
             logger.error(f"Fallback also failed: {fallback_error}")
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Failed to list invocations: {str(e)}"
-            )
+            raise InternalServerErrorException("Failed to list invocations")
 
 
 async def _fetch_core_data(cache: InvocationCache, username: str, workflow_manager: WorkflowManager, workflow_id: str, history_id: str):
@@ -171,24 +187,24 @@ async def _fetch_core_data(cache: InvocationCache, username: str, workflow_manag
                     workflow_manager.gi_object.gi.invocations.get_invocations,
                     workflow_id=workflow_id,
                     history_id=history_id,
-                    limit = 100
+                    limit = NumericLimits.INVOCATION_LIMIT
                 )
             elif history_id:
                 invocations = await run_in_threadpool(
                     workflow_manager.gi_object.gi.invocations.get_invocations,
                     history_id=history_id,
-                    limit = 100
+                    limit = NumericLimits.INVOCATION_LIMIT
                 )
             elif workflow_id:
                 invocations = await run_in_threadpool(
                     workflow_manager.gi_object.gi.invocations.get_invocations,
                     workflow_id=workflow_id,
-                    limit = 100
+                    limit = NumericLimits.INVOCATION_LIMIT
                 )
             else:
                 invocations = await run_in_threadpool(
                     workflow_manager.gi_object.gi.invocations.get_invocations,
-                    limit = 100
+                    limit = NumericLimits.INVOCATION_LIMIT
                 )
 
             # Cache the results
@@ -211,7 +227,7 @@ async def _fetch_core_data(cache: InvocationCache, username: str, workflow_manag
         recent = await run_in_threadpool(
             workflow_manager.gi_object.gi.invocations.get_invocations,
             **filter_params,
-            limit = 100
+            limit = NumericLimits.INVOCATION_LIMIT
         )
         
         has_new_or_updated = False
@@ -272,7 +288,7 @@ async def _fetch_core_data(cache: InvocationCache, username: str, workflow_manag
         
     except Exception as e:
         logger.error(f"Error in parallel data fetching: {e}")
-        return [], [], set()
+        return [], []
 
 async def _format_invocations(username, invocations_data: list[dict], workflow_mapping: dict[str, dict]):
     """Format invocations with optimized state mapping"""
@@ -288,7 +304,8 @@ async def _format_invocations(username, invocations_data: list[dict], workflow_m
         workflow_name = workflow_info.get('workflow_name', None)
         workflow_id = workflow_info.get("workflow_id", None)
         
-        # Skip if no workflow name : Likely due to the invocation being a subworkflow invocation.
+        # Skip if no workflow name : Likely due to the invocation being a subworkflow invocation or workflow being deleted.
+        # TODO: Maybe in the future if invocation are still needed even after the workflow has been deleted, we can refactor implemenation.
         if not workflow_name:
             length+=1
             continue
@@ -456,11 +473,11 @@ async def invocation_report_pdf(
     except Exception as exc:
         # Clean up immediately on error
         await run_sync(_rmtree_sync, tmpdir)
-        raise HTTPException(status_code=500, detail=f"Failed to get PDF invocation report: {exc}")
+        raise InternalServerErrorException("Failed to get PDF invocation report")
   
   
-async def structure_outputs(_invocation: Invocation, outputs: Dict[str, list], workflow_manager: WorkflowManager):
-
+async def structure_outputs(_invocation: Invocation, outputs: Dict[str, list], workflow_manager: WorkflowManager, failure: bool = False):
+    """Strcucture invocation result outputs, datasets, collection and reports"""
     # Prepare workflow invocation results
     invocation_report = workflow_manager.gi_object.gi.invocations.get_invocation_report(_invocation.id)
     
@@ -473,7 +490,7 @@ async def structure_outputs(_invocation: Invocation, outputs: Dict[str, list], w
         # Format the outputs (Pydantic schemas could be added here for validation)
         final_output_dataset = []
         final_collection_dataset = []
-        semaphore = asyncio.Semaphore(15)
+        semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT)
         
         async def structure_and_append(output_id: str, store_list: list, collection: bool):
             async with semaphore:
@@ -535,8 +552,19 @@ async def structure_outputs(_invocation: Invocation, outputs: Dict[str, list], w
         
         logger.info(f"output datasets formatted: {len(final_output_dataset)}, collection datasets formatted: {len(final_collection_dataset)}")
         
-        
-        
+        if failure:
+            return final_output_dataset + final_collection_dataset, None
+        else:
+            # Prepare workflow invocation results
+            invocation_report_dict = await asyncio.to_thread(
+                    workflow_manager.gi_object.gi.invocations.get_invocation_report,
+                    invocation_id = _invocation.id
+                    )
+            invocation_report = (
+                f"### {invocation_report_dict.get('title', '')}\n\n"
+                f"{invocation_report_dict.get('markdown', '')}"
+            )
+                
         return final_output_dataset + final_collection_dataset, invocation_report
 
     except Exception as e:
@@ -624,9 +652,74 @@ async def structure_inputs(inv: Dict, workflow_manager: WorkflowManager):
         
         logger.info("Structuring invocation inputs for result.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"structuring input structure failed: {e}")
+        raise InternalServerErrorException("structuring input structure failed")
     
     return inputs_formatted
+
+async def report_invocation_failure(galaxy_client: GalaxyClient, invocation_id: str)-> str:
+    """Report falure error for an invocation"""
+    
+    explanation = ""
+    failed_job_descriptions = []
+    
+    # Get invocation jobs
+    try:
+        invocation_jobs = galaxy_client.gi_client.jobs.get_jobs(invocation_id=invocation_id)
+    except Exception as e:
+        logger.error(f"Error retrieving invocation jobs: {str(e)}")
+        explanation += f"Error retrieving invocation jobs: {str(e)}\n"
+        return explanation
+    
+    # Prepare concurrent tasks for failed jobs
+    failed_job_tasks = []
+    for inv_job in invocation_jobs:
+        if inv_job.get("state") == 'error':
+            job_id = inv_job.get("id")
+            if job_id:
+                failed_job_tasks.append(
+                            asyncio.to_thread(galaxy_client.gi_client.jobs.show_job, job_id = job_id, full_details=True)
+                        )
+        
+    if failed_job_tasks:
+        try:
+            job_details_list = await asyncio.gather(*failed_job_tasks)
+            logger.info(f"Number of failed jobs in invocation {len(job_details_list)}")
+        except Exception as e:
+            logger.error(f"Error retrieving job details concurrently: {str(e)}")
+            explanation += f"Error retrieving failed job details: {str(e)}\n"
+            return explanation
+        
+        for job_details in job_details_list:
+            try:
+                # Extract the key error describers
+                tool_id = job_details.get('tool_id', "Unknown")
+                stderr_output = job_details.get('stderr') or job_details.get('tool_stderr') or job_details.get('job_stderr') or ""
+                std_out = job_details.get('stdout') or job_details.get('tool_stdout') or ""
+                exit_code = job_details.get('exit_code')
+
+                # Create a structured failure summary
+                error_description = f"Tool `{tool_id}` failed during execution.\n"
+                
+                if std_out:
+                    error_description += f"  - Job Message Logs: {std_out}\n"
+                if exit_code:
+                    error_description += f"  - Exit code: {exit_code}\n"
+                if stderr_output:
+                    error_description += f"  - Error message: {stderr_output.strip()}\n"
+
+                
+                failed_job_descriptions.append(error_description)
+            except Exception as e:
+                logger.error(f"Error processing job details: {str(e)}")
+                explanation += f"Error processing failed job details: {str(e)}\n"
+    
+    if failed_job_descriptions:
+        explanation += "\n\nFailed Jobs Detected:\n" + "\n".join(failed_job_descriptions) + "\n"
+    
+    else:
+        explanation += "\nNo failed jobs detected in this invocation.\n"
+        
+    return explanation
 
 async def background_track_and_cache(
     invocation_id: str,
@@ -664,11 +757,17 @@ async def background_track_and_cache(
         # Set invocation to cache
         await invocation_cache.set_invocation_state(username, invocation_id, inv_state)
 
-        workflow_result, invocation_report = await structure_outputs(
+        if inv_state == "Failed":
+            
+            invocation_report = await report_invocation_failure(galaxy_client, invocation_id)
+            workflow_result, _ = await structure_outputs(
+            _invocation=_invocation, outputs=outputs, workflow_manager=workflow_manager, failure = True
+            )
+        else:
+            workflow_result, invocation_report = await structure_outputs(
             _invocation=_invocation, outputs=outputs, workflow_manager=workflow_manager
-        )
-
-               
+            )
+            
         result_dict = {
             "invocation_id": invocation_id,
             "state": inv_state,
@@ -682,6 +781,16 @@ async def background_track_and_cache(
         }
         await invocation_cache.set_invocation_result(username, invocation_id, result_dict)
         logger.info("Invocation results are complete and ready.")
+        if ws_manager:
+            ws_data = {
+                "type": SocketMessageType.INVOCATION_COMPLETE,
+                "payload": {"message": "Invocation results are complete and ready."}
+            }
+            await ws_manager.broadcast(
+                event=SocketMessageEvent.workflow_execute,
+                data=ws_data,
+                tracker_id=invocation_id
+            )
 
 
     except Exception as e:
@@ -710,17 +819,23 @@ async def background_track_and_cache(
     tags=["Invocation"]
 )
 async def show_invocation_result(
-    invocation_id: str = Path(..., description="")
+    invocation_id: str = Path(..., description=""),
+    internal_api: str | None = None
 ):
     try:
-        api_key = current_api_key.get()
+        if internal_api:
+            logger.info("Calling invocation result internally.")
+            api_key = internal_api
+        else:
+            api_key = current_api_key.get()
+            
         galaxy_client = GalaxyClient(api_key)
         username = galaxy_client.whoami
 
         # Step 1: Check if deleted
         deleted = await invocation_cache.get_deleted_invocations(username)
         if invocation_id in deleted:
-            raise HTTPException(status_code=404, detail="Invocation not found")
+            raise NotFoundException("Invocation not found")
 
         # Step 2: Check cache for full result
         cached_result = await invocation_cache.get_invocation_result(username, invocation_id)
@@ -741,7 +856,7 @@ async def show_invocation_result(
             )
         )
         if not _invocation:
-            raise HTTPException(status_code=404, detail="Invocation not found")
+            raise NotFoundException("Invocation not found")
 
         # Fetch common details for partial response
         mapping = await invocation_cache.get_invocation_workflow_mapping(username)
@@ -749,19 +864,26 @@ async def show_invocation_result(
             logger.warning("workflow to invocation map not found, warming user cache.")
             await invocation_background.warm_user_cache(token = "dummytoken", api_key=api_key) # using a dummy token to fill the functionality
             mapping = await invocation_cache.get_invocation_workflow_mapping(username)
-        if mapping:
-            stored_workflow_id = mapping.get(invocation_id, {}).get('workflow_id')
+            
+        if not mapping or invocation_id not in mapping:
+            raise InternalServerErrorException("could not find workflow details with the invocation id inputted.")
+        
+        stored_workflow_id = mapping.get(invocation_id, {}).get('workflow_id')
 
-            workflow_description_list = await invocation_cache.get_workflows_cache(username)
-            if workflow_description_list:
-                for _workflow in workflow_description_list:
-                    try:
-                        if stored_workflow_id == _workflow.get("id"):
-                            workflow_description = workflow.WorkflowListItem(**_workflow)
-                    except Exception as e:
-                        logger.warning(f"coudn't retreive from cache: {e}")
-        if not mapping:
-            raise HTTPException(status_code=500, detail = "could not find workflow details with the invocation id inputted.")
+        # Retrieve workflow description
+        workflow_description_list = await invocation_cache.get_workflows_cache(username)
+        workflow_description = None
+        
+        if workflow_description_list:
+            for _workflow in workflow_description_list:
+                try:
+                    if stored_workflow_id == _workflow.get("id"):
+                        workflow_description = workflow.WorkflowListItem(**_workflow)
+                except Exception as e:
+                    logger.warning(f"coudn't retreive from cache: {e}")
+                    
+        if workflow_description is None:
+            raise InternalServerErrorException("Could not locate workflow description in cache.")
 
         inputs_formatted = await structure_inputs(inv=invocation_details, workflow_manager=workflow_manager)
         
@@ -774,35 +896,36 @@ async def show_invocation_result(
         else:
             logger.warning(f"Unknown invocation state: {state}")
             inv_state = "Failed"
-
-      
-        invocation_result = {
-            "invocation_id" : invocation_details.get("id"),
-            "state" : inv_state,
-            "history_id" : invocation_details.get("history_id"),
-            "create_time" : invocation_details.get("create_time"),
-            "update_time" :invocation_details.get("update_time"),
-            "inputs" : inputs_formatted,
-            "result" : [],
-            "workflow" : workflow_description.model_dump(),
-            "report" : None 
-        }
-        
-        await invocation_cache.set_invocation_result(
-            username = username, 
-            invocation_id = invocation_details.get("id"),
-            result = invocation_result,
-            )
         
         # If pending-like, trigger background tracking if not already
         tracking_key = f"tracking:{api_key}:{invocation_id}"
         
         if inv_state == "Pending":
-            exists = await run_in_threadpool(redis_client.exists, tracking_key)
-            if not exists:
-                await run_in_threadpool(redis_client.setex, tracking_key, 3600, "1")
+            
+            invocation_result = {
+                "invocation_id" : invocation_details.get("id"),
+                "state" : inv_state,
+                "history_id" : invocation_details.get("history_id"),
+                "create_time" : invocation_details.get("create_time"),
+                "update_time" :invocation_details.get("update_time"),
+                "inputs" : inputs_formatted,
+                "result" : [],
+                "workflow" : workflow_description.model_dump(),
+                "report" : None 
+            }
+            
+            await invocation_cache.set_invocation_result(
+                username = username, 
+                invocation_id = invocation_details.get("id"),
+                result = invocation_result,
+                )
+            
+            set_result = await run_in_threadpool(
+                redis_client.set, tracking_key, "1", ex=NumericLimits.BACKGROUND_INVOCATION_TRACK, nx=True
+            )
+            if set_result: 
                 
-                asyncio.create_task(
+                background_task = asyncio.create_task(
                     background_track_and_cache(
                         invocation_id = invocation_id,
                         galaxy_client = galaxy_client,
@@ -816,15 +939,32 @@ async def show_invocation_result(
                         tracking_key = tracking_key
                         )
                     )
+                background_task.add_done_callback(lambda t: log_task_error(t, task_name="track invocation"))
+        else:
+            logger.info(f"Loading invocation failure report for invocation {invocation_id}")
+            invocation_report = await report_invocation_failure(galaxy_client = galaxy_client, invocation_id = invocation_id)
+            invocation_result = {
+                "invocation_id" : invocation_details.get("id"),
+                "state" : inv_state,
+                "history_id" : invocation_details.get("history_id"),
+                "create_time" : invocation_details.get("create_time"),
+                "update_time" :invocation_details.get("update_time"),
+                "inputs" : inputs_formatted,
+                "result" : [],
+                "workflow" : workflow_description.model_dump(),
+                "report" : invocation_report 
+            }
+            
+            await invocation_cache.set_invocation_result(
+                username = username, 
+                invocation_id = invocation_details.get("id"),
+                result = invocation_result,
+                )
         
         return invocation.InvocationResult(**invocation_result)
     except Exception as e:
-        import traceback
-        import sys
-
-        # Print the full traceback
-        traceback.print_exception(type(e), e, e.__traceback__, file=sys.stderr)
-        raise HTTPException(status_code=500, detail= f"Error getting invocation result: {e}")
+        logger.error(f"Error getting invocation result: {e}")
+        raise InternalServerErrorException("Error getting invocation result")
 
 
 async def _cancel_invocation_and_delete_data(invocation_ids: List[str], workflow_manager: WorkflowManager, username: str):
@@ -847,7 +987,7 @@ async def _cancel_invocation_and_delete_data(invocation_ids: List[str], workflow
                     invocation_id=invocation_id
                 )
                 # Short wait for cancellation to propagate (or implement polling for state change)
-                await asyncio.sleep(2)
+                await asyncio.sleep(NumericLimits.SHORT_SLEEP)
 
             # Get outputs and purge datasets/collections to free space
             outputs, _, _ = await workflow_manager.track_invocation(
@@ -874,7 +1014,7 @@ async def _cancel_invocation_and_delete_data(invocation_ids: List[str], workflow
     "/DELETE",
     summary="Delete workflow invocations",
     tags=["Invocation"],
-    status_code=204
+    status_code=HTTP_204_NO_CONTENT
 )
 async def delete_invocations(
     invocation_ids: str = Query(..., description="Comma-separated IDs of the workflow invocations to delete")
@@ -901,8 +1041,9 @@ async def delete_invocations(
         
 
         # Spawn async deletion tasks
-        asyncio.create_task(_cancel_invocation_and_delete_data(ids_list, workflow_manager, username))
+        background_task = asyncio.create_task(_cancel_invocation_and_delete_data(ids_list, workflow_manager, username))
+        background_task.add_done_callback(lambda t: log_task_error(t, task_name="Invocation cancelling and data deletion"))
 
-        return Response(status_code=204)
+        return Response(status_code=HTTP_204_NO_CONTENT)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete invocations: {e}")
+        raise InternalServerErrorException("Failed to delete invocations")

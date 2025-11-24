@@ -4,6 +4,8 @@ import redis
 import logging
 import asyncio
 
+from app.orchestration.utils import TTLiveConfig
+
 class InvocationCache:
     def __init__(self, redis_client: redis.Redis):
         self.redis = redis_client
@@ -21,8 +23,8 @@ class InvocationCache:
             self.log.error(f"Error getting workflows cache: {e}")
             return None
     
-    async def set_workflows_cache(self, username: str, workflows: List[Dict], ttl: int = 3600):
-        """Cache processed workflows list with 1-hour TTL"""
+    async def set_workflows_cache(self, username: str, workflows: List[Dict], ttl: int = TTLiveConfig.WORKFLOW_CACHE):
+        """Cache processed workflows list with TTL"""
         try:
             cache_key = f"workflows:{username}"
             await asyncio.to_thread(self.redis.setex, cache_key, ttl, json.dumps(workflows))
@@ -45,8 +47,8 @@ class InvocationCache:
             self.log.error(f"Error getting invocation workflow mapping: {e}")
             return {}
     
-    async def set_invocation_workflow_mapping(self, username: str, mapping: Dict[str, Dict], ttl: int = 300):
-        """Cache invocation-workflow mapping with 5-minute TTL"""
+    async def set_invocation_workflow_mapping(self, username: str, mapping: Dict[str, Dict], ttl: int = TTLiveConfig.INVOCATION_WORKFLOW_MAPPING):
+        """Cache invocation-workflow mapping with TTL"""
         try:
             cache_key = f"invocation_workflow_map:{username}"
             # Convert to JSON strings for Redis storage
@@ -78,8 +80,8 @@ class InvocationCache:
             return None
     
     async def set_response_cache(self, username: str, response: Dict, workflow_id: str = None, 
-                               history_id: str = None, ttl: int = 20):
-        """Cache response for specific filter combination with 20 seconds TTL"""
+                               history_id: str = None, ttl: int = TTLiveConfig.INVOCATION_LIST):
+        """Cache response for specific filter combination with TTL"""
         try:
             cache_key = f"invocations_response:{username}:{workflow_id or 'all'}:{history_id or 'all'}"
             await asyncio.to_thread(self.redis.setex, cache_key, ttl, json.dumps(response))
@@ -115,8 +117,8 @@ class InvocationCache:
             return None
     
     async def set_invocations_cache(self, username: str, invocations: List[Dict], 
-                                  filters: Dict, ttl: int = 60):
-        """Cache invocations list with 1-minute TTL"""
+                                  filters: Dict, ttl: int = TTLiveConfig.RAW_INVOCATION_LIST):
+        """Cache invocations list with TTL"""
         try:
             filter_str = "_".join([f"{k}:{v}" for k, v in sorted(filters.items()) if v is not None])
             cache_key = f"invocations_raw:{username}:{filter_str or 'all'}"
@@ -133,7 +135,7 @@ class InvocationCache:
         except Exception as e:
             self.log.error(f"Error adding to deleted invocations: {e}")
             
-    async def is_duplicate_request(self, username: str, request_hash: str, ttl: int = 3) -> bool:
+    async def is_duplicate_request(self, username: str, request_hash: str, ttl: int = TTLiveConfig.DUPLICATE_CHECK) -> bool:
         """Check if this is a duplicate request within TTL seconds"""
         try:
             cache_key = f"request_dedup:{username}:{request_hash}"
@@ -146,7 +148,7 @@ class InvocationCache:
             self.log.error(f"Error checking duplicate request: {e}")
             return False
     
-    async def is_duplicate_workflow_request(self, username: str, request_hash: str, ttl: int = 10) -> bool:
+    async def is_duplicate_workflow_request(self, username: str, request_hash: str, ttl: int = TTLiveConfig.DUPLICATE_CHECK) -> bool:
         """Check if this is a duplicate workflow request within TTL seconds"""
         try:
             cache_key = f"workflow_request_dedup:{username}:{request_hash}"
@@ -171,7 +173,7 @@ class InvocationCache:
             self.log.error(f"Error getting invocation result: {e}")
             return None
 
-    async def set_invocation_result(self, username: str, invocation_id: str, result: Dict, ttl: int = 86400):
+    async def set_invocation_result(self, username: str, invocation_id: str, result: Dict, ttl: int = TTLiveConfig.INVOCACTION_RESULT):
         """Cache full invocation result with 1-day TTL"""
         try:
             cache_key = f"invocation_result:{username}:{invocation_id}"
@@ -207,3 +209,37 @@ class InvocationCache:
             await asyncio.to_thread(self.redis.hdel, cache_key, invocation_id)
         except Exception as e:
             self.log.error(f"Error deleting invocation state: {e}")
+    
+    async def add_deleted_workflows(self, username: str, workflow_ids: list[str]):
+        """ Add multiple deleted workflow IDs to the user's deleted workflows set in Redis. """
+        try:
+            cache_key = f"deleted_workflows:{username}"
+            def _add_to_set():
+                pipe = self.redis.pipeline()
+                pipe.sadd(cache_key, *workflow_ids)
+                pipe.expire(cache_key, TTLiveConfig.WORKFLOW_CACHE)
+                pipe.execute()
+            await asyncio.to_thread(_add_to_set)
+        except Exception as e:
+            self.log.error(f"Failed to add deleted workflow IDs {workflow_ids} for user: {username}: {e}")
+
+    async def get_deleted_workflows(self, username: str) -> list:
+        """ Retrieve the set of deleted workflow IDs for a user from Redis. """
+        try:
+            cache_key = f"deleted_workflows:{username}"
+            def _get_set_members():
+                return list(self.redis.smembers(cache_key))
+            return await asyncio.to_thread(_get_set_members)
+        
+        except Exception as e:
+            self.log.error(f"Failed to retrieve deleted workflows for user: {username}: {e}")
+            return []
+
+    async def clear_deleted_workflows(self, username: str):
+        """ Clear the deleted workflows set for a user in Redis. """
+        try:
+            cache_key = f"deleted_workflows:{username}"
+            await asyncio.to_thread(self.redis.delete, cache_key)
+            
+        except Exception as e:
+            self.log.error(f"Failed to clear deleted workflows for user: {username}: {e}")

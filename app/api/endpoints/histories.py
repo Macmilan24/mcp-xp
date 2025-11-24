@@ -20,14 +20,16 @@ from app.bioblend_server.executor.data_manager import DataManager, CollectionTyp
 from app.bioblend_server.executor.history_manager import HistoryManager
 from app.api.schemas import dataset, history
 
+from exceptions import InternalServerErrorException, BadRequestException
+
 router = APIRouter()
 
-@router.get(
-    "/",
-    response_model = List[history.HistoryResponse],
-    summary="List all Galaxy histories",
-    tags=["Histories & Data"]
-)
+# @router.get(
+#     "/",
+#     response_model = List[history.HistoryResponse],
+#     summary="List all Galaxy histories",
+#     tags=["Histories & Data"]
+# )
 async def list_histories():
     """
     Retrieve a list of all Galaxy histories for the current API key.
@@ -45,15 +47,15 @@ async def list_histories():
             for h in histories
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list histories: {e}")
+        raise InternalServerErrorException("Failed to list histories")
 
 
-@router.post(
-    "/create",
-    response_model = history.HistoryResponse,
-    summary="Create a new Galaxy history",
-    tags=["Histories & Data"]
-)
+# @router.post(
+#     "/create",
+#     response_model = history.HistoryResponse,
+#     summary="Create a new Galaxy history",
+#     tags=["Histories & Data"]
+# )
 async def create_history(
     name: str | None = Query(None, description="Name of the new history")
 ):
@@ -72,14 +74,14 @@ async def create_history(
             name = new_history.name
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create history: {e}")
+        raise InternalServerErrorException("Failed to create history")
 
-@router.post(
-    "/{history_id}/upload-file",
-    response_model=dataset.FileUploadResponse,
-    summary="Upload a Single File",
-    tags=["Histories & Data"]
-)
+# @router.post(
+#     "/{history_id}/upload-file",
+#     response_model=dataset.FileUploadResponse,
+#     summary="Upload a Single File",
+#     tags=["Histories & Data"]
+# )
 async def upload_file_to_history(
     history_id: str = Path(..., description="The ID of the Galaxy history."),
     file: UploadFile = File(..., description="The file to upload.")
@@ -113,15 +115,15 @@ async def upload_file_to_history(
         # Clean up in case of error
         if 'tmp_path' in locals() and os.path.exists(tmp_path):
             os.remove(tmp_path)
-        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+        raise InternalServerErrorException("An error occurred")
 
 
-@router.post(
-    "/{history_id}/upload-collection",
-    response_model=dataset.CollectionResponse,
-    summary="Create a Dataset Collection from new files",
-    tags=["Histories & Data"]
-)
+# @router.post(
+#     "/{history_id}/upload-collection",
+#     response_model=dataset.CollectionResponse,
+#     summary="Create a Dataset Collection from new files",
+#     tags=["Histories & Data"]
+# )
 async def upload_dataset_collection(
     history_id: str = Path(..., description="The ID of the Galaxy history."),
     files: List[UploadFile] = File(..., description="The file(s) to upload for the collection."),
@@ -154,7 +156,7 @@ async def upload_dataset_collection(
         for uf in files:
             # Basic security: prevent path traversal attacks
             if ".." in uf.filename or "/" in uf.filename:
-                raise HTTPException(status_code=400, detail=f"Invalid filename: {uf.filename}")
+                raise BadRequestException("Invalid filename: {uf.filename}")
             
             tmp_path = pathlib.Path(tmpdir) / uf.filename
             with tmp_path.open("wb") as fout:
@@ -169,22 +171,22 @@ async def upload_dataset_collection(
         
         elif collection_type == CollectionType.PAIRED:
             if len(files) != 2:
-                raise HTTPException(status_code=400, detail="A 'paired' collection requires exactly two files.")
+                raise BadRequestException("A 'paired' collection requires exactly two files.")
             inputs = list(file_path_map.values())
 
         elif collection_type == CollectionType.LIST_PAIRED:
             if not structure:
-                raise HTTPException(status_code=400, detail="The 'structure' field is required for 'list:paired' collections.")
+                raise BadRequestException("The 'structure' field is required for 'list:paired' collections.")
             try:
                 paired_filenames = json.loads(structure)
                 for fwd_name, rev_name in paired_filenames:
                     fwd_path = file_path_map.get(fwd_name)
                     rev_path = file_path_map.get(rev_name)
                     if not fwd_path or not rev_path:
-                        raise HTTPException(status_code=400, detail=f"A file in the provided structure was not uploaded: {fwd_name} or {rev_name}")
+                        raise BadRequestException("A file in the provided structure was not uploaded: {fwd_name} or {rev_name}")
                     inputs.append([fwd_path, rev_path])
             except (json.JSONDecodeError, ValueError, TypeError) as e:
-                raise HTTPException(status_code=400, detail=f"Invalid 'structure' format: {e}")
+                raise BadRequestException("Invalid 'structure' format")
 
         # Get the history object
         galaxy_history = await to_thread.run_sync(data_manager.gi.histories.get, history_id)
@@ -203,19 +205,19 @@ async def upload_dataset_collection(
         # Re-raise HTTPExceptions, otherwise wrap general exceptions
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred during collection upload: {e}")
+        raise InternalServerErrorException("An unexpected error occurred during collection upload")
 
     finally:
         # Always clean up the temporary directory in a thread
         cleanup_task = functools.partial(shutil.rmtree, tmpdir, ignore_errors=True)
         await to_thread.run_sync(cleanup_task)
 
-@router.get(
-    "/{history_id}/contents",
-    response_model=dataset.HistoryContentsResponse,
-    summary="List History Contents",
-    tags=["Histories & Data"]
-)
+# @router.get(
+#     "/{history_id}/contents",
+#     response_model=dataset.HistoryContentsResponse,
+#     summary="List History Contents",
+#     tags=["Histories & Data"]
+# )
 async def list_history_contents(
     history_id: str = Path(..., description="The ID of the Galaxy history.")
 ):
@@ -236,14 +238,14 @@ async def list_history_contents(
 
         return {"datasets": datasets_info, "collections": collections_info}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list history contents: {e}")
+        raise InternalServerErrorException("Failed to list history contents")
 
-@router.post(
-    "/{history_id}/create_collection",
-    response_model=dataset.CollectionResponse,
-    summary="Create a Dataset Collection from pre-existing history",
-    tags=["Histories & Data"]
-)
+# @router.post(
+#     "/{history_id}/create_collection",
+#     response_model=dataset.CollectionResponse,
+#     summary="Create a Dataset Collection from pre-existing history",
+#     tags=["Histories & Data"]
+# )
 async def create_dataset_collection(
     history_id: str = Path(..., description="The ID of the Galaxy history."),
     collection_details: dataset.CollectionCreate = Body(...)
@@ -278,9 +280,9 @@ async def create_dataset_collection(
 
         return {"id": created_collection.id, "name": created_collection.name}
     except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid collection_type: '{collection_details.collection_type}'")
+        raise BadRequestException("Invalid collection_type: '{collection_details.collection_type}'")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create collection: {e}")
+        raise InternalServerErrorException("Failed to create collection")
 
 
 def _rmtree_sync(path):
@@ -303,7 +305,7 @@ async def download_files(
     data_manager = DataManager(galaxy_client)
    
     if not dataset_ids and not collection_ids:
-        raise HTTPException(status_code=400, detail="No dataset or collection IDs provided")
+        raise BadRequestException("No dataset or collection IDs provided")
     
     # 1. Create a temp dir that we will clean up ourselves
     tmpdir = tempfile.mkdtemp(prefix="galaxy_dl_")
@@ -342,4 +344,4 @@ async def download_files(
     except Exception as exc:
         # Clean up immediately on error
         to_thread.run_sync(_rmtree_sync, tmpdir)
-        raise HTTPException(status_code=500, detail=f"Download failed: {exc}")
+        raise InternalServerErrorException("Download failed")

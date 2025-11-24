@@ -1,0 +1,13 @@
+# Git
+.git
+.gitignore
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+# Ignore IDE files
+.vscode/
+*.html
+.env
+*.env
+*log

@@ -61,7 +61,7 @@ class GalaxyInformer:
         self.logger.info(f'Initializing the galaxy informer for entity type: {entity_type} for user {self.username}')
 
     @classmethod
-    async def create(cls, galaxy_client: GalaxyClient, entity_type: str, llm_provider = "gemini"):
+    async def create(cls, galaxy_client: GalaxyClient, entity_type: str, llm_provider = os.getenv("CURRENT_LLM", "gemini")):
         """Asynchronous factory to create and fully initialize a GalaxyInformer instance."""
 
         from app.bioblend_server.informer.manager import InformerManager 
@@ -80,7 +80,7 @@ class GalaxyInformer:
             openai_cfg = LLMModelConfig(model_config_data['providers']['openai'])
             self.llm = OpenAIProvider(model_config=openai_cfg)
             
-        self.redis_client = redis.Redis(host='localhost', port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
+        self.redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
         self.manager = await InformerManager.create()
         return self
 
