@@ -35,11 +35,11 @@ class InvocationBackgroundTasks:
         while True:
             try:
                 await self.warm_all_user_caches()
-                await asyncio.sleep(NumericLimits.BACKGROUND_INTERVAL)
+                await asyncio.sleep(NumericLimits.BACKGROUND_INTERVAL.value)
             except Exception as e:
                 logger.error(f"Error in cache warming task: {e}")
                 # Wait 1 minute before retrying on error
-                await asyncio.sleep(NumericLimits.LONG_SLEEP)
+                await asyncio.sleep(NumericLimits.LONG_SLEEP.value)
     
     async def warm_all_user_caches(self):
         """Warm cache for all active users"""
@@ -50,7 +50,7 @@ class InvocationBackgroundTasks:
             logger.debug(f"Warming cache for {len(active_users)} active users")
             
             # Process users in batches to avoid overwhelming the Galaxy API
-            batch_size = NumericLimits.BATCH_SIZE
+            batch_size = NumericLimits.BATCH_SIZE.value
             for i in range(0, len(active_users), batch_size):
                 batch = active_users[i:i + batch_size]
                 tasks = [self.warm_user_cache(token) for token in batch]
@@ -63,7 +63,7 @@ class InvocationBackgroundTasks:
                 
                 # Small delay between batches
                 if i + batch_size < len(active_users):
-                    await asyncio.sleep(NumericLimits.SHORT_SLEEP)
+                    await asyncio.sleep(NumericLimits.SHORT_SLEEP.value)
             
         except Exception as e:
             logger.error(f"Error warming all user caches: {e}")
@@ -72,7 +72,7 @@ class InvocationBackgroundTasks:
         """Get list of active users from Redis (users who made requests in the last hour)"""
         try:
             current_time = int(datetime.now().timestamp())
-            ten_minutes_ago = current_time - NumericLimits.BACKGROUND_INTERVAL
+            ten_minutes_ago = current_time - NumericLimits.BACKGROUND_INTERVAL.value
             active_users_key = "rate_limit:active_users_last_10_minutes"
             
             # Clean old entries (remove users with timestamps older than 10 minutes)
@@ -139,7 +139,7 @@ class InvocationBackgroundTasks:
             
             if last_warm:
                 last_warm_time = datetime.fromisoformat(last_warm)
-                if (datetime.now() - last_warm_time).total_seconds() < NumericLimits.WARM_CHECK:
+                if (datetime.now() - last_warm_time).total_seconds() < NumericLimits.WARM_CHECK.value:
                     logger.debug(f"Skipping cache warm for user {username}: recently warmed")
                     return  # Skip if warmed recently
             
@@ -165,7 +165,7 @@ class InvocationBackgroundTasks:
                 None, 
                 self.redis.setex, 
                 last_warm_key, 
-                NumericLimits.WARM_TIMESTAMP, 
+                NumericLimits.WARM_TIMESTAMP.value, 
                 datetime.now().isoformat()
             )
             
@@ -180,7 +180,7 @@ class InvocationBackgroundTasks:
             # Fetch raw workflows
             raw_workflows = await asyncio.wait_for(
                 run_in_threadpool(workflow_manager.gi_object.gi.workflows.get_workflows),
-                timeout=NumericLimits.TIMEOUT
+                timeout=NumericLimits.TIMEOUT.value
             )
             if not raw_workflows:
                 logger.debug("No workflows found for user")
@@ -189,7 +189,7 @@ class InvocationBackgroundTasks:
                 return raw_workflows
 
             # Parallel fetch full details
-            semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT)
+            semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT.value)
             async def fetch_full(wf_id):
                 async with semaphore:
                     try:
@@ -198,7 +198,7 @@ class InvocationBackgroundTasks:
                                 workflow_manager.gi_object.gi.workflows.show_workflow,
                                 workflow_id=wf_id
                             ),
-                            timeout=NumericLimits.TIMEOUT
+                            timeout=NumericLimits.TIMEOUT.value
                         )
                     except Exception as e:
                         logger.warning(f"Failed to fetch full workflow {wf_id}: {e}")
@@ -245,7 +245,7 @@ class InvocationBackgroundTasks:
         
         try:
             # Process workflows in parallel, but limit concurrency
-            semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT)
+            semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT.value)
             
             async def process_workflow(workflow):
                 async with semaphore:
@@ -255,9 +255,9 @@ class InvocationBackgroundTasks:
                             run_in_threadpool(
                                 workflow_manager.gi_object.gi.invocations.get_invocations,
                                 workflow_id=workflow['id'],
-                                limit = NumericLimits.INVOCATION_LIMIT
+                                limit = NumericLimits.INVOCATION_LIMIT.value
                             ),
-                            timeout=NumericLimits.TIMEOUT
+                            timeout=NumericLimits.TIMEOUT.value
                         )
                         
                         wf_mapping = {}
@@ -298,7 +298,7 @@ class InvocationBackgroundTasks:
         try:
             # Prune active users sorted set as a safety measure
             current_time = int(datetime.now().timestamp())
-            hour_ago = current_time - NumericLimits.WARM_TIMESTAMP
+            hour_ago = current_time - NumericLimits.WARM_TIMESTAMP.value
             active_users_key = "rate_limit:active_users_last_hour"
             await asyncio.get_event_loop().run_in_executor(
                 None, 
@@ -319,7 +319,7 @@ class InvocationBackgroundTasks:
         while True:
             try:
                 await self.cleanup_expired_cache_entries()
-                await asyncio.sleep(NumericLimits.WARM_TIMESTAMP)  # Run every hour
+                await asyncio.sleep(NumericLimits.WARM_TIMESTAMP.value)  # Run every hour
             except Exception as e:
                 logger.error(f"Error in cleanup task: {e}")
-                await asyncio.sleep(NumericLimits.LONG_SLEEP)
+                await asyncio.sleep(NumericLimits.LONG_SLEEP.value)

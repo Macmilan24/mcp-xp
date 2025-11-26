@@ -185,9 +185,9 @@ async def execute_workflow(
     tracker_id = tracker_id or str(uuid.uuid4())
 
     try:
-        await ws_manager.broadcast(event = SocketMessageEvent.workflow_execute,
+        await ws_manager.broadcast(event = SocketMessageEvent.workflow_execute.value,
                              data = {
-                                 "type": SocketMessageType.WORKFLOW_EXECUTE,
+                                 "type": SocketMessageType.WORKFLOW_EXECUTE.value,
                                  "payload": {"message" : "Execution started."}   
                                 },
                              tracker_id=tracker_id
@@ -307,9 +307,9 @@ async def execute_workflow(
             }
     except Exception as e:
         await ws_manager.broadcast(
-            event= SocketMessageEvent.workflow_execute,
+            event= SocketMessageEvent.workflow_execute.value,
             data = {
-                "type": SocketMessageType.WORKFLOW_FAILURE,
+                "type": SocketMessageType.WORKFLOW_FAILURE.value,
                 "payload" : f"Workflow execution failed: {e}"
             },
             tracker_id = tracker_id
@@ -375,7 +375,7 @@ async def delete_workflows(
         ids_list = [i.strip() for i in workflow_ids.split(",") if i.strip()]
 
         # Define semaphore with a limit
-        semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT)
+        semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT.value)
 
         # Define background task for deleting workflows with semaphore
         async def delete_workflow_with_semaphore(workflow_id: str):

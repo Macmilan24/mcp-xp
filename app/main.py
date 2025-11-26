@@ -407,7 +407,7 @@ async def websocket_endpoint(websocket: WebSocket, tracker_id: str):
                 await asyncio.sleep(30)  
                 # Keeping shape consisitent
                 await ws_manager.broadcast( 
-                    event=SocketMessageEvent.ping,
+                    event=SocketMessageEvent.ping.value,
                     data={},
                     tracker_id=tracker_id
                 )

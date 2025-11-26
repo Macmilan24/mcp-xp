@@ -7,7 +7,7 @@ import json
 from unittest.mock import MagicMock, patch, AsyncMock
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
-
+from app.orchestration.utils import TTLiveConfig
 
 @pytest.fixture
 def mock_redis():
@@ -360,7 +360,7 @@ class TestInvocationCache:
         assert result is False
         mock_redis.exists.assert_called_once_with(f"workflow_request_dedup:{username}:{request_hash}")
         mock_redis.setex.assert_called_once_with(
-            f"workflow_request_dedup:{username}:{request_hash}", 10, "1"
+            f"workflow_request_dedup:{username}:{request_hash}", TTLiveConfig.DUPLICATE_CHECK.value, "1"
         )
 
 
@@ -501,7 +501,7 @@ class TestInvocationCache:
 
         mock_redis.pipeline.assert_called_once()
         mock_pipeline.sadd.assert_called_once_with(f"deleted_workflows:{username}", *workflow_ids)
-        mock_pipeline.expire.assert_called_once_with(f"deleted_workflows:{username}", 86400)
+        mock_pipeline.expire.assert_called_once_with(f"deleted_workflows:{username}", TTLiveConfig.WORKFLOW_CACHE.value)
         mock_pipeline.execute.assert_called_once()
 
 

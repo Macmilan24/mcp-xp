@@ -23,7 +23,7 @@ class InvocationCache:
             self.log.error(f"Error getting workflows cache: {e}")
             return None
     
-    async def set_workflows_cache(self, username: str, workflows: List[Dict], ttl: int = TTLiveConfig.WORKFLOW_CACHE):
+    async def set_workflows_cache(self, username: str, workflows: List[Dict], ttl: int = TTLiveConfig.WORKFLOW_CACHE.value):
         """Cache processed workflows list with TTL"""
         try:
             cache_key = f"workflows:{username}"
@@ -47,7 +47,7 @@ class InvocationCache:
             self.log.error(f"Error getting invocation workflow mapping: {e}")
             return {}
     
-    async def set_invocation_workflow_mapping(self, username: str, mapping: Dict[str, Dict], ttl: int = TTLiveConfig.INVOCATION_WORKFLOW_MAPPING):
+    async def set_invocation_workflow_mapping(self, username: str, mapping: Dict[str, Dict], ttl: int = TTLiveConfig.INVOCATION_WORKFLOW_MAPPING.value):
         """Cache invocation-workflow mapping with TTL"""
         try:
             cache_key = f"invocation_workflow_map:{username}"
@@ -80,7 +80,7 @@ class InvocationCache:
             return None
     
     async def set_response_cache(self, username: str, response: Dict, workflow_id: str = None, 
-                               history_id: str = None, ttl: int = TTLiveConfig.INVOCATION_LIST):
+                               history_id: str = None, ttl: int = TTLiveConfig.INVOCATION_LIST.value):
         """Cache response for specific filter combination with TTL"""
         try:
             cache_key = f"invocations_response:{username}:{workflow_id or 'all'}:{history_id or 'all'}"
@@ -117,7 +117,7 @@ class InvocationCache:
             return None
     
     async def set_invocations_cache(self, username: str, invocations: List[Dict], 
-                                  filters: Dict, ttl: int = TTLiveConfig.RAW_INVOCATION_LIST):
+                                  filters: Dict, ttl: int = TTLiveConfig.RAW_INVOCATION_LIST.value):
         """Cache invocations list with TTL"""
         try:
             filter_str = "_".join([f"{k}:{v}" for k, v in sorted(filters.items()) if v is not None])
@@ -135,7 +135,7 @@ class InvocationCache:
         except Exception as e:
             self.log.error(f"Error adding to deleted invocations: {e}")
             
-    async def is_duplicate_request(self, username: str, request_hash: str, ttl: int = TTLiveConfig.DUPLICATE_CHECK) -> bool:
+    async def is_duplicate_request(self, username: str, request_hash: str, ttl: int = TTLiveConfig.DUPLICATE_CHECK.value) -> bool:
         """Check if this is a duplicate request within TTL seconds"""
         try:
             cache_key = f"request_dedup:{username}:{request_hash}"
@@ -148,7 +148,7 @@ class InvocationCache:
             self.log.error(f"Error checking duplicate request: {e}")
             return False
     
-    async def is_duplicate_workflow_request(self, username: str, request_hash: str, ttl: int = TTLiveConfig.DUPLICATE_CHECK) -> bool:
+    async def is_duplicate_workflow_request(self, username: str, request_hash: str, ttl: int = TTLiveConfig.DUPLICATE_CHECK.value) -> bool:
         """Check if this is a duplicate workflow request within TTL seconds"""
         try:
             cache_key = f"workflow_request_dedup:{username}:{request_hash}"
@@ -173,7 +173,7 @@ class InvocationCache:
             self.log.error(f"Error getting invocation result: {e}")
             return None
 
-    async def set_invocation_result(self, username: str, invocation_id: str, result: Dict, ttl: int = TTLiveConfig.INVOCACTION_RESULT):
+    async def set_invocation_result(self, username: str, invocation_id: str, result: Dict, ttl: int = TTLiveConfig.INVOCACTION_RESULT.value):
         """Cache full invocation result with 1-day TTL"""
         try:
             cache_key = f"invocation_result:{username}:{invocation_id}"
@@ -217,7 +217,7 @@ class InvocationCache:
             def _add_to_set():
                 pipe = self.redis.pipeline()
                 pipe.sadd(cache_key, *workflow_ids)
-                pipe.expire(cache_key, TTLiveConfig.WORKFLOW_CACHE)
+                pipe.expire(cache_key, TTLiveConfig.WORKFLOW_CACHE.value)
                 pipe.execute()
             await asyncio.to_thread(_add_to_set)
         except Exception as e:

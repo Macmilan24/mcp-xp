@@ -336,8 +336,8 @@ class ToolManager:
                 self.log.info(f"Job {job_id} transitioned to {current_state}")
                 
                 await ws_manager.broadcast(
-                    event = SocketMessageEvent.tool_execute,
-                    data = {"type": SocketMessageType.JOB_UPDATE,
+                    event = SocketMessageEvent.tool_execute.value,
+                    data = {"type": SocketMessageType.JOB_UPDATE.value,
                         "payload" : {
                             "job_id": job_id,
                             "status" : current_state
@@ -354,9 +354,9 @@ class ToolManager:
             if current_state == "ok":
                 self.log.info("Job execution complete.")
                 await ws_manager.broadcast(
-                    event = SocketMessageEvent.tool_execute,
+                    event = SocketMessageEvent.tool_execute.value,
                     data = {
-                        "type": SocketMessageType.JOB_COMPLETE,
+                        "type": SocketMessageType.JOB_COMPLETE.value,
                         "data" : {"message": "Job execution complete." }
                     },
                     tracker_id=tracker_id
@@ -366,9 +366,9 @@ class ToolManager:
 
             if current_state in {'error', 'cancelled'}:
                 await ws_manager.broadcast(
-                    event = SocketMessageEvent.tool_execute,
+                    event = SocketMessageEvent.tool_execute.value,
                     data = {
-                        "type": SocketMessageType.JOB_FAILURE,
+                        "type": SocketMessageType.JOB_FAILURE.value,
                         "data" : {"message": "Job execution cancelled or failed." }
                     },
                     tracker_id=tracker_id
@@ -385,9 +385,9 @@ class ToolManager:
                     
                     self.log.warning(f"Job {job_id} cancelled due to timeout.")
                     await ws_manager.broadcast(
-                        event = SocketMessageEvent.tool_execute,
+                        event = SocketMessageEvent.tool_execute.value,
                         data = {
-                        "type": SocketMessageType.JOB_FAILURE,
+                        "type": SocketMessageType.JOB_FAILURE.value,
                         "data" : {"message": "Job cancelled due to timeout." }
                         },
                         tracker_id=tracker_id
@@ -396,9 +396,9 @@ class ToolManager:
                 except Exception as e:
                     self.log.warning(f"Failed to cancel job {job_id}: {e}")
                     await ws_manager.broadcast(
-                        event = SocketMessageEvent.tool_execute,
+                        event = SocketMessageEvent.tool_execute.value,
                         data = {
-                        "type": SocketMessageType.JOB_FAILURE,
+                        "type": SocketMessageType.JOB_FAILURE.value,
                         "data" : {"message": f"Job execution failed: {e}"}
                         },
                         tracker_id=tracker_id
@@ -478,9 +478,9 @@ class ToolManager:
 
         self.log.info(f"Started job {job_id} for tool {tool_id!r}")
         await ws_manager.broadcast(
-            event = SocketMessageEvent.tool_execute,
+            event = SocketMessageEvent.tool_execute.value,
             data = {
-                "type": SocketMessageType.TOOL_EXECUTE,
+                "type": SocketMessageType.TOOL_EXECUTE.value,
                 "payload": {"message": "Execution started."}
             },
             tracker_id = tracker_id
