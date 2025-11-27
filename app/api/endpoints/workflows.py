@@ -37,7 +37,7 @@ invocation_cache = InvocationCache(redis_client)
 invocation_background = InvocationBackgroundTasks(cache = invocation_cache, redis_client=redis_client)
 
 @router.get(
-    "/",
+    "",
     response_model=workflow.WorkflowList,
     summary="List all workflows",
     tags=["Workflows"]

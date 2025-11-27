@@ -59,7 +59,7 @@ def log_task_error(task: asyncio.Task, *, task_name: str) -> None:
 router = APIRouter()
 
 @router.get(
-    "/",
+    "",
     response_model=invocation.InvocationList,
     summary="List all workflow invocations",
     tags=["Invocation"]
