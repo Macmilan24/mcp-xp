@@ -20,7 +20,7 @@ from starlette.status import HTTP_204_NO_CONTENT
 import jwt
 from app.context import current_api_key
 
-from exceptions import UnauthorizedException
+from app.exceptions import UnauthorizedException
 
 GALAXY_API_TOKEN = "galaxy_api_token"
 
@@ -40,47 +40,52 @@ class JWTGalaxyKeyMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         # Allow public paths if you need them (adjust to your app). Remove if unwanted.
-        if request.method == "OPTIONS":
-            self.log.info("Skipping options method")
+        try:
+            if request.method == "OPTIONS":
+                self.log.info("Skipping options method")
+                return await call_next(request)
+            
+            public_paths = {"/", "/docs", "/redoc", "/openapi.json", "/register-user"}
+            if request.url.path in public_paths or request.url.path.startswith("/static/"):
+                return await call_next(request)
+
+            auth = request.headers.get("Authorization", "")
+            if not auth.startswith("Bearer "):
+                raise UnauthorizedException("Authorization header with Bearer token is required.")
+
+            token = auth.split(" ")[1].strip()
+            try:
+                payload = self._decode_jwt(token)
+            except HTTPException as e:
+                return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
+
+            # Extract the API token claim
+            if GALAXY_API_TOKEN not in payload:
+                self.log.error("JWT missing API key claim '%s'", GALAXY_API_TOKEN)
+                raise UnauthorizedException("JWT missing required claim")
+
+            galaxy_jwt_token = payload[GALAXY_API_TOKEN]
+            if not galaxy_jwt_token:
+                self.log.error("Empty API key claim")
+
+                raise UnauthorizedException("API key claim is empty.")
+
+            # Try to decrypt claim_value (it might be the fernet token string produced by register-user)
+            apikey = await self._decrypt_api_token(galaxy_jwt_token)
+            if not apikey:
+                # fallback: treat as raw api key string
+                if isinstance(galaxy_jwt_token, str) and galaxy_jwt_token.strip():
+                    apikey = galaxy_jwt_token.strip()
+                else:
+                    self.log.error("Unable to obtain Galaxy API key from JWT claim")
+                    raise UnauthorizedException("Invalid API key in JWT claim.")
+
+            # set the context for downstream handlers
+            current_api_key.set(apikey)
             return await call_next(request)
         
-        public_paths = {"/", "/docs", "/redoc", "/openapi.json", "/register-user"}
-        if request.url.path in public_paths or request.url.path.startswith("/static/"):
-            return await call_next(request)
-
-        auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
-            return UnauthorizedException("Authorization header with Bearer token is required.")
-
-        token = auth.split(" ")[1].strip()
-        try:
-            payload = self._decode_jwt(token)
-        except HTTPException as e:
+        except UnauthorizedException as e:
             return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
-
-        # Extract the API token claim
-        if GALAXY_API_TOKEN not in payload:
-            self.log.error("JWT missing API key claim '%s'", GALAXY_API_TOKEN)
-            return UnauthorizedException("JWT missing required claim")
-
-        galaxy_jwt_token = payload[GALAXY_API_TOKEN]
-        if not galaxy_jwt_token:
-            self.log.error("Empty API key claim")
-            return UnauthorizedException("API key claim is empty.")
-
-        # Try to decrypt claim_value (it might be the fernet token string produced by register-user)
-        apikey = await self._decrypt_api_token(galaxy_jwt_token)
-        if not apikey:
-            # fallback: treat as raw api key string
-            if isinstance(galaxy_jwt_token, str) and galaxy_jwt_token.strip():
-                apikey = galaxy_jwt_token.strip()
-            else:
-                self.log.error("Unable to obtain Galaxy API key from JWT claim")
-                return UnauthorizedException("Invalid API key in JWT claim.")
-
-        # set the context for downstream handlers
-        current_api_key.set(apikey)
-        return await call_next(request)
 
     def _decode_jwt(self, token: str) -> dict:
         """

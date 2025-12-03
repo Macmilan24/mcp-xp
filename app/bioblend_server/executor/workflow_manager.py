@@ -126,9 +126,9 @@ class WorkflowManager:
                     self.log.info(f"status: {install_result.get('status')}, message: {install_result.get('message')}")
                     if ws_manager:
                         await ws_manager.broadcast(
-                            event= SocketMessageEvent.workflow_upload,
+                            event= SocketMessageEvent.workflow_upload.value,
                             data = {
-                                "type": SocketMessageType.TOOL_INSTALL,
+                                "type": SocketMessageType.TOOL_INSTALL.value,
                                 "payload": {"message": f"{install_result.get('message')}"}
                             },
                             tracker_id = tracker_id
@@ -148,9 +148,9 @@ class WorkflowManager:
                         )
                         if ws_manager:
                             await ws_manager.broadcast(
-                                event=SocketMessageEvent.workflow_upload,
+                                event=SocketMessageEvent.workflow_upload.value,
                                 data = {
-                                    "type" : SocketMessageType.TOOL_INSTALL,
+                                    "type" : SocketMessageType.TOOL_INSTALL.value,
                                     "payload" : {"message": f"Tool Name: {repo_info.get('name', 'N/A')}, installed successfully."}
                                 },
                                 tracker_id = tracker_id
@@ -172,9 +172,9 @@ class WorkflowManager:
 
         if ws_manager:
             await ws_manager.broadcast(
-                event = SocketMessageEvent.workflow_upload,
+                event = SocketMessageEvent.workflow_upload.value,
                 data = {
-                    "type": SocketMessageType.UPLOAD_WORKFLOW,
+                    "type": SocketMessageType.UPLOAD_WORKFLOW.value,
                     "payload": {"message": "Workflow upload started, checking and installing missing tools."}
                     },
                 tracker_id=tracker_id
@@ -190,9 +190,9 @@ class WorkflowManager:
         except Exception as e:
             if ws_manager:
                 await ws_manager.broadcast(
-                    event = SocketMessageEvent.workflow_upload,
+                    event = SocketMessageEvent.workflow_upload.value,
                     data = {
-                        "type": SocketMessageType.UPLOAD_FAILURE,
+                        "type": SocketMessageType.UPLOAD_FAILURE.value,
                         "payload": {"message": f"Error installing missing tools in the uploaded workflow: {e}"}
                         },
                     tracker_id=tracker_id
@@ -220,9 +220,9 @@ class WorkflowManager:
             if ws_manager:
                 self.log.info("workflow Uploaded successfully")
                 await ws_manager.broadcast(
-                    event = SocketMessageEvent.workflow_upload,
+                    event = SocketMessageEvent.workflow_upload.value,
                     data = {
-                        "type": SocketMessageType.UPLOAD_COMPLETE,
+                        "type": SocketMessageType.UPLOAD_COMPLETE.value,
                         "payload": {"message": "Workflow successfully uploaded."}
                         },
                     tracker_id=tracker_id
@@ -233,9 +233,9 @@ class WorkflowManager:
             if retry_count > 3:
                 self.log.error("Workflow is not runnable, failed to upload correctly.")
                 await ws_manager.broadcast(
-                    event = SocketMessageEvent.workflow_upload,
+                    event = SocketMessageEvent.workflow_upload.value,
                     data = {
-                        "type": SocketMessageType.UPLOAD_FAILURE,
+                        "type": SocketMessageType.UPLOAD_FAILURE.value,
                         "payload": {"message": "Workflow upload failed."}
                         },
                     tracker_id=tracker_id
@@ -402,7 +402,7 @@ class WorkflowManager:
         """Tracks invocation steps and waits for the invocation reaches a terminal state and returns with the invocation results""" 
         
         # Safety: Semaphore to limit concurrent API calls (prevent overwhelming Galaxy server)
-        semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT)  # Adjust based on server capacity
+        semaphore = asyncio.Semaphore(NumericLimits.SEMAPHORE_LIMIT.value)  # Adjust based on server capacity
         
         # Helper: Fetch with semaphore
         async def _fetch_with_semaphore(coro):
@@ -524,11 +524,11 @@ class WorkflowManager:
             
             if ws_manager:
                 ws_data = {
-                    "type": SocketMessageType.INVOCATION_FAILURE,
+                    "type": SocketMessageType.INVOCATION_FAILURE.value,
                     "payload": {"message": "Invocation failed or has error"}
                 }
                 await ws_manager.broadcast(
-                    event=SocketMessageEvent.workflow_execute, 
+                    event=SocketMessageEvent.workflow_execute.value, 
                     data=ws_data, 
                     tracker_id=tracker_id
                 )
@@ -727,11 +727,11 @@ class WorkflowManager:
                 invocation_state_result = "Failed"
                 if ws_manager:
                     ws_data = {
-                        "type": SocketMessageType.INVOCATION_FAILURE,
+                        "type": SocketMessageType.INVOCATION_FAILURE.value,
                         "payload": {"message": "Invocation failed or has error"}
                     }
                     await ws_manager.broadcast(
-                        event=SocketMessageEvent.workflow_execute, 
+                        event=SocketMessageEvent.workflow_execute.value, 
                         data=ws_data, 
                         tracker_id=tracker_id
                     )
@@ -817,7 +817,7 @@ class WorkflowManager:
                         # Broadcast with job-level information
                         if ws_manager:
                             ws_data = {
-                                "type": SocketMessageType.INVOCATION_STEP_UPDATE,
+                                "type": SocketMessageType.INVOCATION_STEP_UPDATE.value,
                                 "payload": {
                                     "workflow_steps": num_steps,
                                     "completed_steps": completed_step_count,
@@ -827,7 +827,7 @@ class WorkflowManager:
                                 }
                             }
                             await ws_manager.broadcast(
-                                event=SocketMessageEvent.workflow_execute,
+                                event=SocketMessageEvent.workflow_execute.value,
                                 data=ws_data,
                                 tracker_id=tracker_id
                             )
@@ -842,7 +842,7 @@ class WorkflowManager:
                     
                     if ws_manager:
                         ws_data = {
-                            "type": SocketMessageType.INVOCATION_FAILURE,
+                            "type": SocketMessageType.INVOCATION_FAILURE.value,
                             "payload": {
                                 "message": f"Step completely failed - all {step_total_jobs} jobs in step failed",
                                 "failed_step_id": step_id,
@@ -850,7 +850,7 @@ class WorkflowManager:
                             }
                         }
                         await ws_manager.broadcast(
-                            event=SocketMessageEvent.workflow_execute,
+                            event=SocketMessageEvent.workflow_execute.value,
                             data=ws_data,
                             tracker_id=tracker_id
                         )
@@ -878,7 +878,7 @@ class WorkflowManager:
                 
                 if ws_manager:
                     ws_data = {
-                        "type": SocketMessageType.INVOCATION_STEP_UPDATE,
+                        "type": SocketMessageType.INVOCATION_STEP_UPDATE.value,
                         "payload": {
                             "message": "All Jobs completed successfully",
                             "total_jobs": total_scheduled_jobs_in_invocation,
@@ -886,7 +886,7 @@ class WorkflowManager:
                         }
                     }
                     await ws_manager.broadcast(
-                        event=SocketMessageEvent.workflow_execute,
+                        event=SocketMessageEvent.workflow_execute.value,
                         data=ws_data,
                         tracker_id=tracker_id
                     )
@@ -940,11 +940,11 @@ class WorkflowManager:
                 
                 if ws_manager:
                     ws_data = {
-                        "type": SocketMessageType.INVOCATION_FAILURE,
+                        "type": SocketMessageType.INVOCATION_FAILURE.value,
                         "payload": {"message": "Invocation timed out"}
                     }
                     await ws_manager.broadcast(
-                        event=SocketMessageEvent.workflow_execute, 
+                        event=SocketMessageEvent.workflow_execute.value, 
                         data=ws_data, 
                         tracker_id=tracker_id
                     )

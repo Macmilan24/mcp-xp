@@ -70,6 +70,10 @@ Pygments==2.19.2
 PyJWT==2.10.1
 pyparsing==3.2.3
 pyperclip==1.9.0
+pytest==8.4.2
+pytest-asyncio==1.2.0
+pytest-cov==4.1.0
+pytest-timeout==2.4.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.1.0
 python-multipart==0.0.20

@@ -20,7 +20,7 @@ from app.bioblend_server.executor.data_manager import DataManager, CollectionTyp
 from app.bioblend_server.executor.history_manager import HistoryManager
 from app.api.schemas import dataset, history
 
-from exceptions import InternalServerErrorException, BadRequestException
+from app.exceptions import InternalServerErrorException, BadRequestException
 
 router = APIRouter()
 

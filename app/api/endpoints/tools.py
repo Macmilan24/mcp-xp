@@ -14,7 +14,7 @@ from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.executor.tool_manager import ToolManager
 from app.api.socket_manager import ws_manager
 
-from exceptions import InternalServerErrorException
+from app.exceptions import InternalServerErrorException
 
 log = logging.getLogger("tool_endpoints")
 

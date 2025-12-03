@@ -1,0 +1,782 @@
+import pytest
+import asyncio
+import logging
+import jwt
+
+
+from fastapi.testclient import TestClient as FastAPITestClient
+from unittest.mock import patch, AsyncMock, MagicMock
+from contextlib import asynccontextmanager
+import httpx
+from cryptography.fernet import Fernet
+import json
+
+from sys import path
+path.append(".")
+
+from app.log_setup import configure_logging
+from app.context import current_api_key
+from app.exceptions import InternalServerErrorException
+
+# Configure test logging
+configure_logging()
+logger = logging.getLogger("Test APIs")
+
+@pytest.fixture
+def secret_key():
+    """Generate a Fernet key for testing."""
+    logger.debug("Creating secret key") 
+    return Fernet.generate_key().decode()
+
+
+@pytest.fixture
+def mock_fernet(secret_key):
+    """Create a Fernet instance with the test secret key."""
+    logger.debug("Creating mock_fernet")
+    return Fernet(secret_key.encode())
+
+
+@pytest.fixture
+def mock_env(monkeypatch, secret_key):
+    """Mock environment variables."""
+    logger.info("Setting up mock_env")
+    monkeypatch.setenv("SECRET_KEY", secret_key)
+    monkeypatch.setenv("GALAXY_API_KEY", "test-admin-key")
+    monkeypatch.setenv("GALAXY_URL", "http://test-galaxy")
+    monkeypatch.setenv("REDIS_HOST", "localhost")
+    monkeypatch.setenv("REDIS_PORT", "6379")
+    logger.info("mock_env setup complete")
+
+
+@pytest.fixture
+def mock_import_workflows():
+    """Mock import_published_workflows before app import"""
+    logger.debug("Setting up mock_import_workflows")
+    with patch('app.main.import_published_workflows') as mock:
+        logger.debug("mock_import_workflows patched")
+        yield mock
+    logger.debug("mock_import_workflows teardown")
+
+@pytest.fixture
+def mock_galaxy_client():
+    """Mock GalaxyClient and its dependencies."""
+    with patch('app.api.endpoints.invocation.GalaxyClient') as mock_client_class:
+        mock_client = MagicMock()
+        mock_client.whoami = "test_user"
+        mock_gi = MagicMock()
+        mock_invocations = MagicMock()
+        mock_gi.invocations = mock_invocations
+        mock_client.gi_object.gi = mock_gi
+        mock_client_class.return_value = mock_client
+        yield mock_client, mock_invocations
+        
+@pytest.fixture
+def mock_workflow_manager():
+    """Mock WorkflowManager."""
+    with patch('app.api.endpoints.invocation.WorkflowManager') as mock_wm_class:
+        mock_wm = MagicMock()
+        mock_wm_class.return_value = mock_wm
+        yield mock_wm
+
+@pytest.fixture
+def mock_current_api_key():
+    """Set current_api_key context value."""
+    token = current_api_key.set("test_user_key")
+    try:
+        yield
+    finally:
+        current_api_key.reset(token)
+
+@pytest.fixture
+def auth_headers(mock_fernet):
+    """Generate mock auth headers with JWT containing encrypted token claim."""
+    
+    inner_payload = json.dumps({"apikey": "test_user_key"})
+    encrypted = mock_fernet.encrypt(inner_payload.encode()).decode()
+    jwt_payload = {"galaxy_api_token": encrypted}
+    token = jwt.encode(jwt_payload, key=None, algorithm="none")
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def client(mock_env, mock_import_workflows, mock_galaxy_client, mock_workflow_manager):
+    logger.info("Starting client fixture")
+    
+    with patch('redis.Redis') as mock_redis_class:
+        mock_redis_instance = MagicMock()
+        mock_redis_instance.ping = lambda: True
+        mock_redis_instance.close.return_value = None
+        mock_redis_instance.get = MagicMock(return_value=0)
+        mock_redis_instance.incr = MagicMock(side_effect=lambda key: 1)
+        mock_redis_instance.zadd = MagicMock(return_value=1)
+        mock_redis_instance.ttl = MagicMock(return_value=60)
+        mock_redis_instance.exists = MagicMock(return_value=True)
+        mock_redis_instance.zremrangebyscore = MagicMock(return_value=0)
+        mock_redis_instance.zcount = MagicMock(return_value=1)
+        mock_redis_instance.expire = MagicMock(return_value=True)
+        mock_pipeline = MagicMock()
+        mock_pipeline.incr = MagicMock(return_value=1)
+        mock_pipeline.expire = MagicMock(return_value=True)
+        mock_pipeline.execute = MagicMock(return_value=[1, True, 1, True, 1, True])
+        mock_redis_instance.pipeline = MagicMock(return_value=mock_pipeline)
+        mock_redis_class.return_value = mock_redis_instance
+        logger.info("Redis mock configured")
+
+        with patch('app.api.middleware.RateLimiterMiddleware', lambda app: app):
+            logger.info("RateLimiterMiddleware disabled for tests")
+            # Mock lifespan to do nothing
+            @asynccontextmanager
+            async def mock_lifespan(app):
+                logger.info("Mock lifespan called")
+                yield
+                logger.info("Mock lifespan shutdown")
+
+            # Mock wait_shutdown to handle CancelledError safely (no-op)
+            async def mock_wait_shutdown(self):
+                logger.debug("Mock wait_shutdown called (noop)")
+                try:
+                    await asyncio.sleep(0)
+                except asyncio.CancelledError:
+                    logger.debug("CancelledError caught in mock_wait_shutdown")
+                logger.debug("Mock wait_shutdown completed")
+
+
+            try:
+                from app.main import app
+                logger.info("app.main imported successfully!")
+            except Exception as e:
+                logger.error(f"ERROR importing app.main: {e}")
+                import traceback
+                traceback.print_exc()
+                raise
+
+            # Patch the app.lifespan attribute directly
+            logger.debug("Patching app.lifespan")
+            app.lifespan = mock_lifespan
+            logger.info("app.lifespan patched")
+
+            # Patch wait_shutdown
+            logger.debug("Patching starlette.testclient.TestClient.wait_shutdown")
+            with patch('starlette.testclient.TestClient.wait_shutdown', mock_wait_shutdown):
+                logger.debug("wait_shutdown patched")
+                
+                with patch('app.orchestration.invocation_cache.InvocationCache') as mock_cache_class:
+                    logger.debug("InvocationCache patched")
+                    with patch('app.orchestration.invocation_tasks.InvocationBackgroundTasks') as mock_bg_tasks_class:
+                        logger.debug("InvocationBackgroundTasks patched")
+                        mock_cache = MagicMock()
+                        mock_bg_tasks = MagicMock()
+                        mock_cache_class.return_value = mock_cache
+                        mock_bg_tasks_class.return_value = mock_bg_tasks
+                        logger.info("Cache and background tasks mocked")
+                        
+                        logger.debug("Creating FastAPITestClient")
+                        try:
+                            with FastAPITestClient(app) as test_client:
+                                logger.info("TestClient created successfully!")
+                                test_client.mock_import_workflows = mock_import_workflows
+                                test_client.mock_redis = mock_redis_instance
+                                logger.debug("Yielding test_client")
+                                yield test_client
+                                logger.debug("Test completed, tearing down")
+                        except Exception as e:
+                            logger.error(f"ERROR creating TestClient: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            raise
+    logger.info("client fixture teardown complete")
+
+
+class TestRegisterUserEndpoint:
+    """Unit tests for the /register-user endpoint."""
+
+    def test_register_user_new_user_success(self, client, mock_fernet, caplog):
+        """Test successful registration of a new user."""
+        logger.info("TEST: test_register_user_new_user_success starting")
+        caplog.set_level(logging.INFO)
+        client.mock_import_workflows.reset_mock()
+        
+        with patch('app.main.fernet', new=mock_fernet):
+            logger.debug("fernet patched")
+            with patch('httpx.AsyncClient') as mock_httpx:
+                logger.debug("httpx.AsyncClient patched")
+                mock_client = AsyncMock()
+                mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_httpx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+                # Mock the create user response
+                mock_create_resp = MagicMock()
+                mock_create_resp.status_code = 200
+                mock_create_resp.json.return_value = {"id": "123-id", "username": "newuser"}
+                mock_create_resp.raise_for_status = MagicMock()
+
+                # Mock the API key response
+                mock_key_resp = MagicMock()
+                mock_key_resp.status_code = 200
+                mock_key_resp.json.return_value = "test_api_key"
+                mock_key_resp.raise_for_status = MagicMock()
+
+                # Set up post to return different responses for each call
+                mock_client.post = AsyncMock(side_effect=[mock_create_resp, mock_key_resp])
+                logger.debug("Mocks configured, making request")
+
+                logger.debug("Calling client.post")
+                response = client.post(
+                    "/register-user",
+                    params={"email": "newuser@example.com", "password": "securepass123"}
+                )
+                logger.info(f"Got response: {response.status_code}")
+
+                assert response.status_code == 200
+                data = response.json()
+                assert data["username"] == "newuser"
+                
+                decrypted = mock_fernet.decrypt(data["api_token"].encode()).decode()
+                assert json.loads(decrypted) == {"apikey": "test_api_key"}
+
+                # Verify import_published_workflows was called
+                client.mock_import_workflows.assert_called_once_with(
+                    galaxy_url="http://test-galaxy",
+                    api_key="test_api_key"
+                )
+
+                # Verify the API calls
+                assert mock_client.post.call_count == 2
+                first_call = mock_client.post.call_args_list[0]
+                assert first_call.kwargs['url'] == "http://test-galaxy/api/users"
+                assert first_call.kwargs['headers'] == {"x-api-key": "test-admin-key"}
+                assert first_call.kwargs['json']['email'] == "newuser@example.com"
+
+                # Verify endpoint logs
+                assert "creating galaxy user account from galaxy service." in caplog.text
+                assert "Galaxy account created with username newuser" in caplog.text
+                assert "Galaxy api-key extracted and encrypted for user with galaxy id 123-id" in caplog.text
+                
+                logger.info("TEST: test_register_user_new_user_success PASSED")
+
+    def test_register_user_existing_user_success(self, client, mock_fernet, caplog):
+        """Test successful registration when user already exists (fetches existing)."""
+        logger.info("TEST: test_register_user_existing_user_success starting")
+        caplog.set_level(logging.INFO)
+        client.mock_import_workflows.reset_mock()
+        
+        with patch('app.main.fernet', new=mock_fernet):
+            with patch('httpx.AsyncClient') as mock_httpx:
+                mock_client = AsyncMock()
+                mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_httpx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+                # Mock the failed create user response (400)
+                mock_bad_resp = MagicMock()
+                mock_bad_resp.status_code = 400
+                create_error = httpx.HTTPStatusError(
+                    message="Bad Request", 
+                    request=MagicMock(), 
+                    response=mock_bad_resp
+                )
+                mock_bad_resp.raise_for_status = MagicMock(side_effect=create_error)
+
+                # Mock the get user response
+                mock_get_resp = MagicMock()
+                mock_get_resp.status_code = 200
+                mock_get_resp.json.return_value = [{"id": "456-id", "username": "existing"}]
+                mock_get_resp.raise_for_status = MagicMock()
+
+                # Mock the API key response
+                mock_key_resp = MagicMock()
+                mock_key_resp.status_code = 200
+                mock_key_resp.json.return_value = "test_api_key"
+                mock_key_resp.raise_for_status = MagicMock()
+
+                # Set up responses
+                mock_client.post = AsyncMock(side_effect=[mock_bad_resp, mock_key_resp])
+                mock_client.get = AsyncMock(return_value=mock_get_resp)
+
+                logger.debug("Making request for existing user")
+                response = client.post(
+                    "/register-user",
+                    params={"email": "existing@example.com", "password": "securepass123"}
+                )
+                logger.info(f"Got response: {response.status_code}")
+
+                assert response.status_code == 200
+                data = response.json()
+                assert data["username"] == "existing"
+                
+                decrypted = mock_fernet.decrypt(data["api_token"].encode()).decode()
+                assert json.loads(decrypted) == {"apikey": "test_api_key"}
+
+                # Verify import_published_workflows was called
+                client.mock_import_workflows.assert_called_once_with(
+                    galaxy_url="http://test-galaxy",
+                    api_key="test_api_key"
+                )
+
+                # Verify the get call
+                mock_client.get.assert_called_once()
+
+                # Verify endpoint logs
+                assert "creating galaxy user account from galaxy service." in caplog.text
+                assert "account already exists, getting api." in caplog.text
+                assert "Galaxy User fetched with username existing" in caplog.text
+                assert "Galaxy api-key extracted and encrypted for user with galaxy id 456-id" in caplog.text
+                
+                logger.info("TEST: test_register_user_existing_user_success PASSED")
+
+    def test_register_user_unauthorized_error(self, client, caplog):
+        """Test 401 unauthorized error from Galaxy admin API."""
+        logger.info("TEST: test_register_user_unauthorized_error starting")
+        caplog.set_level(logging.ERROR)
+        client.mock_import_workflows.reset_mock()
+        
+        with patch('httpx.AsyncClient') as mock_httpx:
+            mock_client = AsyncMock()
+            mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_httpx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            # Mock unauthorized response
+            mock_bad_resp = MagicMock()
+            mock_bad_resp.status_code = 401
+            create_error = httpx.HTTPStatusError(
+                message="Unauthorized", 
+                request=MagicMock(), 
+                response=mock_bad_resp
+            )
+            mock_bad_resp.raise_for_status = MagicMock(side_effect=create_error)
+            mock_client.post = AsyncMock(return_value=mock_bad_resp)
+
+            logger.debug("Making unauthorized request")
+            response = client.post(
+                "/register-user",
+                params={"email": "unauth@example.com", "password": "pass"}
+            )
+            logger.info(f"Got response: {response.status_code}")
+
+            assert response.status_code == 401
+            assert "Unauthorized admin id" in response.json()["detail"]
+            
+            # import_published_workflows should NOT be called on error
+            client.mock_import_workflows.assert_not_called()
+
+            # Verify endpoint logs
+            assert "Unauthorized admin id" in caplog.text
+            
+            logger.info("TEST: test_register_user_unauthorized_error PASSED")
+
+    def test_register_user_generic_error(self, client, caplog):
+        """
+        Test generic server error (e.g., 500 from Galaxy).
+        """
+        logger.info("TEST: test_register_user_generic_error starting")
+        caplog.set_level(logging.INFO)
+        client.mock_import_workflows.reset_mock()
+        
+        with patch('app.main.httpx.AsyncClient') as mock_async_client_cls:
+            mock_instance = AsyncMock()
+            mock_async_client_cls.return_value.__aenter__.return_value = mock_instance
+
+            mock_resp = MagicMock()
+            mock_resp.status_code = 500
+            mock_resp.json = MagicMock(return_value={})
+            
+            mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+                message="Internal Server Error",
+                request=MagicMock(),
+                response=mock_resp,
+            )
+
+            mock_instance.post.return_value = mock_resp
+
+            # The app catches InternalServerErrorException and returns a 500 response.
+            response = client.post(
+                "/register-user",
+                params={"email": "error@example.com", "password": "pass"},
+            )
+                
+            # Expect a 500 HTTP status code
+            assert response.status_code == 500
+            client.mock_import_workflows.assert_not_called()
+
+            # Verify endpoint logs
+            assert "creating galaxy user account from galaxy service." in caplog.text
+            logger.info("TEST: test_register_user_generic_error PASSED")
+
+    def test_register_user_api_key_creation_fails(self, client, caplog):
+        """Test when user is created/fetched but API key creation fails."""
+        logger.info("TEST: test_register_user_api_key_creation_fails starting")
+        caplog.set_level(logging.ERROR)
+        client.mock_import_workflows.reset_mock()
+        
+        with patch('httpx.AsyncClient') as mock_httpx:
+            mock_client = AsyncMock()
+            mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_httpx.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            # Mock successful user creation
+            mock_create_resp = MagicMock()
+            mock_create_resp.status_code = 200
+            mock_create_resp.json.return_value = {"id": "123-id", "username": "testuser"}
+            mock_create_resp.raise_for_status = MagicMock()
+
+            # Mock failed API key creation
+            mock_key_resp = MagicMock()
+            mock_key_resp.status_code = 500
+            key_error = httpx.HTTPStatusError(
+                message="Internal Server Error", 
+                request=MagicMock(), 
+                response=mock_key_resp
+            )
+            mock_key_resp.raise_for_status = MagicMock(side_effect=key_error)
+
+            mock_client.post = AsyncMock(side_effect=[mock_create_resp, mock_key_resp])
+
+            logger.info("Making request that should fail on API key creation")
+            # This should raise an exception because API key creation fails
+            with pytest.raises(Exception):
+                client.post(
+                    "/register-user",
+                    params={"email": "newuser@example.com", "password": "securepass123"}
+                )
+            logger.info("Exception raised as expected")
+            
+            # import_published_workflows should NOT be called on error
+            client.mock_import_workflows.assert_not_called()            
+            logger.info("TEST: test_register_user_api_key_creation_fails PASSED")
+            
+            
+            
+class TestInvocationList:
+    """Unit tests for the /api/invocation/ endpoint."""
+
+
+    def test_list_invocations_cache_hit(self, client, mock_current_api_key, mock_fernet, auth_headers, caplog):
+        """Test response served from cache hit."""
+        logger.info("TEST: test_list_invocations_cache_hit starting")
+        caplog.set_level(logging.INFO)
+
+        # Mock cache to return a cached response
+        mock_cache = AsyncMock()
+        mock_cache.get_deleted_invocations = AsyncMock(return_value=[])
+        mock_cache.is_duplicate_request = AsyncMock(return_value=False)
+        mock_cache.get_response_cache = AsyncMock(return_value={
+                                                        "invocations": [
+                                                            {
+                                                                "id": "inv1",
+                                                                "workflow_name": "wf1",
+                                                                "workflow_id": "wf_id1",
+                                                                "history_id": "hist1",
+                                                                "state": "Complete",
+                                                                "create_time": "2023-01-01T00:00:00",
+                                                                "update_time": "2023-01-01T01:00:00",
+                                                            }
+                                                        ]
+                                                    })
+        with patch('app.api.endpoints.invocation.invocation_cache', mock_cache):
+            response = client.get("/api/invocation/", headers=auth_headers)
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["invocations"]) == 1
+        assert data["invocations"][0]["id"] == "inv1"
+        assert "serving response from cache" in caplog.text  # Note: adjusted log message to match code
+        logger.info("TEST: test_list_invocations_cache_hit PASSED")
+
+    def test_list_invocations_cache_miss_success(self, client, mock_galaxy_client, mock_workflow_manager, mock_current_api_key, mock_fernet, auth_headers, caplog):
+        """Test cache miss, successful fetch and formatting."""
+        logger.info("TEST: test_list_invocations_cache_miss_success starting")
+        caplog.set_level(logging.INFO)
+
+        mock_client, mock_invocations = mock_galaxy_client
+        mock_invocations.get_invocations.return_value = [
+                                {"id": "inv1",
+                                "workflow_id": "wf_id1", 
+                                "history_id": "hist1", 
+                                "state": "new", 
+                                "create_time": "2023-01-01T00:00:00",
+                                "update_time": "2023-01-01T01:00:00"
+                                }
+                            ]
+
+        # Mock background tasks
+        mock_bg_tasks = AsyncMock()
+        mock_bg_tasks.fetch_workflows_safely = AsyncMock(return_value=[{"id": "wf_id1", "name": "wf1"}])
+        mock_bg_tasks.build_invocation_workflow_mapping = AsyncMock(return_value=({"inv1": {"workflow_name": "wf1", "workflow_id": "wf_id1"}}, mock_invocations.get_invocations.return_value))
+        with patch('app.api.endpoints.invocation.invocation_background', mock_bg_tasks):
+
+            # Mock cache misses
+            mock_cache = AsyncMock()
+            mock_cache.get_deleted_invocations = AsyncMock(return_value=[])
+            mock_cache.is_duplicate_request = AsyncMock(return_value=False)
+            mock_cache.get_response_cache = AsyncMock(return_value=None)
+            mock_cache.get_invocations_cache = AsyncMock(return_value=None)
+            mock_cache.get_workflows_cache = AsyncMock(return_value=None)
+            mock_cache.get_invocation_workflow_mapping = AsyncMock(return_value=None)
+            mock_cache.get_invocation_state = AsyncMock(return_value=None)  # Force raw state mapping
+            mock_cache.set_invocations_cache = AsyncMock()
+            mock_cache.set_workflows_cache = AsyncMock()
+            mock_cache.set_invocation_workflow_mapping = AsyncMock()
+            mock_cache.set_response_cache = AsyncMock()
+            with patch('app.api.endpoints.invocation.invocation_cache', mock_cache):
+                with patch('fastapi.concurrency.run_in_threadpool', new_callable=AsyncMock) as mock_run_thread:
+                    mock_run_thread.side_effect = lambda func, *args, **kwargs: func(*args, **kwargs)
+                    response = client.get("/api/invocation/", headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["invocations"]) == 1
+        assert data["invocations"][0]["id"] == "inv1"
+        assert data["invocations"][0]["state"] == "Pending"
+        mock_cache.set_response_cache.assert_called()
+        assert "Successfully retrieved 1 invocations" in caplog.text
+        logger.info("TEST: test_list_invocations_cache_miss_success PASSED")
+
+    def test_list_invocations_with_filters(self, client, mock_galaxy_client, mock_workflow_manager, mock_current_api_key, mock_fernet, auth_headers):
+        """Test with workflow_id and history_id filters."""
+        logger.info("TEST: test_list_invocations_with_filters starting")
+
+        mock_client, mock_invocations = mock_galaxy_client
+        mock_invocations.get_invocations.return_value = [{"id": "inv1", "state": "new"}]
+
+        mock_bg_tasks = AsyncMock()
+        mock_bg_tasks.fetch_workflows_safely = AsyncMock(return_value=[])
+        mock_bg_tasks.build_invocation_workflow_mapping = AsyncMock(return_value=({}, mock_invocations.get_invocations.return_value))
+        with patch('app.api.endpoints.invocation.invocation_background', mock_bg_tasks):
+
+            mock_cache = AsyncMock()
+            mock_cache.get_deleted_invocations = AsyncMock(return_value=[])
+            mock_cache.is_duplicate_request = AsyncMock(return_value=False)
+            mock_cache.get_response_cache = AsyncMock(return_value=None)
+            mock_cache.get_invocations_cache = AsyncMock(return_value=None)
+            mock_cache.get_workflows_cache = AsyncMock(return_value=None)
+            mock_cache.get_invocation_state = AsyncMock(return_value="Pending")
+            with patch('app.api.endpoints.invocation.invocation_cache', mock_cache):
+                with patch('fastapi.concurrency.run_in_threadpool', new_callable=AsyncMock) as mock_run_thread:
+                    mock_run_thread.side_effect = lambda func, *args, **kwargs: func(*args, **kwargs)
+                    mock_workflow_manager.gi_object = mock_client.gi_object
+                    response = client.get(
+                        "/api/invocation/",
+                        params={"workflow_id": "wf_id1", "history_id": "hist1"},
+                        headers=auth_headers
+                    )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["invocations"]) == 0
+        mock_invocations.get_invocations.assert_called_with(workflow_id="wf_id1", history_id="hist1", limit=100)
+        logger.info("TEST: test_list_invocations_with_filters PASSED")
+
+    def test_list_invocations_no_data(self, client, mock_galaxy_client, mock_workflow_manager, mock_current_api_key, mock_fernet, auth_headers, caplog):
+        """Test when no invocations are retrieved."""
+        logger.info("TEST: test_list_invocations_no_data starting")
+
+        mock_client, mock_invocations = mock_galaxy_client
+        mock_invocations.get_invocations.return_value = []
+        mock_workflow_manager.gi_object.gi.invocations.get_invocations.return_value = []
+
+        mock_bg_tasks = AsyncMock()
+        mock_bg_tasks.fetch_workflows_safely = AsyncMock(return_value=[])
+        mock_bg_tasks.build_invocation_workflow_mapping = AsyncMock(return_value=({}, []))
+        with patch('app.api.endpoints.invocation.invocation_background', mock_bg_tasks):
+
+            mock_cache = AsyncMock()
+            mock_cache.get_deleted_invocations = AsyncMock(return_value=[])
+            mock_cache.is_duplicate_request = AsyncMock(return_value=False)
+            mock_cache.get_response_cache = AsyncMock(return_value=None)
+            mock_cache.get_invocations_cache = AsyncMock(return_value=None)
+            mock_cache.get_workflows_cache = AsyncMock(return_value=None)
+            with patch('app.api.endpoints.invocation.invocation_cache', mock_cache):
+                with patch('fastapi.concurrency.run_in_threadpool', new_callable=AsyncMock) as mock_run_thread:
+                    mock_run_thread.side_effect = lambda func, *args, **kwargs: func(*args, **kwargs)
+                    logger.info("fecthing response")
+                    response = client.get("/api/invocation/", headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["invocations"]) == 0
+        assert "No invocations data retrieved" in caplog.text
+        logger.info("TEST: test_list_invocations_no_data PASSED")
+
+    def test_list_invocations_deleted_filtered(self, client, mock_galaxy_client, mock_workflow_manager, mock_current_api_key, mock_fernet, auth_headers):
+        """Test filtering out deleted invocations."""
+        logger.info("TEST: test_list_invocations_deleted_filtered starting")
+
+        mock_client, mock_invocations = mock_galaxy_client
+        mock_invocations.get_invocations.return_value =  [
+                                                {
+                                                    "id": "inv1",
+                                                    "workflow_id": "wf_id_1",
+                                                    "workflow_name": "wf1",
+                                                    "history_id": "hist1",
+                                                    "state": "new",
+                                                    "create_time": "2025-11-05T00:00:00Z",
+                                                    "update_time": "2025-11-05T00:00:00Z"
+                                                },
+                                                {
+                                                    "id": "inv2",
+                                                    "workflow_id": "wf_id_2",
+                                                    "workflow_name": "wf2",
+                                                    "history_id": "hist2",
+                                                    "state": "scheduled",
+                                                    "create_time": "2025-11-05T00:00:00Z",
+                                                    "update_time": "2025-11-05T00:00:00Z"
+                                                },
+                                            ]
+
+        mock_bg_tasks = AsyncMock()
+        mock_bg_tasks.fetch_workflows_safely = AsyncMock(return_value=[{"id": "wf_id1", "name": "wf1"}, {"id": "wf_id2", "name": "wf2"}])
+        mock_bg_tasks.build_invocation_workflow_mapping = AsyncMock(return_value=({"inv1": {"workflow_name": "wf1", "workflow_id": "wf_id1"}, "inv2": {"workflow_name": "wf2", "workflow_id": "wf_id2"}}, mock_invocations.get_invocations.return_value))
+        with patch('app.api.endpoints.invocation.invocation_background', mock_bg_tasks):
+
+            mock_cache = AsyncMock()
+            mock_cache.get_deleted_invocations = AsyncMock(return_value=["inv2"])
+            mock_cache.is_duplicate_request = AsyncMock(return_value=False)
+            mock_cache.get_response_cache = AsyncMock(return_value=None)
+            mock_cache.get_invocations_cache = AsyncMock(return_value=None)
+            mock_cache.get_workflows_cache = AsyncMock(return_value=None)
+            mock_cache.get_invocation_state = AsyncMock(side_effect=["Failed", "Complete"])
+            with patch('app.api.endpoints.invocation.invocation_cache', mock_cache):
+                with patch('fastapi.concurrency.run_in_threadpool', new_callable=AsyncMock) as mock_run_thread:
+                    mock_run_thread.side_effect = lambda func, *args, **kwargs: func(*args, **kwargs)
+                    response = client.get("/api/invocation/", headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["invocations"]) == 1
+        assert data["invocations"][0]["id"] == "inv1"
+        logger.info("TEST: test_list_invocations_deleted_filtered PASSED")
+
+    def test_list_invocations_partial_failure(self, client, mock_galaxy_client, mock_workflow_manager, mock_current_api_key, mock_fernet, auth_headers, caplog):
+        """Test partial failure handling (e.g., workflows fetch fails)."""
+        logger.info("TEST: test_list_invocations_partial_failure starting")
+
+        mock_client, mock_invocations = mock_galaxy_client
+        mock_invocations.get_invocations.return_value = [
+                                                {
+                                                    "id": "inv1",
+                                                    "workflow_id": "wf_id_1",
+                                                    "workflow_name": "wf1",
+                                                    "history_id": "hist1",
+                                                    "state": "new",
+                                                    "create_time": "2025-11-05T00:00:00Z",
+                                                    "update_time": "2025-11-05T00:00:00Z"
+                                                }
+                                                         ]
+
+        # Mock background to raise on workflows fetch
+        mock_bg_tasks = AsyncMock()
+        mock_bg_tasks.fetch_workflows_safely = AsyncMock(side_effect=Exception("Workflows fetch failed"))
+        mock_bg_tasks.build_invocation_workflow_mapping = AsyncMock(return_value=({}, mock_invocations.get_invocations.return_value))
+        with patch('app.api.endpoints.invocation.invocation_background', mock_bg_tasks):
+
+            mock_cache = AsyncMock()
+            mock_cache.get_deleted_invocations = AsyncMock(return_value=[])
+            mock_cache.is_duplicate_request = AsyncMock(return_value=False)
+            mock_cache.get_response_cache = AsyncMock(return_value=None)
+            mock_cache.get_invocations_cache = AsyncMock(return_value=None)
+            mock_cache.get_workflows_cache = AsyncMock(return_value=None)
+            mock_cache.get_invocation_state = AsyncMock(return_value=None)
+            with patch('app.api.endpoints.invocation.invocation_cache', mock_cache):
+                with patch('fastapi.concurrency.run_in_threadpool', new_callable=AsyncMock) as mock_run_thread:
+                    mock_run_thread.side_effect = lambda func, *args, **kwargs: func(*args, **kwargs)
+                    response = client.get("/api/invocation/", headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["invocations"]) == 0  # Since mapping fails, skips
+        assert "Failed to fetch workflows" in caplog.text
+        logger.info("TEST: test_list_invocations_partial_failure PASSED")
+
+    def test_list_invocations_full_failure(self, client, mock_galaxy_client, mock_current_api_key, mock_fernet, auth_headers, caplog):
+        """Test full failure with 500 response."""
+        logger.info("TEST: test_list_invocations_full_failure starting")
+
+        mock_cache = AsyncMock()
+        mock_cache.get_deleted_invocations = AsyncMock(return_value=[])
+        mock_cache.is_duplicate_request = AsyncMock(return_value=False)
+        mock_cache.get_response_cache = AsyncMock(return_value=None)
+        with patch('app.api.endpoints.invocation.invocation_cache', mock_cache):
+            with patch('app.api.endpoints.invocation._fetch_core_data', side_effect=Exception("Galaxy API failed")):
+                with patch('app.api.endpoints.invocation._handle_partial_failure', side_effect=Exception("Fallback failed")):
+                    with patch('fastapi.concurrency.run_in_threadpool', new_callable=AsyncMock) as mock_run_thread:
+                        mock_run_thread.side_effect = lambda func, *args, **kwargs: func(*args, **kwargs)
+                        response = client.get("/api/invocation/", headers=auth_headers)
+
+        assert response.status_code == 500
+        assert "Failed to list invocations" in response.json()["detail"]
+        assert "Error in list_invocations" in caplog.text
+        logger.info("TEST: test_list_invocations_full_failure PASSED")
+
+    def test_list_invocations_duplicate_request(self, client, mock_current_api_key, mock_fernet, auth_headers, caplog):
+        """Test duplicate request detection."""
+        logger.info("TEST: test_list_invocations_duplicate_request starting")
+        caplog.set_level(logging.INFO)
+
+        mock_cache = AsyncMock()
+        mock_cache.get_deleted_invocations = AsyncMock(return_value=[])
+        mock_cache.is_duplicate_request = AsyncMock(return_value=True)
+        mock_cache.get_response_cache = AsyncMock(return_value={
+            "invocations": [{
+                            "id": "inv1",
+                            "workflow_id": "wf_id_1",
+                            "workflow_name": "wf1",
+                            "history_id": "hist1",
+                            "state": "Pending",
+                            "create_time": "2025-11-05T00:00:00Z",
+                            "update_time": "2025-11-05T00:00:00Z"
+                        }]
+        })
+        with patch('app.api.endpoints.invocation.invocation_cache', mock_cache):
+            response = client.get("/api/invocation/", headers=auth_headers)
+
+        assert response.status_code == 200
+        assert len(response.json()["invocations"]) == 1
+        assert "Duplicate request detected" in caplog.text
+        logger.info("TEST: test_list_invocations_duplicate_request PASSED")
+
+    def test_list_invocations_state_mapping_cached(self, client, mock_galaxy_client, mock_workflow_manager, mock_current_api_key, mock_fernet, auth_headers):
+        """Test state mapping using cached state."""
+        logger.info("TEST: test_list_invocations_state_mapping_cached starting")
+
+        mock_client, mock_invocations = mock_galaxy_client
+        mock_invocations.get_invocations.return_value = [
+                                                {
+                                                    "id": "inv1",
+                                                    "workflow_id": "wf_id_1",
+                                                    "workflow_name": "wf1",
+                                                    "history_id": "hist1",
+                                                    "state": "new",
+                                                    "create_time": "2025-11-05T00:00:00Z",
+                                                    "update_time": "2025-11-05T00:00:00Z"
+                                                }
+                                                         ]
+
+        mock_bg_tasks = AsyncMock()
+        mock_bg_tasks.fetch_workflows_safely = AsyncMock(return_value=[{"id": "wf_id1", "name": "wf1"}])
+        mock_bg_tasks.build_invocation_workflow_mapping = AsyncMock(return_value=({"inv1": {"workflow_name": "wf1", "workflow_id": "wf_id1"}}, mock_invocations.get_invocations.return_value))
+        with patch('app.api.endpoints.invocation.invocation_background', mock_bg_tasks):
+
+            mock_cache = AsyncMock()
+            mock_cache.get_deleted_invocations = AsyncMock(return_value=[])
+            mock_cache.is_duplicate_request = AsyncMock(return_value=False)
+            mock_cache.get_response_cache = AsyncMock(return_value=None)
+            mock_cache.get_invocations_cache = AsyncMock(return_value=None)
+            mock_cache.get_workflows_cache = AsyncMock(return_value=None)
+            mock_cache.get_invocation_state = AsyncMock(return_value="Pending")
+            with patch('app.api.endpoints.invocation.invocation_cache', mock_cache):
+                with patch('fastapi.concurrency.run_in_threadpool', new_callable=AsyncMock) as mock_run_thread:
+                    mock_run_thread.side_effect = lambda func, *args, **kwargs: func(*args, **kwargs)
+                    response = client.get("/api/invocation/", headers=auth_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["invocations"][0]["state"] == "Pending"
+        logger.info("TEST: test_list_invocations_state_mapping_cached PASSED")
+
+    def test_list_invocations_unauthorized(self, client):
+        """Test unauthorized access (no auth header)."""
+        logger.info("TEST: test_list_invocations_unauthorized starting")
+
+        response = client.get("/api/invocation/")
+
+        assert response.status_code == 401
+        logger.info("TEST: test_list_invocations_unauthorized PASSED")
