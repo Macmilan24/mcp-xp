@@ -9,7 +9,10 @@ class LLMProvider(ABC):
 
     @abstractmethod
     async def get_response(self, messages: List[Dict[str, str]]) -> str:
-        """
-        Retrieve a response given a list of messages.
-        """
+        """ Retrieve a response given a list of messages. """
+        pass
+    
+    @abstractmethod
+    async def embedding_model(self, batch: List[str]) -> List[List[float]]:
+        """ Embed list of chunked documents. """
         pass
