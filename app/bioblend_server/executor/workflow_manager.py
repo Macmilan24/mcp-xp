@@ -10,7 +10,6 @@ import traceback
 from rapidfuzz import process, fuzz
 from dotenv import load_dotenv
 import xml.etree.ElementTree as ET
-from enum import Enum
 
 load_dotenv()
 
@@ -23,27 +22,9 @@ from bioblend.galaxy.toolshed import ToolShedClient
 from app.bioblend_server.galaxy import GalaxyClient
 from app.bioblend_server.executor.tool_manager import ToolManager
 from app.bioblend_server.executor.form_generator import WorkflowFormGenerator
-
 from app.api.socket_manager import SocketManager, SocketMessageType, SocketMessageEvent
 
-from app.orchestration.utils import NumericLimits
-
-class JobState(str, Enum):
-    NEW = "new"
-    RESUBMITTED = "resubmitted"
-    UPLOAD = "upload"
-    WAITING = "waiting"
-    QUEUED = "queued"
-    RUNNING = "running"
-    OK = "ok"
-    ERROR = "error"
-    FAILED = "failed"
-    PAUSED = "paused"
-    DELETING = "deleting"
-    DELETED = "deleted"
-    STOPPING = "stop"
-    STOPPED = "stopped"
-    SKIPPED = "skipped"
+from app.orchestration.utils import NumericLimits, JobState
 
 class WorkflowManager:
     """Workflow manager class for managing Galaxy workflows"""

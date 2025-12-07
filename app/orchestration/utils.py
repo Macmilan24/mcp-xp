@@ -1,4 +1,4 @@
-from enum import IntEnum
+from enum import IntEnum, Enum
 
 class NumericLimits(IntEnum):
     """Centralizing numerical limits for workflows and invocations. """
@@ -25,3 +25,20 @@ class TTLiveConfig(IntEnum):
     RAW_INVOCATION_LIST = 10
     DUPLICATE_CHECK = 3
     INVOCACTION_RESULT = 259200  # 3 day cache for invocation result.
+    
+class JobState(str, Enum):
+    NEW = "new"
+    RESUBMITTED = "resubmitted"
+    UPLOAD = "upload"
+    WAITING = "waiting"
+    QUEUED = "queued"
+    RUNNING = "running"
+    OK = "ok"
+    ERROR = "error"
+    FAILED = "failed"
+    PAUSED = "paused"
+    DELETING = "deleting"
+    DELETED = "deleted"
+    STOPPING = "stop"
+    STOPPED = "stopped"
+    SKIPPED = "skipped"

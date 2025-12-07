@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 from cryptography.fernet import Fernet, InvalidToken
 from typing import Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 from starlette.concurrency import run_in_threadpool
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.utils import NumericLimits
@@ -17,7 +17,6 @@ from app.bioblend_server.executor.workflow_manager import WorkflowManager
 
 load_dotenv()
 
-logger = logging.getLogger("InvocationBackgroundTasks")
 GALAXY_API_TOKEN = "galaxy_api_token"
 FERNET_SECRET = os.getenv("SECRET_KEY")
 if not FERNET_SECRET:
@@ -29,7 +28,8 @@ class InvocationBackgroundTasks:
     def __init__(self, cache: InvocationCache, redis_client: redis.Redis):
         self.cache = cache
         self.redis = redis_client
-    
+        self.log = logging.getLogger(__class__.__name__)
+        
     async def start_cache_warming_task(self):
         """Start the background cache warming task"""
         while True:
@@ -37,7 +37,7 @@ class InvocationBackgroundTasks:
                 await self.warm_all_user_caches()
                 await asyncio.sleep(NumericLimits.BACKGROUND_INTERVAL.value)
             except Exception as e:
-                logger.error(f"Error in cache warming task: {e}")
+                self.log.error(f"Error in cache warming task: {e}")
                 # Wait 1 minute before retrying on error
                 await asyncio.sleep(NumericLimits.LONG_SLEEP.value)
     
@@ -47,7 +47,7 @@ class InvocationBackgroundTasks:
             # Get all active API keys from Redis
             active_users = await self.get_active_users()
             
-            logger.debug(f"Warming cache for {len(active_users)} active users")
+            self.log.debug(f"Warming cache for {len(active_users)} active users")
             
             # Process users in batches to avoid overwhelming the Galaxy API
             batch_size = NumericLimits.BATCH_SIZE.value
@@ -59,14 +59,14 @@ class InvocationBackgroundTasks:
                 # Log any exceptions from the batch
                 for result in results:
                     if isinstance(result, Exception):
-                        logger.error(f"Error in batch cache warming: {result}")
+                        self.log.error(f"Error in batch cache warming: {result}")
                 
                 # Small delay between batches
                 if i + batch_size < len(active_users):
                     await asyncio.sleep(NumericLimits.SHORT_SLEEP.value)
             
         except Exception as e:
-            logger.error(f"Error warming all user caches: {e}")
+            self.log.error(f"Error warming all user caches: {e}")
     
     async def get_active_users(self) -> List[str]:
         """Get list of active users from Redis (users who made requests in the last hour)"""
@@ -96,7 +96,7 @@ class InvocationBackgroundTasks:
             return active_users  # Already strings due to decode_responses=True
         
         except Exception as e:
-            logger.error(f"Error getting active users: {e}")
+            self.log.error(f"Error getting active users: {e}")
             return []
         
     async def _decrypt_api_token(self, token_str: str) -> Optional[str]:
@@ -140,10 +140,10 @@ class InvocationBackgroundTasks:
             if last_warm:
                 last_warm_time = datetime.fromisoformat(last_warm)
                 if (datetime.now() - last_warm_time).total_seconds() < NumericLimits.WARM_CHECK.value:
-                    logger.debug(f"Skipping cache warm for user {username}: recently warmed")
+                    self.log.debug(f"Skipping cache warm for user {username}: recently warmed")
                     return  # Skip if warmed recently
             
-            logger.debug(f"Warming cache for user: {username}")
+            self.log.debug(f"Warming cache for user: {username}")
             
             # Initialize workflow manager
             workflow_manager = WorkflowManager(galaxy_client)
@@ -169,10 +169,10 @@ class InvocationBackgroundTasks:
                 datetime.now().isoformat()
             )
             
-            logger.info(f"Cache warmed for user {username}: {len(workflows or [])} workflows, {len(mapping)} mappings, {len(all_invocations)} invocations")
+            self.log.info(f"Cache warmed for user {username}: {len(workflows or [])} workflows, {len(mapping)} mappings, {len(all_invocations)} invocations")
             
         except Exception as e:
-            logger.error(f"Error warming cache for user: {e}")
+            self.log.error(f"Error warming cache for user: {e}")
     
     async def fetch_workflows_safely(self, workflow_manager: WorkflowManager, fetch_details: bool = False) -> List[Dict]:
         """Safely fetch workflows with timeout and error handling, optionally with full details"""
@@ -183,7 +183,7 @@ class InvocationBackgroundTasks:
                 timeout=NumericLimits.TIMEOUT.value
             )
             if not raw_workflows:
-                logger.debug("No workflows found for user")
+                self.log.debug("No workflows found for user")
                 return []
             if not fetch_details:
                 return raw_workflows
@@ -201,7 +201,7 @@ class InvocationBackgroundTasks:
                             timeout=NumericLimits.TIMEOUT.value
                         )
                     except Exception as e:
-                        logger.warning(f"Failed to fetch full workflow {wf_id}: {e}")
+                        self.log.warning(f"Failed to fetch full workflow {wf_id}: {e}")
                         return None
 
             tasks = [fetch_full(wf['id']) for wf in raw_workflows]
@@ -228,10 +228,10 @@ class InvocationBackgroundTasks:
             return processed
 
         except asyncio.TimeoutError:
-            logger.warning("Timeout fetching workflows")
+            self.log.warning("Timeout fetching workflows")
             return []
         except Exception as e:
-            logger.error(f"Error fetching workflows: {e}")
+            self.log.error(f"Error fetching workflows: {e}")
             return []
     
     async def build_invocation_workflow_mapping(self, workflow_manager: WorkflowManager, workflows: List[Dict]):
@@ -240,7 +240,7 @@ class InvocationBackgroundTasks:
         all_invocations: List = []
         
         if not workflows:
-            logger.debug("No workflows provided for invocation mapping")
+            self.log.debug("No workflows provided for invocation mapping")
             return mapping, all_invocations
         
         try:
@@ -269,10 +269,10 @@ class InvocationBackgroundTasks:
                         return wf_mapping, wf_invocations
                         
                     except asyncio.TimeoutError:
-                        logger.warning(f"Timeout fetching invocations for workflow {workflow['id']}")
+                        self.log.warning(f"Timeout fetching invocations for workflow {workflow['id']}")
                         return {}, []
                     except Exception as e:
-                        logger.warning(f"Error processing workflow {workflow['id']}: {e}")
+                        self.log.warning(f"Error processing workflow {workflow['id']}: {e}")
                         return {}, []
             
             # Process workflows in parallel
@@ -285,12 +285,12 @@ class InvocationBackgroundTasks:
                     mapping.update(result[0])
                     all_invocations.extend(result[1])
                 elif isinstance(result, Exception):
-                    logger.warning(f"Workflow processing failed: {result}")
+                    self.log.warning(f"Workflow processing failed: {result}")
             
             return mapping, all_invocations
             
         except Exception as e:
-            logger.error(f"Error building invocation-workflow mapping: {e}")
+            self.log.error(f"Error building invocation-workflow mapping: {e}")
             return mapping, all_invocations
     
     async def cleanup_expired_cache_entries(self):
@@ -310,9 +310,9 @@ class InvocationBackgroundTasks:
             
             # This could be expanded to clean up orphaned cache entries
             # For now, Redis TTL handles most cleanup automatically
-            logger.info("Cache cleanup task completed")
+            self.log.debug("Cache cleanup task completed")
         except Exception as e:
-            logger.error(f"Error in cache cleanup: {e}")
+            self.log.error(f"Error in cache cleanup: {e}")
     
     async def start_cleanup_task(self):
         """Start background cleanup task (runs every hour)"""
@@ -321,5 +321,5 @@ class InvocationBackgroundTasks:
                 await self.cleanup_expired_cache_entries()
                 await asyncio.sleep(NumericLimits.WARM_TIMESTAMP.value)  # Run every hour
             except Exception as e:
-                logger.error(f"Error in cleanup task: {e}")
+                self.log.error(f"Error in cleanup task: {e}")
                 await asyncio.sleep(NumericLimits.LONG_SLEEP.value)
