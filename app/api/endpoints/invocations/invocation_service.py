@@ -1,0 +1,370 @@
+import asyncio
+from typing import List
+import logging
+
+from sys import path
+path.append(".")
+
+from fastapi import Response
+from starlette.status import HTTP_204_NO_CONTENT
+
+from app.bioblend_server.galaxy import GalaxyClient
+from app.bioblend_server.executor.workflow_manager import WorkflowManager
+from app.api.schemas import invocation, workflow
+from app.orchestration.invocation_cache import InvocationCache
+from app.orchestration.invocation_tasks import InvocationBackgroundTasks
+from app.orchestration.utils import NumericLimits
+
+from app.exceptions import InternalServerErrorException, NotFoundException
+
+from app.api.endpoints.invocations.data_manager import InvocationDataManager
+from app.api.endpoints.invocations.tracker import InvocationTracker
+from app.api.endpoints.invocations.utils import generate_request_hash, log_task_error
+
+class InvocationService:
+    """High-level invocation operations - orchestrates the main workflows"""
+    
+    def __init__(
+        self, 
+        cache: InvocationCache, 
+        background_tasks: InvocationBackgroundTasks, 
+        ):
+        
+        self.cache = cache
+        self.background_tasks = background_tasks
+        self.inv_data_manager = InvocationDataManager(cache = self.cache, background_tasks = self.background_tasks)
+        self.inv_tracker = InvocationTracker(cache = self.cache, redis_client = self.cache.redis, inv_data_manager = self.inv_data_manager)
+        self.log = logging.getLogger(__class__.__name__)
+    
+    async def list_invocations(
+        self,
+        username: str,
+        workflow_manager: WorkflowManager,
+        workflow_id: str | None = None,
+        history_id: str | None = None
+    ) -> invocation.InvocationList:
+        """Main method for listing invocations with caching"""   
+         
+        try:
+            # Get deleted invocations list.
+            deleted_invocation_ids= await self.cache.get_deleted_invocations(username)
+            
+            # Step 1: Request deduplication check and filter out deleted invocations
+            request_hash = generate_request_hash(username, workflow_id, history_id)
+            if await self.cache.is_duplicate_request(username, request_hash):
+                self.log.info("Duplicate request detected, serving from cache")
+            
+            # Step 2: Try to get cached response first
+            cached_response = await self.cache.get_response_cache(
+                username, workflow_id, history_id
+            )
+            if cached_response:
+                self.log.info("Filtering and serving response from cache")
+                invocations = cached_response.get("invocations", [])
+                filtered_cache_response = [
+                    inv for inv in invocations if inv["id"] not in deleted_invocation_ids
+                ]
+                response_data = {
+                    "invocations": filtered_cache_response,
+                }
+
+                return invocation.InvocationList(**response_data)
+            
+            # Step 3: Initialize Galaxy client and workflow manager give it time for new invocations to be registerd under list
+            # TODO: sleeping is a temporary solution, find a permanent solution for this.
+            await asyncio.sleep(NumericLimits.SHORT_SLEEP.value)
+            
+            # Step 4: Fetch data with parallel processing and caching
+            invocations_data, workflows_data = await self.inv_data_manager.fetch_core_data(
+                username, workflow_manager, workflow_id, history_id
+            )
+            
+            if not invocations_data:
+                self.log.warning("No invocations data retrieved")
+                return invocation.InvocationList(invocations=[])
+            
+            # Step 5: Get invocation-workflow mapping (cached or build)
+            workflow_mapping, all_invocations = await self.background_tasks.build_invocation_workflow_mapping(workflow_manager,workflows_data)
+            
+            if workflow_mapping:
+                await self.cache.set_invocation_workflow_mapping(username, workflow_mapping)
+            if not workflow_id and not history_id:
+                if all_invocations:
+                    await self.cache.set_invocations_cache(username, all_invocations, filters={"workflow_id": None, "history_id": None})
+            
+                # Step 6: Filter out deleted invocations
+                invocations_data = [
+                    inv for inv in all_invocations 
+                    if inv.get('id') not in deleted_invocation_ids
+                ]
+            else:
+                invocations_data = [
+                    inv for inv in invocations_data 
+                    if inv.get('id') not in deleted_invocation_ids
+                ]
+            self.log.info(f"length after filteration {len(invocations_data)}")
+            
+            # Step 7: Format invocations and filter deleted invocatoins optimized processing
+            invocation_list = await self.inv_tracker.format_invocations(
+            username = username, 
+            invocations_data = invocations_data,
+            workflow_mapping = workflow_mapping,
+            workflow_manager = workflow_manager
+            )
+            
+
+            # Step 8: Build response
+            response_data = {
+                "invocations": [inv.model_dump() for inv in invocation_list],
+            }
+            
+            # Step 9: Cache the response
+            await self.cache.set_response_cache(
+                username, response_data, workflow_id, history_id
+            )
+            
+            self.log.info(f"Successfully retrieved {len(invocation_list)} invocations (total: {len(invocations_data)})")
+            return invocation.InvocationList(**response_data)
+            
+        except Exception as e:
+            self.log.error(f"Error in list_invocations: {e}", exc_info=True)
+            # Try to return partial results if possible
+            try:
+                return await self.handle_partial_failure(username, workflow_manager, workflow_id, history_id)
+            except Exception as fallback_error:
+                self.log.error(f"Fallback also failed: {fallback_error}")
+                raise InternalServerErrorException("Failed to list invocations")
+    
+    async def get_invocation_result(
+        self,
+        invocation_id: str,
+        username: str,
+        api_key: str,
+        galaxy_client: GalaxyClient,
+        workflow_manager: WorkflowManager,
+        ws_manager,
+    ) -> invocation.InvocationResult:
+        """Get detailed invocation result with tracking"""
+        try:
+            # Step 1: Check if deleted
+            deleted = await self.cache.get_deleted_invocations(username)
+            if invocation_id in deleted:
+                raise NotFoundException("Invocation not found")
+
+            # Step 2: Check cache for full result
+            cached_result = await self.cache.get_invocation_result(username, invocation_id)
+            if cached_result:
+                return invocation.InvocationResult(**cached_result)
+
+            # Step 3: Fetch invocation for preliminary info
+
+            _invocation, invocation_details = await asyncio.gather(
+                asyncio.to_thread(
+                    workflow_manager.gi_object.invocations.get,
+                    id_=invocation_id
+                ),
+                asyncio.to_thread(
+                    workflow_manager.gi_object.gi.invocations.show_invocation,
+                    invocation_id =invocation_id
+                )
+            )
+            if not _invocation:
+                raise NotFoundException("Invocation not found")
+
+            # Fetch common details for partial response
+            mapping = await self.cache.get_invocation_workflow_mapping(username)
+            if not mapping:
+                self.log.warning("workflow to invocation map not found, warming user cache.")
+                await self.background_tasks.warm_user_cache(token = "dummytoken", api_key=api_key) # using a dummy token to fill the functionality
+                mapping = await self.cache.get_invocation_workflow_mapping(username)
+                
+            if not mapping or invocation_id not in mapping:
+                raise InternalServerErrorException("could not find workflow details with the invocation id inputted.")
+            
+            stored_workflow_id = mapping.get(invocation_id, {}).get('workflow_id')
+
+            # Retrieve workflow description
+            workflow_description_list = await self.cache.get_workflows_cache(username)
+            workflow_description = None
+            
+            if workflow_description_list:
+                for _workflow in workflow_description_list:
+                    try:
+                        if stored_workflow_id == _workflow.get("id"):
+                            workflow_description = workflow.WorkflowListItem(**_workflow)
+                    except Exception as e:
+                        self.log.warning(f"coudn't retreive from cache: {e}")
+                        
+            if workflow_description is None:
+                raise InternalServerErrorException("Could not locate workflow description in cache.")
+
+            inputs_formatted = await self.inv_data_manager.structure_inputs(inv=invocation_details, workflow_manager=workflow_manager)
+            
+            # Compute preliminary state (without full check)
+            state = invocation_details.get("state")
+            if state in ["cancelled", "failed"]:
+                inv_state = "Failed"
+            elif state in ["requires_materialization", "ready", "new", "scheduled"]:
+                inv_state = "Pending"
+            else:
+                self.log.warning(f"Unknown invocation state: {state}")
+                inv_state = "Failed"
+            
+            # If pending-like, trigger background tracking if not already
+            tracking_key = f"tracking:{username}:{invocation_id}"
+            
+            if inv_state == "Pending":
+                
+                invocation_result = {
+                    "invocation_id" : invocation_details.get("id"),
+                    "state" : inv_state,
+                    "history_id" : invocation_details.get("history_id"),
+                    "create_time" : invocation_details.get("create_time"),
+                    "update_time" :invocation_details.get("update_time"),
+                    "inputs" : inputs_formatted,
+                    "result" : [],
+                    "workflow" : workflow_description.model_dump(),
+                    "report" : None 
+                }
+                
+                await self.cache.set_invocation_result(
+                    username = username, 
+                    invocation_id = invocation_details.get("id"),
+                    result = invocation_result,
+                    )
+                
+                set_result = await asyncio.to_thread(
+                    self.cache.redis.set, tracking_key, "1", ex=NumericLimits.BACKGROUND_INVOCATION_TRACK.value, nx=True
+                )
+                if set_result: 
+                    
+                    background_task = asyncio.create_task(
+                        self.inv_tracker.background_track_and_cache(
+                            invocation_id = invocation_id,
+                            galaxy_client = galaxy_client,
+                            workflow_manager = workflow_manager,
+                            history_id = invocation_details.get("history_id"),
+                            create_time = invocation_details.get("create_time"),
+                            last_update_time = invocation_details.get("update_time"),
+                            inputs_formatted = inputs_formatted,
+                            workflow_description= workflow_description,
+                            ws_manager = ws_manager,
+                            tracking_key = tracking_key
+                            )
+                        )
+                    background_task.add_done_callback(lambda t: log_task_error(t, task_name="track invocation"))
+            else:
+                self.log.info(f"Loading invocation failure report for invocation {invocation_id}")
+                invocation_report = await self.inv_data_manager.report_invocation_failure(galaxy_client = galaxy_client, invocation_id = invocation_id)
+                invocation_result = {
+                    "invocation_id" : invocation_details.get("id"),
+                    "state" : inv_state,
+                    "history_id" : invocation_details.get("history_id"),
+                    "create_time" : invocation_details.get("create_time"),
+                    "update_time" :invocation_details.get("update_time"),
+                    "inputs" : inputs_formatted,
+                    "result" : [],
+                    "workflow" : workflow_description.model_dump(),
+                    "report" : invocation_report 
+                }
+                
+                await self.cache.set_invocation_result(
+                    username = username, 
+                    invocation_id = invocation_details.get("id"),
+                    result = invocation_result,
+                    )
+            
+            return invocation.InvocationResult(**invocation_result)
+        except Exception as e:
+            self.log.error(f"Error getting invocation result: {e}")
+            raise InternalServerErrorException("Error getting invocation result")
+
+        
+    
+    async def delete_invocations(
+        self,
+        invocation_ids: List[str],
+        username: str,
+        workflow_manager: WorkflowManager
+    ) -> None:
+        """Mark invocations as deleted and clean up resources"""
+        try:
+            
+            # Parse comma-separated string into list
+            ids_list = [i.strip() for i in invocation_ids.split(",") if i.strip()]
+
+            # Mark as deleted using cache method
+            await self.cache.add_to_deleted_invocations(username, ids_list)
+            
+            # Spawn async deletion tasks
+            background_task = asyncio.create_task(self.inv_tracker.cancel_invocation_and_delete_data(ids_list, workflow_manager, username))
+            background_task.add_done_callback(lambda t: log_task_error(t, task_name="Invocation cancelling and data deletion"))
+
+            return Response(status_code=HTTP_204_NO_CONTENT)
+        
+        except Exception as e:
+            raise InternalServerErrorException("Failed to delete invocations")
+    
+    async def handle_partial_failure(
+        self,
+        username: str,
+        workflow_manager: WorkflowManager,
+        workflow_id: str | None,
+        history_id: str | None
+    ) -> invocation.InvocationList:
+        """Handle partial failures by returning minimal data"""
+
+        try:           
+            if workflow_id and history_id:
+                invocations = await asyncio.to_thread(
+                    workflow_manager.gi_object.gi.invocations.get_invocations,
+                    workflow_id=workflow_id,
+                    history_id = history_id
+                )  
+            elif workflow_id:
+                invocations = await asyncio.to_thread(
+                    workflow_manager.gi_object.gi.invocations.get_invocations,
+                    workflow_id=workflow_id
+                )
+            elif history_id:
+                invocations = await asyncio.to_thread(
+                    workflow_manager.gi_object.gi.invocations.get_invocations,
+                    history_id=history_id
+                )
+            else:
+                invocations = await asyncio.to_thread(
+                    workflow_manager.gi_object.gi.invocations.get_invocations
+                )
+            
+            # Create minimal invocation list without workflow names
+            state_tasks = [
+                self.inv_tracker.map_invocation_state(
+                    username=username,
+                    raw_state=inv.get('state'),
+                    invocation_id=inv.get('id'),
+                    workflow_manager=workflow_manager
+                )
+                for inv in invocations
+            ]
+            states = await asyncio.gather(*state_tasks)
+
+            # Build the list in one go
+            invocation_list = [
+                invocation.InvocationListItem(
+                    id=inv.get('id'),
+                    workflow_name="Unknown (partial failure)",
+                    workflow_id='Unknown (partial failure)',
+                    history_id=inv.get('history_id'),
+                    state=state,
+                    create_time=inv.get('create_time'),
+                    update_time=inv.get('update_time')
+                )
+                for inv, state in zip(invocations, states)
+    ]
+            return invocation.InvocationList(
+                invocations=invocation_list
+            )
+            
+        except Exception as e:
+            self.log.error(f"Partial failure handling also failed: {e}")
+            raise
