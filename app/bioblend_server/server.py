@@ -15,11 +15,11 @@ from app.log_setup import configure_logging
 from app.bioblend_server.utils import JWTGalaxyKeyMiddleware, current_api_key_server, get_llm_response
 from app.galaxy import GalaxyClient
 from app.bioblend_server.informer.informer import GalaxyInformer
-from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 from app.api.endpoints.invocation import show_invocation_result
-from app.api.endpoints.invocations.data_manager import InvocationDataManager
+from app.GX_integration.workflows.workflow_manager import WorkflowManager
+from app.GX_integration.invocations.data_manager import InvocationDataManager
 
 configure_logging()
 logger = logging.getLogger("fastmcp_bioblend_server")

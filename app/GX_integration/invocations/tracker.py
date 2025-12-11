@@ -10,13 +10,13 @@ from fastapi.concurrency import run_in_threadpool
 from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
 
 from app.galaxy import GalaxyClient
-from app.bioblend_server.executor.workflow_manager import WorkflowManager
+from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.api.schemas import invocation
 from app.api.socket_manager import SocketManager, SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.utils import NumericLimits, JobState
 
-from app.api.endpoints.invocations.data_manager import InvocationDataManager
+from app.GX_integration.invocations.data_manager import InvocationDataManager
 
 # invocation_tracker.py
 class InvocationTracker:

@@ -6,7 +6,7 @@ from sys import path
 path.append(".")
 
 from app.log_setup import configure_logging
-from app.bioblend_server.executor.workflow_manager import WorkflowManager, JobState
+from app.GX_integration.workflows.workflow_manager import WorkflowManager, JobState
 
 configure_logging()
 
@@ -20,7 +20,7 @@ def tracker_test_log():
 
 @pytest.fixture
 def mock_galaxy_client():
-    with patch("app.bioblend_server.galaxy.GalaxyClient") as mock_class:
+    with patch("app.galaxy.GalaxyClient") as mock_class:
         # Create a mock instance of GalaxyClient
         mock_instance = MagicMock()
         

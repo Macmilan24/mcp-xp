@@ -20,8 +20,8 @@ from bioblend.galaxy.objects.wrappers import Workflow, Invocation, History, Data
 from bioblend.galaxy.toolshed import ToolShedClient
 
 from app.galaxy import GalaxyClient
-from app.bioblend_server.executor.tool_manager import ToolManager
-from app.bioblend_server.executor.form_generator import WorkflowFormGenerator
+from app.GX_integration.tool_manager import ToolManager
+from app.GX_integration.form_generator import WorkflowFormGenerator
 from app.api.socket_manager import SocketManager, SocketMessageType, SocketMessageEvent
 
 from app.orchestration.utils import NumericLimits, JobState

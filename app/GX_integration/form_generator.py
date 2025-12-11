@@ -5,7 +5,7 @@ from html import escape
 
 from bioblend.galaxy.objects.wrappers import Workflow, History, Tool
 
-from app.bioblend_server.executor.data_manager import DataManager
+from app.GX_integration.data_manager import DataManager
 
 
 class ToolFormGenerator:

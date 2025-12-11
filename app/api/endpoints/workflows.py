@@ -19,7 +19,7 @@ from starlette.status import HTTP_204_NO_CONTENT
 
 from app.context import current_api_key
 from app.galaxy import GalaxyClient
-from app.bioblend_server.executor.workflow_manager import WorkflowManager
+from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.api.schemas import workflow
 from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache

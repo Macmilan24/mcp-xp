@@ -18,8 +18,8 @@ from starlette.datastructures import FormData
 from app.galaxy import GalaxyClient
 from bioblend.galaxy.objects.wrappers import Job, History, Tool, Dataset
 
-from app.bioblend_server.executor.form_generator import ToolFormGenerator
-from app.bioblend_server.executor.data_manager import DataManager
+from app.GX_integration.form_generator import ToolFormGenerator
+from app.GX_integration.data_manager import DataManager
 from app.api.socket_manager import SocketManager, SocketMessageEvent, SocketMessageType
 
 class ToolManager:

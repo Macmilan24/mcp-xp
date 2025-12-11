@@ -9,7 +9,7 @@ path.append(".")
 
 from app.galaxy import GalaxyClient
 from bioblend.galaxy.objects.wrappers import Invocation
-from app.bioblend_server.executor.workflow_manager import WorkflowManager
+from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 from app.orchestration.utils import NumericLimits

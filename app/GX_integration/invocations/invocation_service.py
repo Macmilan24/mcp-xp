@@ -9,7 +9,7 @@ from fastapi import Response
 from starlette.status import HTTP_204_NO_CONTENT
 
 from app.galaxy import GalaxyClient
-from app.bioblend_server.executor.workflow_manager import WorkflowManager
+from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.api.schemas import invocation, workflow
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
@@ -17,9 +17,9 @@ from app.orchestration.utils import NumericLimits
 
 from app.exceptions import InternalServerErrorException, NotFoundException
 
-from app.api.endpoints.invocations.data_manager import InvocationDataManager
-from app.api.endpoints.invocations.tracker import InvocationTracker
-from app.api.endpoints.invocations.utils import generate_request_hash, log_task_error
+from app.GX_integration.invocations.data_manager import InvocationDataManager
+from app.GX_integration.invocations.tracker import InvocationTracker
+from app.GX_integration.invocations.utils import generate_request_hash, log_task_error
 
 class InvocationService:
     """High-level invocation operations - orchestrates the main workflows"""

@@ -17,15 +17,15 @@ from starlette.status import HTTP_204_NO_CONTENT
 
 from app.context import current_api_key
 from app.galaxy import GalaxyClient
-from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.api.schemas import invocation
 from app.api.socket_manager import ws_manager
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 
 from app.exceptions import InternalServerErrorException
-from app.api.endpoints.invocations.invocation_service import InvocationService
-from app.api.endpoints.invocations.utils import _rmtree_sync
+from app.GX_integration.workflows.workflow_manager import WorkflowManager
+from app.GX_integration.invocations.invocation_service import InvocationService
+from app.GX_integration.invocations.utils import _rmtree_sync
 
 # Helper functions and redis instantiation
 logger = logging.getLogger("Invocation")
