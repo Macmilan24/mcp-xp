@@ -18,7 +18,7 @@ from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryD
 from starlette.status import HTTP_204_NO_CONTENT
 
 from app.context import current_api_key
-from app.bioblend_server.galaxy import GalaxyClient
+from app.galaxy import GalaxyClient
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.api.schemas import workflow
 from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessageType

@@ -14,7 +14,7 @@ from rapidfuzz import process, fuzz
 
 
 from bioblend.galaxy.objects.wrappers import  History, Dataset, DatasetCollection
-from app.bioblend_server.galaxy import GalaxyClient
+from app.galaxy import GalaxyClient
 
 
 class CollectionType(str, Enum):

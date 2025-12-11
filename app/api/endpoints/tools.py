@@ -10,7 +10,7 @@ from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryD
 from app.context import current_api_key
 from app.api.schemas.tool import ToolExecutionResponse
 from app.api.schemas.workflow import OutputDataset, CollectionOutputDataset
-from app.bioblend_server.galaxy import GalaxyClient 
+from app.galaxy import GalaxyClient 
 from app.bioblend_server.executor.tool_manager import ToolManager
 from app.api.socket_manager import ws_manager
 

@@ -15,7 +15,7 @@ import pathlib
 import shutil
 
 from app.context import current_api_key
-from app.bioblend_server.galaxy import GalaxyClient
+from app.galaxy import GalaxyClient
 from app.bioblend_server.executor.data_manager import DataManager, CollectionType
 from app.bioblend_server.executor.history_manager import HistoryManager
 from app.api.schemas import dataset, history

@@ -9,7 +9,7 @@ path.append(".")
 from fastapi.concurrency import run_in_threadpool
 from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
 
-from app.bioblend_server.galaxy import GalaxyClient
+from app.galaxy import GalaxyClient
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.api.schemas import invocation
 from app.api.socket_manager import SocketManager, SocketMessageEvent, SocketMessageType

@@ -1,6 +1,6 @@
 # Import all the functions you want to be accessible from the server
 
-from .galaxy import GalaxyClient
+from ..galaxy import GalaxyClient
 
 from .informer.informer import GalaxyInformer
 from .informer.manager import InformerManager

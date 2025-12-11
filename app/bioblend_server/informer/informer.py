@@ -17,7 +17,7 @@ load_dotenv()
 sys.path.append('.')
 
 from app.log_setup import configure_logging
-from app.bioblend_server.galaxy import GalaxyClient
+from app.galaxy import GalaxyClient
 from app.AI.provider.gemini_provider import GeminiProvider
 from app.AI.provider.openai_provider import OpenAIProvider
 from app.bioblend_server.informer.prompts import RETRIEVE_PROMPT, SELECTION_PROMPT, EXTRACT_KEY_WORD, FINAL_RESPONSE_PROMPT

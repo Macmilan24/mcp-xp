@@ -12,7 +12,7 @@ from datetime import datetime
 from starlette.concurrency import run_in_threadpool
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.utils import NumericLimits
-from app.bioblend_server.galaxy import GalaxyClient
+from app.galaxy import GalaxyClient
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
 
 load_dotenv()

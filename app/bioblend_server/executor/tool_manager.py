@@ -15,7 +15,7 @@ from sys import path
 path.append('.')
 
 from starlette.datastructures import FormData
-from app.bioblend_server.galaxy import GalaxyClient
+from app.galaxy import GalaxyClient
 from bioblend.galaxy.objects.wrappers import Job, History, Tool, Dataset
 
 from app.bioblend_server.executor.form_generator import ToolFormGenerator

@@ -13,7 +13,7 @@ from qdrant_client.http.exceptions import ApiException
 
 from app.log_setup import configure_logging
 from app.bioblend_server.utils import JWTGalaxyKeyMiddleware, current_api_key_server, get_llm_response
-from app.bioblend_server.galaxy import GalaxyClient
+from app.galaxy import GalaxyClient
 from app.bioblend_server.informer.informer import GalaxyInformer
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.orchestration.invocation_cache import InvocationCache

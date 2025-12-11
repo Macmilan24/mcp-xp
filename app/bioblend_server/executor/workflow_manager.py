@@ -19,7 +19,7 @@ path.append('.')
 from bioblend.galaxy.objects.wrappers import Workflow, Invocation, History, Dataset, DatasetCollection
 from bioblend.galaxy.toolshed import ToolShedClient
 
-from app.bioblend_server.galaxy import GalaxyClient
+from app.galaxy import GalaxyClient
 from app.bioblend_server.executor.tool_manager import ToolManager
 from app.bioblend_server.executor.form_generator import WorkflowFormGenerator
 from app.api.socket_manager import SocketManager, SocketMessageType, SocketMessageEvent
