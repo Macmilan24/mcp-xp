@@ -4,13 +4,12 @@ import pandas as pd
 import numpy as np
 import logging
 import random
-import json
 import asyncio
-from typing import Literal, Any
+from typing import Any
 from dotenv import load_dotenv
 
 from qdrant_client import QdrantClient, models
-from qdrant_client.models import Filter, FieldCondition, MatchValue, PointStruct
+from qdrant_client.models import Filter, FieldCondition, MatchText, PointStruct
 
 from app.log_setup import configure_logging
 from app.bioblend_server.informer.utils import LLMResponse
@@ -55,6 +54,16 @@ class InformerManager:
                         size=self.embedder.embedding_size,
                         distance=models.Distance.COSINE
                     )
+                )
+                self.client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="name",
+                    field_schema=models.TextIndexParams(
+                        type=models.TextIndexType.TEXT,
+                        tokenizer=models.TokenizerType.WORD,
+                        min_token_len=1,
+                        max_token_len=30,
+                    ),
                 )
                 self.logger.info(f"Collection '{collection_name}' created successfully.")
         except Exception as e:
@@ -229,7 +238,7 @@ class InformerManager:
                     must=[
                         FieldCondition(
                             key="name",
-                            match=MatchValue(value=workflow_name)
+                            match=MatchText(value=workflow_name)
                         )
                     ]
                 ),
@@ -237,4 +246,3 @@ class InformerManager:
             )
         )
         return hits
-        
