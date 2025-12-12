@@ -154,6 +154,7 @@ class InvocationService:
             # Step 2: Check cache for full result
             cached_result = await self.cache.get_invocation_result(username, invocation_id)
             if cached_result:
+                self.log.info("fetching workflow invocation result from cache.")
                 return invocation.InvocationResult(**cached_result)
 
             # Step 3: Fetch invocation for preliminary info
@@ -214,7 +215,7 @@ class InvocationService:
             tracking_key = f"tracking:{username}:{invocation_id}"
             
             if inv_state == "Pending":
-                
+                self.log.info("invocaiton pending, tracking invocation.")
                 invocation_result = {
                     "invocation_id" : invocation_details.get("id"),
                     "state" : inv_state,

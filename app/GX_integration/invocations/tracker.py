@@ -116,15 +116,12 @@ class InvocationTracker:
             return "Failed"
 
         elif raw_state in pending_states:
-            self.log.debug("invocation state might be inaccurate.")
-            asyncio.create_task(
-                self.compute_deep_invocation_state(
+            return await self.compute_deep_invocation_state(
                 workflow_manager = workflow_manager,
                 invocation_id = invocation_id,
                 username = username
-                )
-            )   
-            return "Pending"
+            )
+
         else:
             self.log.warning(f"Unknown invocation state: {raw_state}")
             return "Failed"
@@ -182,7 +179,7 @@ class InvocationTracker:
             if has_failed:
                 inv_state = "Failed"
             elif all_ok:
-                inv_state = "Completed"
+                inv_state = "Complete"
             else:
                 inv_state = "Pending"
             
@@ -190,6 +187,7 @@ class InvocationTracker:
                                                         invocation_id = invocation_id,
                                                         state = inv_state
                                                         )
+            return inv_state
             
         except Exception as e:
             self.log.error(f"Error computing deep state for {invocation_id}: {e}")
@@ -210,7 +208,7 @@ class InvocationTracker:
     ):
         """Background task to track invocation and cache results"""
         username = galaxy_client.whoami
-        output_indexer = OutputIndexer(username = username, galaxy_client = galaxy_client, cache = self.cache)
+        output_indexer = OutputIndexer(username = username, galaxy_client = galaxy_client, cache = self.cache, ws_manager = ws_manager)
         
         try:
     

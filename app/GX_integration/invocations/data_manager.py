@@ -207,7 +207,7 @@ class InvocationDataManager:
                             return None
                         
                         element_coros = [get_element_data(e) for e in collection.elements]
-                        elements_formatted = [el for el in await asyncio.gather(*element_coros) if el is not None]
+                        elements_formatted = [el for el in await asyncio.gather(*element_coros, return_exceptions=True) if el is not None]
                         
                         return label, {
                             "type": "collection",
@@ -254,7 +254,7 @@ class InvocationDataManager:
         # Prepare workflow invocation results
         invocation_report = workflow_manager.gi_object.gi.invocations.get_invocation_report(_invocation.id)
         
-        collection_outputs = outputs.get( "collection_datasets")
+        collection_outputs = outputs.get("collection_datasets")
         dataset_outputs = outputs.get("output_datasets")
         
         self.log.info(f"Structuring invocation outputs for result.")
@@ -267,6 +267,7 @@ class InvocationDataManager:
             
             async def structure_and_append(output_id: str, store_list: list, collection: bool):
                 async with semaphore:
+                    await asyncio.sleep(0.1)
                     try:
                         if not collection:
                             dataset_info = await asyncio.to_thread(
@@ -289,23 +290,35 @@ class InvocationDataManager:
                                 workflow_manager.gi_object.dataset_collections.get, output_id
                             )
                             
-                            # Create tasks for all element data_type fetches
-                            element_data_type_tasks = [
-                                asyncio.to_thread(
-                                    workflow_manager.gi_object.gi.datasets.show_dataset,
-                                    dataset_id=e.get("object", {}).get("id", "")
-                                ) if e.get("object", {}).get("id", "") else None
-                                for e in output.elements
-                            ]
+                            # Fetch element data types in batches to avoid overwhelming the API
+                            element_data_types = {}
+                            batch_size = 3 # Process 3 elements at a time.
                             
-                            async def get_empty_result():
-                                return {'extension': 'unknown'}
-
-                            # Gather all data_type results at once
-                            element_data_types = await asyncio.gather(*[
-                                task if task is not None else get_empty_result()
-                                for task in element_data_type_tasks
-                            ])
+                            for i in range(0, len(output.elements), batch_size):
+                                batch = output.elements[i:i + batch_size]
+                                batch_tasks = []
+                                batch_indices = []
+                                
+                                for idx, e in enumerate(batch, start=i):
+                                    element_id = e.get("object", {}).get("id", "")
+                                    if element_id:
+                                        batch_tasks.append(
+                                            asyncio.to_thread(
+                                                workflow_manager.gi_object.gi.datasets.show_dataset,
+                                                dataset_id=element_id
+                                            )
+                                        )
+                                        batch_indices.append(idx)
+                                
+                                # Process this batch
+                                if batch_tasks:
+                                    results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+                                    for idx, result in zip(batch_indices, results):
+                                        if isinstance(result, Exception):
+                                            self.log.warning(f"Failed to fetch dataset for element {idx}: {result}")
+                                            element_data_types[idx] = {'extension': 'unknown'}
+                                        else:
+                                            element_data_types[idx] = result
                             
                             store_list.append({
                                 "type": "collection",
@@ -319,7 +332,8 @@ class InvocationDataManager:
                                         "name": e.get("object", {}).get("name", ""),
                                         "id": e.get("object", {}).get("id", ""),
                                         "peek": e.get("object", {}).get("peek", ""),
-                                        "data_type": element_data_types[i].get('extension', element_data_types[i].get('file_ext', 'unknown'))
+                                        "data_type": element_data_types.get(i, {}).get('extension', 
+                                                    element_data_types.get(i, {}).get('file_ext', 'unknown'))
                                     }
                                     for i, e in enumerate(output.elements)
                                 ],
@@ -327,7 +341,7 @@ class InvocationDataManager:
                             })
                             
                     except Exception as e:
-                        self.log.error(f"Error when structuring outputs: {e}")
+                        self.log.error(f"Error when structuring outputs (ID: {output_id}): {e}")
 
             # Create coroutines for formatting
             dataset_tasks = [structure_and_append(output, final_output_dataset, False) for output in dataset_outputs]

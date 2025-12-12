@@ -49,7 +49,7 @@ class OutputIndexer:
             {
                 "type": "dataset",
                 "id": index.get("id"),
-                "name": index.get("name"),
+                "name": dataset_name,
                 "visible": index.get("visible"),
                 "file_path": index.get('file_name'),
                 "peek": index.get('peek'),
@@ -118,10 +118,10 @@ class OutputIndexer:
             self.log.error(f"VCF indexing failed for dataset id={dataset_id}: {e}")
             return []
         
-        self.log.debug(f"VCF compressed: new_dataset_id={result_1_id}")
-        
         # extract dataset id of the compressed dataset.
         result_1_id = result_1.get("dataset")[0].get("id")
+        self.log.debug(f"VCF compressed: new_dataset_id={result_1_id}")
+        
         tool2_input = {"input1": {"src": "hda", "id" : result_1_id }}
         
         self.log.debug(f"Starting tabix indexing: tool={tool_id2}, input={result_1_id}")
@@ -226,14 +226,27 @@ class OutputIndexer:
                 
                 self.log.info(f"Total datasets to index: {self.total_index}")
                 self.log.info(f"Beginning dataset indexing for invocation_id={invocation_id} in history_id={history_id}")
-                # gather index results;
-                index_results = await asyncio.gather(*indexing_task)
-                flat_results = [item for sublist in index_results for item in sublist]
-                invocation_outputs.extend(flat_results)
                 
-                invocation_result["result"] = invocation_outputs
-                await self.cache.set_invocation_result(
-                    username = self.username,
-                    invocation_id = invocation_id,
-                    result = invocation_result
-                    )
+                # gather index results; Run tasks concurrently, process results as they finish
+                for coro in asyncio.as_completed(indexing_task):
+
+                    try:
+                        indexed_result = await coro  # list of the structured index data
+
+                        # append to invocation output
+                        invocation_outputs.extend(indexed_result)
+
+                        # update final object
+                        invocation_result["result"] = invocation_outputs
+
+                        # store partial progress to cache
+                        await self.cache.set_invocation_result(
+                            username=self.username,
+                            invocation_id=invocation_id,
+                            result=invocation_result
+                        )
+
+                        self.log.debug("Incremental index result saved to cache.")
+
+                    except Exception as e:
+                        self.log.error(f"Indexing subtask failed: {e}")
