@@ -89,18 +89,14 @@ async def execute_tool(
         
         log.info(f"Transformed inputs: {bioblend_inputs}")
         
-        # Get history object
-        history = await run_in_threadpool(
-            tool_manager.gi_object.histories.get, history_id
-            )
-        
         # Execute tool with transformed inputs
         result = await tool_manager.run(
             tool_id = tool_id, 
-            history = history, 
+            history_id = history_id, 
             inputs = bioblend_inputs,
-            ws_manager = ws_manager,
-            tracker_id= tracker_id
+            tracker_id= tracker_id,
+            ws_manager = ws_manager
+            
             )
         
         # Process output datasets

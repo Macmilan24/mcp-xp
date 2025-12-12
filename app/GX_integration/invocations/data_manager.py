@@ -281,7 +281,7 @@ class InvocationDataManager:
                                 "visible": dataset_info.get("visible"),
                                 "file_path": dataset_info.get('file_name'),
                                 "peek": dataset_info.get('peek'),
-                                "data_type": dataset_info.get('extension', 'file_ext'),
+                                "data_type": dataset_info.get('extension', dataset_info.get('file_ext', 'unknown')),
                                 "is_intermediate": not dataset_info.get("visible")
                             })
                         else:

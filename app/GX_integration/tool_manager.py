@@ -21,6 +21,7 @@ from bioblend.galaxy.objects.wrappers import Job, History, Tool, Dataset
 from app.GX_integration.form_generator import ToolFormGenerator
 from app.GX_integration.data_manager import DataManager
 from app.api.socket_manager import SocketManager, SocketMessageEvent, SocketMessageType
+from app.orchestration.utils import NumericLimits
 
 class ToolManager:
     """
@@ -315,8 +316,8 @@ class ToolManager:
             job_id: str,
             ws_manager: SocketManager,
             tracker_id: str,
-            initial_wait: int = 60,
-            base_extension: int = 20
+            initial_wait: int = 1800,
+            base_extension: int = 300
             )-> Job:
         """Waits for a Galaxy job to finish, with dynamic timeout and progress tracking."""
 
@@ -324,7 +325,7 @@ class ToolManager:
         start_time = time.time()
         deadline = start_time + initial_wait
         max_extension = initial_wait // 2
-        polling_interval = 3
+        polling_interval = NumericLimits.TOOL_EXECUTION_POLL.value
 
         while True:
             job: Job = await asyncio.to_thread(
@@ -335,17 +336,18 @@ class ToolManager:
             if current_state != previous_state:
                 self.log.info(f"Job {job_id} transitioned to {current_state}")
                 
-                await ws_manager.broadcast(
-                    event = SocketMessageEvent.tool_execute.value,
-                    data = {"type": SocketMessageType.JOB_UPDATE.value,
-                        "payload" : {
-                            "job_id": job_id,
-                            "status" : current_state
-                        }
-                    },
-                    tracker_id = tracker_id
-                    )
-                
+                if ws_manager:
+                    await ws_manager.broadcast(
+                        event = SocketMessageEvent.tool_execute.value,
+                        data = {"type": SocketMessageType.JOB_UPDATE.value,
+                            "payload" : {
+                                "job_id": job_id,
+                                "status" : current_state
+                            }
+                        },
+                        tracker_id = tracker_id
+                        )
+                    
                 previous_state = current_state
                 # Extend deadline slightly when progress is detected
                 extension = min(base_extension, max_extension)
@@ -353,27 +355,30 @@ class ToolManager:
 
             if current_state == "ok":
                 self.log.info("Job execution complete.")
-                await ws_manager.broadcast(
-                    event = SocketMessageEvent.tool_execute.value,
-                    data = {
-                        "type": SocketMessageType.JOB_COMPLETE.value,
-                        "data" : {"message": "Job execution complete." }
-                    },
-                    tracker_id=tracker_id
-                    )
+                if ws_manager:
+                    await ws_manager.broadcast(
+                        event = SocketMessageEvent.tool_execute.value,
+                        data = {
+                            "type": SocketMessageType.JOB_COMPLETE.value,
+                            "data" : {"message": "Job execution complete." }
+                        },
+                        tracker_id=tracker_id
+                        )
                      
                 break
 
             if current_state in {'error', 'cancelled'}:
-                await ws_manager.broadcast(
-                    event = SocketMessageEvent.tool_execute.value,
-                    data = {
-                        "type": SocketMessageType.JOB_FAILURE.value,
-                        "data" : {"message": "Job execution cancelled or failed." }
-                    },
-                    tracker_id=tracker_id
-                    )
                 
+                if ws_manager:
+                    await ws_manager.broadcast(
+                        event = SocketMessageEvent.tool_execute.value,
+                        data = {
+                            "type": SocketMessageType.JOB_FAILURE.value,
+                            "data" : {"message": "Job execution cancelled or failed." }
+                        },
+                        tracker_id=tracker_id
+                        )
+                    
                 break
 
             if time.time() > deadline:
@@ -384,25 +389,29 @@ class ToolManager:
                         )
                     
                     self.log.warning(f"Job {job_id} cancelled due to timeout.")
-                    await ws_manager.broadcast(
-                        event = SocketMessageEvent.tool_execute.value,
-                        data = {
-                        "type": SocketMessageType.JOB_FAILURE.value,
-                        "data" : {"message": "Job cancelled due to timeout." }
-                        },
-                        tracker_id=tracker_id
-                    )
+                    
+                    if ws_manager:
+                        await ws_manager.broadcast(
+                            event = SocketMessageEvent.tool_execute.value,
+                            data = {
+                            "type": SocketMessageType.JOB_FAILURE.value,
+                            "data" : {"message": "Job cancelled due to timeout." }
+                            },
+                            tracker_id=tracker_id
+                        )
 
                 except Exception as e:
                     self.log.warning(f"Failed to cancel job {job_id}: {e}")
-                    await ws_manager.broadcast(
-                        event = SocketMessageEvent.tool_execute.value,
-                        data = {
-                        "type": SocketMessageType.JOB_FAILURE.value,
-                        "data" : {"message": f"Job execution failed: {e}"}
-                        },
-                        tracker_id=tracker_id
-                    )
+
+                    if ws_manager:
+                        await ws_manager.broadcast(
+                            event = SocketMessageEvent.tool_execute.value,
+                            data = {
+                            "type": SocketMessageType.JOB_FAILURE.value,
+                            "data" : {"message": f"Job execution failed: {e}"}
+                            },
+                            tracker_id=tracker_id
+                        )
 
                 break
             
@@ -414,7 +423,7 @@ class ToolManager:
     def _build_payload(
         self,
         tool_id: str,
-        history: History,
+        history_id: str,
         inputs: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
@@ -426,11 +435,11 @@ class ToolManager:
         payload = self.gi_object.gi.tools.build(
             tool_id=tool_id,
             inputs=inputs,
-            history_id=history.id
+            history_id=history_id
         )
         return payload['state_inputs']
 
-    async def _make_result(self, job: Job, datasets: list[Dataset]) -> Dict[str, Any]:
+    async def _make_result(self, job: Job, datasets: list[dict]) -> Dict[str, Any]:
 
         job_details= await asyncio.to_thread(
             self.gi_object.gi.jobs.show_job, job_id= job.id, full_details=True
@@ -451,10 +460,10 @@ class ToolManager:
     async def run( 
         self,
         tool_id: str,
-        history: History,
+        history_id: str,
         inputs: Dict[str, Any],
-        ws_manager: SocketManager,
-        tracker_id:str
+        tracker_id:str = None,
+        ws_manager: SocketManager = None
         ):
         """
         Run a tool and return a structured result.
@@ -464,12 +473,12 @@ class ToolManager:
         # Build the tool payload 
         # (validation step to convert name: value pairs from the io details into state input)
         tool_payload = await asyncio.to_thread(
-            self._build_payload, tool_id=tool_id, history = history, inputs = inputs
+            self._build_payload, tool_id=tool_id, history_id = history_id, inputs = inputs
             )
         
         #  Run
         tool_execution= await asyncio.to_thread(
-            self.gi_object.gi.tools.run_tool, tool_id= tool_id, history_id=history.id, tool_inputs = tool_payload
+            self.gi_object.gi.tools.run_tool, tool_id= tool_id, history_id = history_id, tool_inputs = tool_payload
             )
 
         # The job id
@@ -477,23 +486,25 @@ class ToolManager:
         outputs = tool_execution['outputs']
 
         self.log.info(f"Started job {job_id} for tool {tool_id!r}")
-        await ws_manager.broadcast(
-            event = SocketMessageEvent.tool_execute.value,
-            data = {
-                "type": SocketMessageType.TOOL_EXECUTE.value,
-                "payload": {"message": "Execution started."}
-            },
-            tracker_id = tracker_id
-        )
+        
+        if ws_manager:
+            await ws_manager.broadcast(
+                event = SocketMessageEvent.tool_execute.value,
+                data = {
+                    "type": SocketMessageType.TOOL_EXECUTE.value,
+                    "payload": {"message": "Execution started."}
+                },
+                tracker_id = tracker_id
+            )
 
         # Track job until it complete before making result
         job= await self.wait(job_id, ws_manager=ws_manager, tracker_id=tracker_id) 
 
-        output_datasets: List[Dataset] = []
+        output_datasets: List[dict] = []
 
         for output in outputs:
             dataset =  await asyncio.to_thread(
-                self.gi_object.datasets.get, id_ = output['id']
+                self.gi_object.gi.datasets.show_dataset, dataset_id = output['id']
                 )
             output_datasets.append(dataset)
 

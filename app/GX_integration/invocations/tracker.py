@@ -11,6 +11,7 @@ from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryD
 
 from app.galaxy import GalaxyClient
 from app.GX_integration.workflows.workflow_manager import WorkflowManager
+from app.GX_integration.invocations.output_indexer import OutputIndexer
 from app.api.schemas import invocation
 from app.api.socket_manager import SocketManager, SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache
@@ -209,6 +210,7 @@ class InvocationTracker:
     ):
         """Background task to track invocation and cache results"""
         username = galaxy_client.whoami
+        output_indexer = OutputIndexer(username = username, galaxy_client = galaxy_client, cache = self.cache)
         
         try:
     
@@ -253,6 +255,7 @@ class InvocationTracker:
                 "report": invocation_report
             }
             await self.cache.set_invocation_result(username, invocation_id, result_dict)
+            
             self.log.info("Invocation results are complete and ready.")
             if ws_manager:
                 ws_data = {
@@ -264,6 +267,9 @@ class InvocationTracker:
                     data=ws_data,
                     tracker_id=invocation_id
                 )
+            
+            # Index invocation outputs
+            await output_indexer.index_datasets(invocation_result= result_dict)
 
 
         except Exception as e:
@@ -332,4 +338,4 @@ class InvocationTracker:
             
             self.log.info(f"Invocation {invocation_ids} deletion complete.")
         except Exception as e:
-                self.log.error(f"Error while deleting invocation: {e}")    
+                self.log.error(f"Error while deleting invocation: {e}")
