@@ -293,7 +293,7 @@ class InvocationDataManager:
                             
                             # Fetch element data types in batches to avoid overwhelming the API
                             element_data_types = {}
-                            batch_size = 3 # Process 3 elements at a time.
+                            batch_size = NumericLimits.BATCH_LIMIT.value # Process a certain elements at a time.
                             
                             for i in range(0, len(output.elements), batch_size):
                                 batch = output.elements[i:i + batch_size]

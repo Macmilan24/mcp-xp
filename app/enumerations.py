@@ -15,6 +15,7 @@ class NumericLimits(IntEnum):
     WARM_CHECK = 180
     BACKGROUND_INVOCATION_TRACK = 86400
     TOOL_EXECUTION_POLL = 5
+    BATCH_LIMIT = 2
 
 
 class TTLiveConfig(IntEnum):
