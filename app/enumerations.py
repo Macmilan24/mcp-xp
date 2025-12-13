@@ -27,7 +27,25 @@ class TTLiveConfig(IntEnum):
     DUPLICATE_CHECK = 3
     INVOCACTION_RESULT = 259200  # 3 day cache for invocation result.
     
+    
+class InvocationTracking(IntEnum):
+    """ Invocation tracker time limits. """
+    
+    BASE_NO_PROGRESS = 12 * 3600      # 12h
+    STALLED_THRESHOLD = 48 * 3600     # 3 days
+    HARD_CAP = 7 * 24 * 3600          # 7 days
+
+    POLL_FAST = 5 * 60 # 5 min
+    POLL_MEDIUM = 10 * 60 # 10 min
+    POLL_SLOW = 15 * 60 # 15 min
+    POLL_MAX = 60 * 60 # 1 hour
+
+
+    
+    
 class JobState(str, Enum):
+    """ Galaxy job execution states. """
+    
     NEW = "new"
     RESUBMITTED = "resubmitted"
     UPLOAD = "upload"

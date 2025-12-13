@@ -13,7 +13,7 @@ from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.api.schemas import invocation, workflow
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
-from app.orchestration.utils import NumericLimits
+from app.enumerations import NumericLimits
 
 from app.exceptions import InternalServerErrorException, NotFoundException
 

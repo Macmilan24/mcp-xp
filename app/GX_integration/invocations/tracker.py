@@ -15,7 +15,7 @@ from app.GX_integration.invocations.output_indexer import OutputIndexer
 from app.api.schemas import invocation
 from app.api.socket_manager import SocketManager, SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache
-from app.orchestration.utils import NumericLimits, JobState
+from app.enumerations import NumericLimits, JobState
 
 from app.GX_integration.invocations.data_manager import InvocationDataManager
 

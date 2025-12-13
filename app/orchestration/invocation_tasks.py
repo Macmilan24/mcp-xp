@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 from starlette.concurrency import run_in_threadpool
 from app.orchestration.invocation_cache import InvocationCache
-from app.orchestration.utils import NumericLimits
+from app.enumerations import NumericLimits
 from app.galaxy import GalaxyClient
 from app.GX_integration.workflows.workflow_manager import WorkflowManager
 

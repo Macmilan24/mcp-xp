@@ -24,7 +24,7 @@ from app.api.schemas import workflow
 from app.api.socket_manager import ws_manager, SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
-from app.orchestration.utils import NumericLimits
+from app.enumerations import NumericLimits
 
 from app.exceptions import InternalServerErrorException
 

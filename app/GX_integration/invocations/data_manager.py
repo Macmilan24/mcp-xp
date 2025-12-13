@@ -12,7 +12,7 @@ from bioblend.galaxy.objects.wrappers import Invocation
 from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
-from app.orchestration.utils import NumericLimits
+from app.enumerations import NumericLimits
 
 
 from app.exceptions import InternalServerErrorException
@@ -242,6 +242,7 @@ class InvocationDataManager:
         
         return inputs_formatted
     
+    #TODO: fix element fetching error!!!
     async def structure_outputs(
         self,
         _invocation: Invocation,

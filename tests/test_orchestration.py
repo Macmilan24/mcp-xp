@@ -7,7 +7,7 @@ import json
 from unittest.mock import MagicMock, patch, AsyncMock
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
-from app.orchestration.utils import TTLiveConfig
+from app.enumerations import TTLiveConfig
 
 @pytest.fixture
 def mock_redis():
