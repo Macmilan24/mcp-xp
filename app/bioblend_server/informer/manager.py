@@ -10,9 +10,9 @@ from qdrant_client import QdrantClient, models
 from enum import Enum
 from dotenv import load_dotenv
 
-from app.AI.provider.gemini_provider import GeminiProvider
-from app.AI.provider.openai_provider import OpenAIProvider
-from app.AI.llm_config._base_config import LLMModelConfig
+from app.llm_provider import GeminiProvider
+from app.llm_provider import OpenAIProvider
+from app.llm_config import LLMModelConfig
 from app.log_setup import configure_logging
 
 
@@ -63,7 +63,7 @@ class InformerManager:
             self.client = QdrantClient(f"http://{QDRANT_HOST}:{QDRANT_PORT}", timeout=10.0)
             self.logger.info("Qdrant Client initialized")
 
-            with open('app/AI/llm_config/llm_config.json', 'r') as f:
+            with open('app/llm_config.json', 'r') as f:
                 model = json.load(f)
             if llm_provider == "gemini":
                 gemini_cfg = LLMModelConfig(model['providers']['gemini'])

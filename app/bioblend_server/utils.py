@@ -12,9 +12,9 @@ from cryptography.fernet import Fernet, InvalidToken
 from fastmcp.server.middleware import Middleware, MiddlewareContext, CallNext
 from fastmcp.server.dependencies import get_http_headers
 
-from app.AI.llm_config._base_config import LLMModelConfig
-from app.AI.provider.gemini_provider import GeminiProvider
-from app.AI.provider.openai_provider import OpenAIProvider
+from app.llm_config import LLMModelConfig
+from app.llm_provider import GeminiProvider
+from app.llm_provider import OpenAIProvider
 
 current_api_key_server: ContextVar[str] = ContextVar("current_api_key_server", default=None)
 
@@ -112,7 +112,7 @@ class JWTGalaxyKeyMiddleware(Middleware):
             return None
         
 async def get_llm_response(message, llm_provider = os.environ.get("CURRENT_LLM", "gemini")):
-    with open('app/AI/llm_config/llm_config.json', 'r') as f:
+    with open('app/llm_config.json', 'r') as f:
         model_config_data = json.load(f)
     
     if llm_provider == "gemini":

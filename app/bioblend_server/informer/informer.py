@@ -18,10 +18,10 @@ sys.path.append('.')
 
 from app.log_setup import configure_logging
 from app.galaxy import GalaxyClient
-from app.AI.provider.gemini_provider import GeminiProvider
-from app.AI.provider.openai_provider import OpenAIProvider
+from app.llm_provider import GeminiProvider
+from app.llm_provider import OpenAIProvider
 from app.bioblend_server.informer.prompts import RETRIEVE_PROMPT, SELECTION_PROMPT, EXTRACT_KEY_WORD, FINAL_RESPONSE_PROMPT
-from app.AI.llm_config._base_config import LLMModelConfig
+from app.llm_config import LLMModelConfig
 
 
 class GalaxyInformer:
@@ -70,7 +70,7 @@ class GalaxyInformer:
 
         configure_logging()
         
-        with open('app/AI/llm_config/llm_config.json', 'r') as f:
+        with open('app/llm_config.json', 'r') as f:
             model_config_data = json.load(f)
         
         if llm_provider == "gemini":
@@ -85,7 +85,7 @@ class GalaxyInformer:
         return self
 
     async def get_embedding_model(self, input):
-        with open('app/AI/llm_config/llm_config.json', 'r') as f:
+        with open('app/llm_config.json', 'r') as f:
             model_config_data = json.load(f)
         openai_cfg = LLMModelConfig(model_config_data['providers']['openai'])
         llm = OpenAIProvider(model_config=openai_cfg)
