@@ -1,12 +1,10 @@
 import json
 import logging
 
-from app.mcp_client.server import Server
-from app.llm_config import GEMINIConfig
-from app.llm_config import OPENAIConfig
-from app.llm_provider import GeminiProvider
-from app.llm_provider import OpenAIProvider
 from app.config import Configuration
+from app.llm_config import GEMINIConfig, OPENAIConfig, LLMConfiguration
+from app.llm_provider import GeminiProvider,OpenAIProvider
+from app.mcp_client.server import Server
 from app.mcp_client.prompts import DEFINE_TOOLS_PROMPT, STRUCTURE_OUTPUT_PROMPT
 
 class LLMClient:
@@ -230,8 +228,9 @@ logger=logging.getLogger("ChatSession")
 
 async def initialize_session(user_ip: str) -> ChatSession:
     """Initialize and return the chat session."""
+    MCP_SERVER_CONFIGURATOIN = "app/mcp_client/servers_config.json"
     config = Configuration()  # Assumes Configuration class exists
-    server_config = config.load_server_config("app/servers_config.json")
+    server_config = config.load_server_config(MCP_SERVER_CONFIGURATOIN)
     servers = [
         Server(name, srv_config)
         for name, srv_config in server_config["mcpServers"].items()
@@ -247,11 +246,10 @@ async def initialize_session(user_ip: str) -> ChatSession:
 def get_providers():
     """Retrieve registered LLM providers from llm_config.json."""
     provider_registry = {}
-    with open("app/llm_config.json", "r") as f:
-        llm_config = json.load(f)
-        for provider_name, provider_config in llm_config["providers"].items():
-            if provider_name == "gemini": provider_class = GeminiProvider(GEMINIConfig(provider_config))
-            elif provider_name == "openai": provider_class = OpenAIProvider(OPENAIConfig(provider_config))
-            else: raise ValueError(f"Unknown provider: {provider_name}")
-            provider_registry[provider_name] = provider_class
+    llm_config = LLMConfiguration().data
+    for provider_name, provider_config in llm_config["providers"].items():
+        if provider_name == "gemini": provider_class = GeminiProvider(GEMINIConfig(provider_config))
+        elif provider_name == "openai": provider_class = OpenAIProvider(OPENAIConfig(provider_config))
+        else: raise ValueError(f"Unknown provider: {provider_name}")
+        provider_registry[provider_name] = provider_class
     return provider_registry

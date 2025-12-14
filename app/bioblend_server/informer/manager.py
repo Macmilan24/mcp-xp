@@ -10,9 +10,8 @@ from qdrant_client import QdrantClient, models
 from enum import Enum
 from dotenv import load_dotenv
 
-from app.llm_provider import GeminiProvider
-from app.llm_provider import OpenAIProvider
-from app.llm_config import LLMModelConfig
+from app.llm_provider import GeminiProvider, OpenAIProvider
+from app.llm_config import LLMModelConfig, LLMConfiguration
 from app.log_setup import configure_logging
 
 
@@ -49,6 +48,7 @@ class InformerManager:
         self.embedding_model = None
         self.embedding_size = None
         self.model_name = None
+        self.model_config_data = None
 
     @classmethod
     async def create(cls, llm_provider = os.getenv("CURRENT_LLM", "openai")):
@@ -63,14 +63,14 @@ class InformerManager:
             self.client = QdrantClient(f"http://{QDRANT_HOST}:{QDRANT_PORT}", timeout=10.0)
             self.logger.info("Qdrant Client initialized")
 
-            with open('app/llm_config.json', 'r') as f:
-                model = json.load(f)
+            self.model_config_data = LLMConfiguration().data
+             
             if llm_provider == "gemini":
-                gemini_cfg = LLMModelConfig(model['providers']['gemini'])
+                gemini_cfg = LLMModelConfig(self.model_config_data['providers']['gemini'])
                 self.llm = GeminiProvider(model_config=gemini_cfg)
                 self.embedding_model = EmbeddingModel.GEMINI_EMBEDDING_001
             elif llm_provider == "openai":
-                openai_cfg = LLMModelConfig(model['providers']['openai'])
+                openai_cfg = LLMModelConfig(self.model_config_data['providers']['openai'])
                 self.llm = OpenAIProvider(model_config=openai_cfg)
                 self.embedding_model = EmbeddingModel.OPENAI_TEXT_EMBEDDING_3_SMALL
             else:

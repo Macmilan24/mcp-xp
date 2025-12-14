@@ -18,10 +18,9 @@ sys.path.append('.')
 
 from app.log_setup import configure_logging
 from app.galaxy import GalaxyClient
-from app.llm_provider import GeminiProvider
-from app.llm_provider import OpenAIProvider
+from app.llm_config import LLMModelConfig, LLMConfiguration
+from app.llm_provider import GeminiProvider,  OpenAIProvider
 from app.bioblend_server.informer.prompts import RETRIEVE_PROMPT, SELECTION_PROMPT, EXTRACT_KEY_WORD, FINAL_RESPONSE_PROMPT
-from app.llm_config import LLMModelConfig
 
 
 class GalaxyInformer:
@@ -38,6 +37,7 @@ class GalaxyInformer:
         self.gi_user = self.galaxy_client.gi_client
         self.gi_admin = self.galaxy_client.gi_admin
         self.username = self.galaxy_client.whoami
+        self.model_config_data = None
         self.llm = None
         self.redis_client = None
         self.manager = None
@@ -70,14 +70,13 @@ class GalaxyInformer:
 
         configure_logging()
         
-        with open('app/llm_config.json', 'r') as f:
-            model_config_data = json.load(f)
+        self.model_config_data = LLMConfiguration().data
         
         if llm_provider == "gemini":
-            gemini_cfg = LLMModelConfig(model_config_data['providers']['gemini'])
+            gemini_cfg = LLMModelConfig(self.model_config_data['providers']['gemini'])
             self.llm = GeminiProvider(model_config=gemini_cfg)
         elif llm_provider == "openai":
-            openai_cfg = LLMModelConfig(model_config_data['providers']['openai'])
+            openai_cfg = LLMModelConfig(self.model_config_data['providers']['openai'])
             self.llm = OpenAIProvider(model_config=openai_cfg)
             
         self.redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
@@ -85,9 +84,7 @@ class GalaxyInformer:
         return self
 
     async def get_embedding_model(self, input):
-        with open('app/llm_config.json', 'r') as f:
-            model_config_data = json.load(f)
-        openai_cfg = LLMModelConfig(model_config_data['providers']['openai'])
+        openai_cfg = LLMModelConfig(self.model_config_data['providers']['openai'])
         llm = OpenAIProvider(model_config=openai_cfg)
         return await llm.embedding_model(input)
     
