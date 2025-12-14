@@ -20,7 +20,7 @@ from starlette.status import (
 
 from fastapi import FastAPI, Request, HTTPException, Query, WebSocket, WebSocketDisconnect, Response
 from fastapi.openapi.utils import get_openapi
-from app.AI.chatbot import ChatSession, initialize_session
+from app.mcp_client.chatbot import ChatSession, initialize_session
 
 from app.utils import import_published_workflows
 from app.log_setup import configure_logging

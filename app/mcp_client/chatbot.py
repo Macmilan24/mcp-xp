@@ -1,13 +1,13 @@
 import json
 import logging
 
-from app.AI.server import Server
+from app.mcp_client.server import Server
 from app.llm_config import GEMINIConfig
 from app.llm_config import OPENAIConfig
 from app.llm_provider import GeminiProvider
 from app.llm_provider import OpenAIProvider
 from app.config import Configuration
-from app.AI.prompts import DEFINE_TOOLS_PROMPT, STRUCTURE_OUTPUT_PROMPT
+from app.mcp_client.prompts import DEFINE_TOOLS_PROMPT, STRUCTURE_OUTPUT_PROMPT
 
 class LLMClient:
     def __init__(self, llm_providers: dict):
