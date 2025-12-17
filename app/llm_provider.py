@@ -11,7 +11,6 @@ from sys import path
 path.append(".")
 
 from app.llm_config import LLMModelConfig
-from app.llm_provider import LLMProvider
 from app.config import GEMINI_API_KEY, OPENAI_API_KEY
 from app.utils import _extract_json_from_llm_response
 

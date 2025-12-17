@@ -200,7 +200,7 @@ class WorkflowManager:
         
         if invocation_check:
             try:
-                invocation_outputs, invocation_state_result, invocation_update_time = self.invocation_handler.track_invocation(
+                invocation_outputs, invocation_state_result, invocation_update_time = await self.invocation_handler.track_invocation(
                     invocation = invocation,
                     tracker_id = tracker_id,
                     ws_manager = ws_manager,
@@ -215,7 +215,7 @@ class WorkflowManager:
         
         else:
             try:
-                return self.invocation_handler.track_invocation(
+                return await self.invocation_handler.track_invocation(
                     invocation = invocation,
                     tracker_id = tracker_id,
                     ws_manager = ws_manager,

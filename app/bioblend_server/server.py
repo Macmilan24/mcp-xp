@@ -26,7 +26,7 @@ logger = logging.getLogger("fastmcp_bioblend_server")
 
 redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
 invocation_cache = InvocationCache(redis_client)
-invocation_background = InvocationBackgroundTasks(cache = invocation_cache)
+invocation_background = InvocationBackgroundTasks(cache = invocation_cache, redis_client = redis_client)
 inv_data_manager = InvocationDataManager(cache = invocation_cache, background_tasks = invocation_background)
 
 if not os.environ.get("GALAXY_API_KEY") or not os.environ.get("QDRANT_HTTP_PORT") or not os.environ.get("CURRENT_LLM"):
