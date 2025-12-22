@@ -6,6 +6,7 @@ import redis
 import asyncio
 import json
 import httpx
+from contextlib import asynccontextmanager
 
 from bioblend.galaxy.client import ConnectionError as GalaxyConnectionError
 from qdrant_client.models import PointStruct
@@ -18,6 +19,7 @@ from app.bioblend_server.informer.informer import GalaxyInformer
 from app.bioblend_server.executor.workflow_manager import WorkflowManager
 from app.orchestration.invocation_cache import InvocationCache
 from app.api.endpoints.invocation import show_invocation_result, report_invocation_failure
+from app.bioblend_server.background_runner import BackgroundIndexer
 
 configure_logging()
 logger = logging.getLogger("fastmcp_bioblend_server")
@@ -27,6 +29,31 @@ redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.ge
 if not os.environ.get("GALAXY_API_KEY") or not os.environ.get("QDRANT_HTTP_PORT") or not os.environ.get("CURRENT_LLM"):
     logger.warning("MCP server environment variables are not set.")
 
+@asynccontextmanager
+async def mcp_galaxy_lifespan(server: FastMCP):
+    """ Manages the lifecycle of the background indexer.
+    Ensures it starts with the server and shuts down gracefully.
+    """
+    # 1. Initialize the worker and start loop
+    indexer = BackgroundIndexer()
+    loop_task = asyncio.create_task(indexer.run_loop())
+    
+    yield 
+    
+    # 3. Graceful Shutdown
+    logger.info("Server shutting down, stopping background tasks...")
+    loop_task.cancel()
+    try:
+        # Wait for the task to acknowledge cancellation
+        await loop_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("Background tasks stopped cleanly.")
+    
+    
+# ==================================== #
+     ## Main FastMCP Server ##
+# ==================================== #
 
 bioblend_app = FastMCP(
                         name="galaxyTools",
@@ -42,7 +69,8 @@ bioblend_app = FastMCP(
                                     
                                     Always keep querying and executing strictly separate in purpose and usage.
                                     """,
-                        middleware=[JWTGalaxyKeyMiddleware()]
+                        middleware=[JWTGalaxyKeyMiddleware()],
+                        lifespan=mcp_galaxy_lifespan
                     )
 
 @bioblend_app.tool()

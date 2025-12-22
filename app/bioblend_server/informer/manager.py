@@ -4,54 +4,28 @@ import pandas as pd
 import numpy as np
 import logging
 import random
-import json
-
-from qdrant_client import QdrantClient, models
-from enum import Enum
+import asyncio
+from typing import Any
 from dotenv import load_dotenv
 
-from app.AI.provider.gemini_provider import GeminiProvider
-from app.AI.provider.openai_provider import OpenAIProvider
-from app.AI.llm_config._base_config import LLMModelConfig
+from qdrant_client import QdrantClient, models
+from qdrant_client.models import Filter, FieldCondition, MatchText, PointStruct
+
 from app.log_setup import configure_logging
-
-
-class EmbeddingModel(Enum):
-    """Defines supported embedding models and their vector sizes."""
-    
-    GEMINI_EMBEDDING_001 = ("embedding-001", 768)
-    GEMINI_EMBEDDING_002 = ("embedding-002", 1408)
-    GEMINI_TEXT_EMBEDDING_004 = ("text-embedding-004", 2048)
-    OPENAI_TEXT_EMBEDDING_3_SMALL = ("text-embedding-3-small", 1536)
-    OPENAI_TEXT_EMBEDDING_3_LARGE = ("text-embedding-3-large", 3072)
-
-    @property
-    def model_name(self) -> str:
-        return self.value[0]
-
-    @property
-    def embedding_size(self) -> int:
-        return self.value[1]
-
+from app.bioblend_server.informer.utils import LLMResponse
 
 class InformerManager:
     """
     Manages all vector database operations for the GalaxyInformer, including
     data preparation, embedding generation, storage, and retrieval from Qdrant.
     """
-    _logging_configured = False
-
     def __init__(self):
-        # This init should be lightweight and non-blocking.
-        self.client = None
-        self.llm = None
+        self.embedder = LLMResponse()
+        self.client: QdrantClient = None       
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.embedding_model = None
-        self.embedding_size = None
-        self.model_name = None
 
     @classmethod
-    async def create(cls, llm_provider = os.getenv("CURRENT_LLM", "openai")):
+    async def create(cls):
         """Asynchronous factory to create and initialize an InformerManager instance."""
         self = cls()
         load_dotenv()
@@ -60,55 +34,41 @@ class InformerManager:
             # Initialize Qdrant client asynchronously if possible, or run in executor
             QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
             QDRANT_PORT: str = os.getenv("QDRANT_HTTP_PORT", "6555")
-            self.client = QdrantClient(f"http://{QDRANT_HOST}:{QDRANT_PORT}", timeout=10.0)
+            self.client = QdrantClient(f"http://{QDRANT_HOST}:{QDRANT_PORT}", timeout=120)
             self.logger.info("Qdrant Client initialized")
-
-            with open('app/AI/llm_config/llm_config.json', 'r') as f:
-                model = json.load(f)
-            if llm_provider == "gemini":
-                gemini_cfg = LLMModelConfig(model['providers']['gemini'])
-                self.llm = GeminiProvider(model_config=gemini_cfg)
-                self.embedding_model = EmbeddingModel.GEMINI_EMBEDDING_001
-            elif llm_provider == "openai":
-                openai_cfg = LLMModelConfig(model['providers']['openai'])
-                self.llm = OpenAIProvider(model_config=openai_cfg)
-                self.embedding_model = EmbeddingModel.OPENAI_TEXT_EMBEDDING_3_SMALL
-            else:
-                raise ValueError(f"Unsupported LLM provider: {llm_provider}")
-            
-            # Assign embedding metadata
-            self.embedding_size = self.embedding_model.embedding_size
-            self.model_name = self.embedding_model.model_name
-              
             self.logger.info("InformerManager connected to Qdrant successfully.")
         except Exception as e:
             self.logger.exception(f"Qdrant connection failed: {e}")
             raise
         return self
-   
-    async def get_embedding_model(self, input):
-        return await self.llm.embedding_model(input)
     
     def _ensure_collection_exists(self, collection_name: str):
         """
         A private helper to ensure a collection exists in Qdrant, creating it if necessary.
         """
         try:
-            self.client.get_collection(collection_name)
-        except Exception:
-            self.logger.warning(f"Collection '{collection_name}' not found. Creating it now.")
-            try:
+            if not self.client.collection_exists(collection_name):
                 self.client.create_collection(
                     collection_name,
                     vectors_config=models.VectorParams(
-                        size=self.embedding_size,
+                        size=self.embedder.embedding_size,
                         distance=models.Distance.COSINE
                     )
                 )
+                self.client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="name",
+                    field_schema=models.TextIndexParams(
+                        type=models.TextIndexType.TEXT,
+                        tokenizer=models.TokenizerType.WORD,
+                        min_token_len=1,
+                        max_token_len=30,
+                    ),
+                )
                 self.logger.info(f"Collection '{collection_name}' created successfully.")
-            except Exception as e:
-                self.logger.error(f"Failed to create collection '{collection_name}': {e}")
-                traceback.print_exc()
+        except Exception as e:
+            self.logger.error(f"Failed to ensure collection '{collection_name}' exists: {e}")
+            traceback.print_exc()
 
     def _prepare_dataframe(self, entities: list[dict]) -> pd.DataFrame:
         """
@@ -123,17 +83,8 @@ class InformerManager:
     async def _generate_embeddings(self, df: pd.DataFrame) -> pd.DataFrame:
         try:
             self.logger.info("Generating vector embeddings for entity content.")
-            embeddings = await self.get_embedding_model(df['content'].tolist())
-
-            # Detect embedding size dynamically
-            if not embeddings or not isinstance(embeddings[0], (list, np.ndarray)):
-                raise ValueError("Embedding provider returned invalid format")
-
-            self.embedding_size = len(embeddings[0])  # <-- FIX
-
-            embed_array = np.array(embeddings).reshape(len(df), self.embedding_size)
-            df['dense'] = embed_array.tolist()
-            self.logger.info(f"Embeddings generated successfully with size {self.embedding_size}.")
+            df['dense'] = await self.embedder.get_embeddings(df['content'].tolist())
+            self.logger.info(f"Embeddings generated successfully with size {self.embedder.embedding_size}.")
             return df
         except Exception as e:
             self.logger.error(f"Error generating dense embeddings: {e}")
@@ -141,7 +92,7 @@ class InformerManager:
             raise
 
 
-    def _upsert_points(self, collection_name: str, df: pd.DataFrame):
+    def _upsert_points(self, collection_name: str, df: pd.DataFrame, batch_size = 500):
         """
         A private helper to perform the final upsert operation into the Qdrant collection.
         """
@@ -159,16 +110,25 @@ class InformerManager:
 
             self._ensure_collection_exists(collection_name)
             
-            self.client.upsert(
-                collection_name=collection_name,
-                points=models.Batch(
-                    ids=df['id'].tolist(),
-                    vectors=df["dense"].tolist(),
-                    payloads=payloads_list,
-                ),
-            )
-            self.logger.info(f"Successfully upserted {len(df)} points to '{collection_name}'.")
+            total_points = len(df)
+            for start in range(0, total_points, batch_size):
+                end = start + batch_size
+                batch_ids = df['id'].iloc[start:end].tolist()
+                batch_vectors = df['dense'].iloc[start:end].tolist()
+                batch_payloads = payloads_list[start:end]
+
+                self.client.upsert(
+                    collection_name=collection_name,
+                    points=models.Batch(
+                        ids=batch_ids,
+                        vectors=batch_vectors,
+                        payloads=batch_payloads
+                    ),
+                )
+                self.logger.info(f"Upserted points {start}-{end} to '{collection_name}'.")
+                
             return "Data Successfully Uploaded"
+        
         except Exception as e:
             self.logger.error(f"Error upserting data to Qdrant: {e}")
             traceback.print_exc()
@@ -184,12 +144,21 @@ class InformerManager:
             df = self._prepare_dataframe(entities)
             df_embedded = await self._generate_embeddings(df)
             if df_embedded is not None:
+                if self.client.collection_exists(collection_name):
+                    self.delete_collection(collection_name)
+                    
                 return self._upsert_points(collection_name, df_embedded)
         except Exception as e:
             self.logger.error(f"Failed to embed and store entities in '{collection_name}': {e}")
             traceback.print_exc()
 
-    def search_by_vector(self, collection: str, query_vector: list, entity_type: str) -> dict:
+    def search_by_vector(self,
+                         collection: str,
+                         query_vector: list,
+                         entity_type: str,
+                         score_threshold: int = 0.3,
+                         limit = 50
+                         ) -> dict:
         """
         Performs a semantic search in a Qdrant collection based on a query vector.
 
@@ -197,48 +166,47 @@ class InformerManager:
         """
 
         try:
-            result = self.client.search(
+            result = self.client.query_points(
                 collection_name=collection,
-                query_vector=query_vector,
+                query=query_vector,
                 with_payload=True,
-                score_threshold=0.3,
-                limit=10
-            )
+                score_threshold=score_threshold,
+                limit=limit
+            ).points
             
-            response = {}
+            response = []
             if entity_type == "tool":
 
-                for i,point in enumerate(result):
-                    response[i]={
-                        "id": point.id,
+                for point in result:
+                    response.append({
                         "score": point.score,
                         "description": point.payload.get('description', 'description not available'),
                         "tool_id": point.payload.get('tool_id'),
-                        "name": point.payload.get('name')
+                        "name": point.payload.get('name'),
+                        "content": point.payload.get("content")
 
-                    }
+                    })
             elif entity_type == "workflow":
-                for i,point in enumerate(result):
-                    response[i]={
-                        "id": point.id,
+                for point in result:
+                    response.append({
                         "score": point.score,
-                        "model_class": point.payload.get('model_class', 'unknown'),
                         'description': point.payload.get('description', 'unkown'),
                         "owner": point.payload.get('owner', 'unknown'),
                         "workflow_id": point.payload.get('workflow_id'),
-                        "name": point.payload.get('name')
-                    }
+                        "name": point.payload.get('name'),
+                        "content": point.payload.get("content")
+                    })
             elif entity_type == 'dataset':
-                for i, point in enumerate(result):
-                    response[i]={
-                        'id': point.id,
+                for point in result:
+                    response.append({
                         'score': point.score,
                         "dataset_id": point.payload.get('dataset_id'),
                         "name": point.payload.get('name'),
                         "full_path": point.payload.get('full_path', 'unknown'),
                         "type": point.payload.get('type', 'unknown'),
-                        "source": point.payload.get('source')
-                    }
+                        "source": point.payload.get('source'),
+                        "content": point.payload.get("content")
+                    })
                 
             return response
         except Exception as e:
@@ -247,11 +215,8 @@ class InformerManager:
             return {"error": "Search failed"}
 
     def delete_collection(self, collection_name: str):
-        """
-        Deletes a Qdrant collection if it exists.
-
-        Called in: GalaxyInformer.retrive_informer_data
-        """
+        """ Deletes a Qdrant collection if it exists."""
+        
         try:
             self.client.delete_collection(collection_name)
             self.logger.info(f"Successfully deleted collection: {collection_name}")
@@ -259,3 +224,25 @@ class InformerManager:
             # Qdrant client might raise an exception if the collection doesn't exist.
             # We can log this as info or a warning instead of an error.
             self.logger.warning(f"Could not delete collection '{collection_name}'. It might not exist. Details: {e}")
+            
+    
+    async def match_name_from_collection(self, workflow_collection_name: str, workflow_name: str) -> tuple[Any, list[PointStruct]]:
+        """ Retrieve documents from a collection matching the specified workflow name. """
+        
+        loop = asyncio.get_running_loop()
+        hits = await loop.run_in_executor(
+            None,
+            lambda: self.client.scroll(
+                collection_name=workflow_collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="name",
+                            match=MatchText(value=workflow_name)
+                        )
+                    ]
+                ),
+                limit=1
+            )
+        )
+        return hits
