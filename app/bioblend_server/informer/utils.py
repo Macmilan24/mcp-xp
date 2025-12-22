@@ -12,10 +12,17 @@ from app.AI.llm_config._base_config import LLMModelConfig
 
 load_dotenv()
 
-class InformerHandler(Enum):
-    LLM_PROVIDER = os.getenv("CURRENT_LLM", "gemini")
-    EMBEDDING_PROVIDER = os.getenv("CURRENT_EMBEDDER", "huggingface")
-    CROSS_ENCODER = os.getenv("CROSS_ENCODER","cross-encoder/ms-marco-MiniLM-L-6-v2")
+class TextProvider(Enum):
+    GEMINI = "gemini"
+    OPENAI = "openai"
+
+class EmbeddingProvider(Enum):
+    GEMINI = "gemini"
+    OPENAI = "openai"
+    HUGGINGFACE = "huggingface"
+    
+class ReRankerModel(Enum):
+    MS_MARCO_MINILM = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 class InformerTTLs(IntEnum):
     TOOL_TTL = 43200
@@ -50,7 +57,6 @@ class EmbeddingModel(Enum):
     
 class LLMResponse:
     def __init__(self):
-        self.llm_provider = InformerHandler.LLM_PROVIDER
         self.config = None
         with open('app/AI/llm_config/llm_config.json', 'r') as f:
             self.config = json.load(f)
@@ -58,32 +64,34 @@ class LLMResponse:
     @property
     def embedding_size(self) -> int:
         """Return the embedding size based on the current embedding provider."""
-        provider = InformerHandler.EMBEDDING_PROVIDER.value
-        if provider == "gemini":
+        provider = EmbeddingProvider(os.getenv("CURRENT_EMBEDDER", EmbeddingProvider.GEMINI.value)).value
+        if provider == EmbeddingProvider.GEMINI.value:
             return EmbeddingModel.GEMINI_EMBEDDING_001.embedding_size
-        elif provider == "openai":
+        elif provider == EmbeddingProvider.OPENAI.value:
             return EmbeddingModel.OPENAI_TEXT_EMBEDDING_3_SMALL.embedding_size
-        elif provider == "huggingface":
+        elif provider == EmbeddingProvider.HUGGINGFACE.value:
             return EmbeddingModel.E5_MODEL.embedding_size
         else:
             raise ValueError(f"Unknown embedding provider: {provider}")
         
     @property
     def embedder(self) -> LLMProvider:
-        selected_config = LLMModelConfig(self.config['providers']['gemini'])# InformerHandler.EMBEDDING_PROVIDER
-        if InformerHandler.EMBEDDING_PROVIDER.value == "gemini":
+        provider = EmbeddingProvider(os.getenv("CURRENT_EMBEDDER", EmbeddingProvider.GEMINI.value)).value
+        selected_config = LLMModelConfig(self.config['providers'][provider])
+        if provider == EmbeddingProvider.GEMINI.value:
             return GeminiProvider(model_config=selected_config)
-        elif InformerHandler.EMBEDDING_PROVIDER.value == "openai":
+        elif provider == EmbeddingProvider.OPENAI.value:
             return OpenAIProvider(model_config=selected_config)
-        elif InformerHandler.EMBEDDING_PROVIDER.value == "huggingface":
+        elif provider == EmbeddingProvider.HUGGINGFACE.value:
             return HuggingFaceModel(model_config=selected_config)
     
     @property
     def llm(self) -> LLMProvider:
-        selected_config = LLMModelConfig(self.config['providers'][InformerHandler.LLM_PROVIDER.value])
-        if InformerHandler.LLM_PROVIDER.value == "gemini":
+        provider = TextProvider(os.getenv("CURRENT_LLM", TextProvider.GEMINI.value)).value
+        selected_config = LLMModelConfig(self.config['providers'][provider])
+        if provider ==  TextProvider.GEMINI.value:
             return GeminiProvider(model_config=selected_config)
-        elif InformerHandler.LLM_PROVIDER.value == "openai":
+        elif provider ==  TextProvider.OPENAI.value:
             return OpenAIProvider(model_config=selected_config)
         
     async def get_embeddings(self, input):

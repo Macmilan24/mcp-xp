@@ -1,12 +1,13 @@
-
+import os
 import json
 import logging
+from dotenv import load_dotenv
 from typing import List, Dict
 from sentence_transformers import CrossEncoder
 
-from app.bioblend_server.informer.utils import InformerHandler
+from app.bioblend_server.informer.utils import ReRankerModel
 
-
+load_dotenv()
 class InformerReranker:
     """Result reranking with hybrid weighted RRF + cross-encoder."""
     
@@ -16,8 +17,9 @@ class InformerReranker:
         
         # Initialize cross-encoder model
         try:
-            self.logger.debug(f"Loading cross-encoder model: {InformerHandler.CROSS_ENCODER.value}")
-            self.cross_encoder = CrossEncoder(InformerHandler.CROSS_ENCODER.value)
+            cross_encoder_model = ReRankerModel(os.getenv("CROSS_ENCODER", ReRankerModel.MS_MARCO_MINILM.value)).value
+            self.logger.debug(f"Loading cross-encoder model: {cross_encoder_model}")
+            self.cross_encoder = CrossEncoder(cross_encoder_model)
             self.logger.info("Cross-encoder model loaded successfully")
         except Exception as e:
             self.logger.error(f"Failed to load cross-encoder model: {e}")
