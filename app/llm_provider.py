@@ -230,26 +230,18 @@ class OpenAIProvider(LLMProvider):
 
         self.log.info("OpenAI embeddings generated.")
         return embeddings
-    
+
+# TODO: Fix abstraction here, since we are abstracting a configuration that the hugging face model wont be using.
 class HuggingFaceModel(LLMProvider):
 
     def __init__(self, model_config):
         super().__init__(model_config)
         self.log = logging.getLogger(__class__.__name__)
-        
-        config_file = "config.yml"
-        if not os.path.exists(config_file):
-            self.log.error(f"Configuration file {config_file} not found.")
-            raise FileNotFoundError(f"Configuration file {config_file} not found.")
-        with open(config_file, "r") as f:
-            self.config = yaml.safe_load(f)
-        model_name = self.config["agent"]["finetuned_model"]
-        
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model_name = os.getenv("HUGGINGFACE_MODEL", "intfloat/e5-base-v2")
         self.log.info(f"Loading SentenceTransformer on device: {device}")
-
-        self.model = SentenceTransformer(model_name, device=device)
         # Load the SentenceTransformer model
+        self.model = SentenceTransformer(self.model_name, device=device)
     
     def get_response(self, messages):
         return super().get_response(messages)

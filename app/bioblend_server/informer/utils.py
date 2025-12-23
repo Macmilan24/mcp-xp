@@ -38,7 +38,12 @@ class SearchThresholds(Enum):
     SEMANTIC_THRESHOLD = 0.3
     FUZZY_THRESHOLD = 50
     SEARCH_LIMIT = 50
+    TOOL_SCRAPE_PERCENTAGE = 1
 
+class WorkflowGitubScraperUrl(Enum):
+    GITHUB_SCRAPE_URL = "https://api.github.com/repos/galaxyproject/iwc/contents/workflows"
+    RAW_BASE_URL = "https://raw.githubusercontent.com/galaxyproject/iwc/main/workflows"
+    
 class EmbeddingModel(Enum):
     """Defines supported embedding models and their vector sizes."""
     
