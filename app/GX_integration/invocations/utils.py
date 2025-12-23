@@ -4,9 +4,26 @@ import asyncio
 import pathlib
 import logging
 
+from enum import Enum
+
 
 logger = logging.getLogger("Invocation")
 
+
+class FASTAIndexerTools(Enum):
+    INDEXER_TOOL = "CONVERTER_fasta_to_fai"
+
+class VCFIndexerTools(Enum):
+    COMPRESSER_TOOL = "CONVERTER_uncompressed_to_gz"
+    INDEXER_TOOL = "CONVERTER_vcf_bgzip_to_tabix_0"
+
+class BAMIndexerTools(Enum):
+    INDEXER_TOOL = "CONVERTER_Bam_Bai_0"
+
+class GTFIndexerTools(Enum):
+    COMPRESSER_TOOL = "CONVERTER_uncompressed_to_gz"
+    INDEXER_TOOL = "CONVERTER_interval_to_tabix_0"
+    
 
 def generate_request_hash(*args) -> str:
     """Generate hash for request deduplication"""

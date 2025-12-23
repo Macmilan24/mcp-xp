@@ -6,6 +6,13 @@ from app.api.socket_manager import SocketManager
 from app.GX_integration.tool_manager import ToolManager
 from app.orchestration.invocation_cache import InvocationCache
 
+from app.GX_integration.invocations.utils import (
+    FASTAIndexerTools,
+    VCFIndexerTools,
+    BAMIndexerTools,
+    GTFIndexerTools
+)
+
 class OutputIndexer:
     """support dataset indexing for galaxy workflow invocation output datasets for visualization purposes."""
     
@@ -69,7 +76,7 @@ class OutputIndexer:
             dataset (tuple): fasta dataset name and id.
         """
         name, dataset_id = dataset
-        tool_id = "CONVERTER_fasta_to_fai"
+        tool_id = FASTAIndexerTools.INDEXER_TOOL.value
         tool_input = {"input" : {"src": "hda", "id": dataset_id}}
         
         self.log.debug(f"Starting FASTA indexing: history={history_id}, dataset={dataset_id}, tool={tool_id}")
@@ -103,8 +110,9 @@ class OutputIndexer:
         name, dataset_id = dataset
 
         # Execute 2 tools consecutively as kind of like workflows.
-        tool_id1 = "CONVERTER_uncompressed_to_gz"
-        tool_id2 = "CONVERTER_vcf_bgzip_to_tabix_0"
+        tool_id1 = VCFIndexerTools.COMPRESSER_TOOL.value
+        tool_id2 = VCFIndexerTools.INDEXER_TOOL.value
+        
         self.log.debug(f"Starting VCF compression: history={history_id}, dataset={dataset_id}, tool={tool_id1}")
         tool1_input = {"input1": {"src": "hda", "id": dataset_id}}
         
@@ -152,7 +160,7 @@ class OutputIndexer:
         """
         name, dataset_id = dataset
 
-        tool_id = "CONVERTER_Bam_Bai_0"
+        tool_id = BAMIndexerTools.INDEXER_TOOL.value
         tool_input = {"input1" : {"src": "hda", "id": dataset_id}}
         self.log.debug(f"Starting BAM indexing: history={history_id}, dataset={dataset_id}, tool={tool_id}")
         try:
@@ -172,6 +180,59 @@ class OutputIndexer:
             dataset_name = f"{name}_bai_index", 
             index_outputs = result["dataset"]
             )
+
+    async def index_gtf(self, history_id: str, dataset: tuple[str, str]):
+        """ Index gtf files by compressing and then indexing them.
+
+        Args:
+            dataset (tuple): gtf dataset name and id.
+        """
+        name, dataset_id = dataset
+
+        # Execute 3 tools consecutively as kind of like workflows.
+        tool_id1 = GTFIndexerTools.COMPRESSER_TOOL.value
+        tool_id2 = GTFIndexerTools.INDEXER_TOOL.value
+        
+        self.log.debug(f"Starting GTF compression: history={history_id}, dataset={dataset_id}, tool={tool_id1}")
+        tool1_input = {"input1": {"src": "hda", "id": dataset_id}}
+        
+        try:   
+            result_1 = await self.tool_manager.run(
+                tool_id = tool_id1, 
+                history_id = history_id, 
+                inputs = tool1_input
+                )
+        except Exception as e:
+            self.log.error(f"GTF indexing failed for dataset id={dataset_id}: {e}")
+            return []
+        
+        # extract dataset id of the compressed dataset.
+        result_1_id = result_1.get("dataset")[0].get("id")
+        self.log.debug(f"GTF compressed: new_dataset_id={result_1_id}")
+        
+        tool2_input = {
+            "input1": {"src": "hda", "id": dataset_id},
+            "bgzip": {"src": "hda", "id" : result_1_id }
+            }
+        
+        self.log.debug(f"Starting tabix indexing: tool={tool_id2}, input={result_1_id}, {dataset_id}")
+        try:
+            result = await self.tool_manager.run(
+                tool_id = tool_id2,
+                history_id = history_id,
+                inputs = tool2_input
+            )
+        except Exception as e:
+            self.log.error(f"GTF indexing failed for dataset id={dataset_id}: {e}")
+            return []
+        
+        self.index_count += 1
+        self.log.info(f"GTF indexing complete for dataset id: {dataset_id} - {self.index_count}/{self.total_index}")
+        return await self._structure_indexed_data(
+            history_id = history_id,
+            dataset_name = f"{name}_tabix_index", 
+            index_outputs = result["dataset"]
+            )
     
     #TODO: Add more dataset indexing functions that JBrowse supports.
     
@@ -181,7 +242,8 @@ class OutputIndexer:
         index_datasets = {
                 "fasta" : [],
                 "vcf": [],
-                "bam": []
+                "bam": [],
+                "gtf": []
                 }
         
         # extract invocation and history id of the invocation.
@@ -218,7 +280,8 @@ class OutputIndexer:
             indexing_task = [self.index_fasta(history_id, dataset) for dataset in index_datasets.get("fasta", [])]
             indexing_task.extend([self.index_vcf(history_id, dataset) for dataset in index_datasets.get("vcf", [])])
             indexing_task.extend([self.index_bam(history_id, dataset) for dataset in index_datasets.get("bam", [])])
-
+            indexing_task.extend([self.index_gtf(history_id, dataset) for dataset in index_datasets.get("gtf", [])])
+            
             # count total indxes that are to be used.
             self.total_index = len(indexing_task)
 
