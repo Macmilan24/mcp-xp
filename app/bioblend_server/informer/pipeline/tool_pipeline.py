@@ -68,6 +68,20 @@ def clean_help_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
+def normalize_tool_id(tool_id: str) -> str:
+    """
+    Normalizes a tool ID by removing the version suffix.
+    Example: 'toolshed.g2.bx.psu.edu/repos/iuc/rgrnastar/rna_star/2.7.11a+galaxy1'
+             becomes 'toolshed.g2.bx.psu.edu/repos/iuc/rgrnastar/rna_star'
+    """
+    if not tool_id or '/' not in tool_id:
+        return tool_id
+    
+    # Split the ID by slashes and rejoin all but the last component (the version)
+    parts = tool_id.split('/')
+    base_id = '/'.join(parts[:-1])
+    return base_id
+
 def fetch_and_process_tool(tool: dict, gi: GalaxyInstance) -> dict | None:
     """Fetches detailed tool info, extracts help text, and cleans it."""
     tool_id = tool.get("id", "")
@@ -87,6 +101,7 @@ def fetch_and_process_tool(tool: dict, gi: GalaxyInstance) -> dict | None:
         # The final, processed record for this tool
         processed_tool = {
             "tool_id": tool_id,
+            "base_tool_id": normalize_tool_id(tool_id), # <-- NEW FIELD
             "name": tool.get("name", ""),
             "description": tool.get("description", ""),
             "categories": [tool.get("panel_section_name", "Uncategorized")],

@@ -1,4 +1,5 @@
 import os
+import asyncio
 import traceback
 import pandas as pd
 import numpy as np
@@ -33,7 +34,7 @@ class InformerManager:
         self.client = None
         self.llm = None
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.embedding_size = 1024  # IMPORTANT: e5-large-v2 uses 1024 dimensions
+        self.embedding_size = 384  # sentence-transformers/all-MiniLM-L6-v2 uses 384 dimensions
         self.hf_token = os.getenv("HUGGING_FACE_TOKEN")
         self.http_client = None
 
@@ -47,13 +48,14 @@ class InformerManager:
             self.logger.info("Initializing Qdrant client...")
             self.client = QdrantClient(os.environ.get('QDRANT_CLIENT', 'http://localhost:6333'))
             
-            if not self.hf_token:
-                raise ValueError("HUGGING_FACE_TOKEN environment variable is not set.")
-
             # Use a persistent httpx client for connection pooling
+            headers = {}
+            if self.hf_token:
+                headers["Authorization"] = f"Bearer {self.hf_token}"
+            http_timeout = float(os.getenv("HF_HTTP_TIMEOUT", "120"))
             self.http_client = httpx.AsyncClient(
-                headers={"Authorization": f"Bearer {self.hf_token}"},
-                timeout=30.0 
+                headers=headers,
+                timeout=http_timeout
             )
             self.logger.info("Hugging Face Inference API client configured.")
             self.logger.info("InformerManager connected to Qdrant successfully.")
@@ -99,16 +101,46 @@ class InformerManager:
             self.logger.error("Invalid data format. Expected a list of dictionaries.")
             raise ValueError("Input data must be a list of dictionaries.")
 
+    async def _post_with_retries(self, url: str, json_payload: dict, max_retries: int = 5) -> httpx.Response:
+        """
+        Helper to POST with retries on 429/5xx using exponential backoff.
+        """
+        backoff = 1.0
+        for attempt in range(max_retries):
+            try:
+                resp = await self.http_client.post(url, json=json_payload)
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    raise httpx.HTTPStatusError("retryable", request=resp.request, response=resp)
+                resp.raise_for_status()
+                return resp
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code if e.response else None
+                if code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                    self.logger.warning(f"HF API {code}. Retrying in {backoff:.1f}s (attempt {attempt+1}/{max_retries})")
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30)
+                    continue
+                self.logger.error(f"HF API request failed with status {code}: {e.response.text if e.response else e}")
+                raise
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    self.logger.warning(f"HF API error: {e}. Retrying in {backoff:.1f}s (attempt {attempt+1}/{max_retries})")
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30)
+                    continue
+                self.logger.error(f"HF API request failed after retries: {e}")
+                raise
+
     async def _generate_embeddings(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         A private helper to generate vector embeddings for the 'content' column of a DataFrame.
         """
-        self.logger.info("Generating vector embeddings using Hugging Face Inference API.")
-        api_url = "https://api-inference.huggingface.co/models/intfloat/e5-large-v2"
-        
-        texts_to_embed = ("passage: " + df['content']).tolist()
+        self.logger.info("Generating vector embeddings using Hugging Face Inference API (BAAI/bge-small-en-v1.5).")
+        api_url = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5"
+
+        texts_to_embed = df['content'].astype(str).tolist()
         all_embeddings = []
-        batch_size = 128  # Process in batches to avoid overwhelming the API
+        batch_size = int(os.getenv("HF_EMBED_BATCH", "64"))
 
         for i in range(0, len(texts_to_embed), batch_size):
             batch = texts_to_embed[i:i + batch_size]
@@ -118,16 +150,11 @@ class InformerManager:
             }
             
             try:
-                response = await self.http_client.post(api_url, json=payload)
-                response.raise_for_status() 
+                response = await self._post_with_retries(api_url, payload)
                 batch_embeddings = response.json()
                 all_embeddings.extend(batch_embeddings)
-            except httpx.HTTPStatusError as e:
-                self.logger.error(f"API request failed with status {e.response.status_code}: {e.response.text}")
-                # Decide how to handle this: skip batch, retry, or fail completely
-                raise
             except Exception as e:
-                self.logger.error(f"An unexpected error occurred during embedding batch {i}: {e}")
+                self.logger.error(f"Embedding batch {i//batch_size + 1} failed: {e}")
                 raise
 
         df['dense'] = all_embeddings
@@ -139,25 +166,19 @@ class InformerManager:
         Generates an embedding for a single query string using the HF Inference API.
         """
         self.logger.info(f"Embedding single query: '{query}'")
-        api_url = "https://api-inference.huggingface.co/models/intfloat/e5-large-v2"
-        
-        prefixed_query = "query: " + query
-        
+        api_url = "https://router.huggingface.co/hf-inference/models/BAAI/bge-small-en-v1.5"
+
         payload = {
-            "inputs": [prefixed_query],
+            "inputs": [str(query)],
             "options": {"wait_for_model": True}
         }
         
         try:
-            response = await self.http_client.post(api_url, json=payload)
-            response.raise_for_status()
+            response = await self._post_with_retries(api_url, payload)
             embedding = response.json()[0]
             return embedding
-        except httpx.HTTPStatusError as e:
-            self.logger.error(f"API request failed for query embedding with status {e.response.status_code}: {e.response.text}")
-            raise
         except Exception as e:
-            self.logger.error(f"An unexpected error occurred during query embedding: {e}")
+            self.logger.error(f"Query embedding failed: {e}")
             raise
         
     def _upsert_points(self, collection_name: str, df: pd.DataFrame):
@@ -178,15 +199,24 @@ class InformerManager:
 
             self._ensure_collection_exists(collection_name)
             
-            self.client.upsert(
-                collection_name=collection_name,
-                points=models.Batch(
-                    ids=df['id'].tolist(),
-                    vectors=df["dense"].tolist(),
-                    payloads=payloads_list,
-                ),
-            )
-            self.logger.info(f"Successfully upserted {len(df)} points to '{collection_name}'.")
+            batch_size = int(os.getenv("QDRANT_UPSERT_BATCH", "200"))
+            total = len(df)
+            for start in range(0, total, batch_size):
+                end = min(start + batch_size, total)
+                ids_batch = df['id'].tolist()[start:end]
+                vectors_batch = df['dense'].tolist()[start:end]
+                payloads_batch = payloads_list[start:end]
+
+                self.client.upsert(
+                    collection_name=collection_name,
+                    points=models.Batch(
+                        ids=ids_batch,
+                        vectors=vectors_batch,
+                        payloads=payloads_batch,
+                    ),
+                )
+
+            self.logger.info(f"Successfully upserted {len(df)} points to '{collection_name}' in batches of {batch_size}.")
             return "Data Successfully Uploaded"
         except Exception as e:
             self.logger.error(f"Error upserting data to Qdrant: {e}")
