@@ -13,7 +13,8 @@ from app.galaxy import GalaxyClient
 from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.GX_integration.invocations.output_indexer import OutputIndexer
 from app.api.schemas import invocation
-from app.api.socket_manager import SocketManager, SocketMessageEvent, SocketMessageType
+from app.api.socket_manager import SocketManager
+from app.api.socket_enums import SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache
 from app.enumerations import NumericLimits, JobState
 
