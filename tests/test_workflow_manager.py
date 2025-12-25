@@ -452,6 +452,7 @@ class TestWorkflowManagerTrackInvocation:
         """Test invocation timeout during polling"""
 
         tracker_test_log.info("TEST: test_track_invocation_timeout starting.")
+        caplog.set_level(logging.ERROR)
 
         def cancel_func():
             pass
@@ -481,26 +482,58 @@ class TestWorkflowManagerTrackInvocation:
             no_progress_jobs
         )
 
-        # Mock invocation handler to simulate timeout/failure
-        workflow_manager.invocation_handler.track_invocation = AsyncMock(
-            return_value=({}, "Failed", None)
-        )
+        
+        start_time = 1000.0
+        hard_cap = 7 * 24 * 3600  # InvocationTracking.HARD_CAP
 
-        # Execute with short initial_wait
-        _, state, _ = await workflow_manager.track_invocation(
-            invocation=mock_invocation,
-            tracker_id="test_tracker",
-            ws_manager=mock_socket_manager,
-            invocation_check=True,
-        )
+        with (
+            patch(
+                "time.time",
+                side_effect=[
+                    start_time,
+                    start_time + hard_cap + 100,
+                    start_time + hard_cap + 100,
+                ],
+            ),
+            patch("asyncio.sleep", return_value=None),
+            patch.object(
+                workflow_manager.invocation_handler,
+                "_cancel_invocation_background",
+                new_callable=AsyncMock,
+            ) as mock_cancel_bg,
+        ):
 
-        # Assert timeout occurred
-        assert state == "Failed"
-        # assert "Invocation timed out" in caplog.text # Log is not produced by mock
-        # mock_socket_manager.broadcast.assert_called_with(
-        #     event=ANY,
-        #     data={"type": "INVOCATION_FAILURE", "payload": {"message": "Invocation timed out"}},
-        #     tracker_id="test_tracker"
-        # )
+            # Ensure the mock returns an awaitable that create_task can consume
+            mock_cancel_bg.return_value = None
 
-        tracker_test_log.info("TEST: test_track_invocation_timeout starting.")
+            # Execute
+            _, state, _ = await workflow_manager.track_invocation(
+                invocation=mock_invocation,
+                tracker_id="test_tracker",
+                ws_manager=mock_socket_manager,
+                invocation_check=True,
+            )
+
+            # Assert timeout occurred
+            assert state == "Failed"
+
+            # Verify logs
+            assert (
+                f"Invocation stalled for {int(hard_cap + 100)} seconds; exceeding hard cap"
+                in caplog.text
+            )
+
+            # Verify socket broadcast
+            mock_socket_manager.broadcast.assert_called_with(
+                event=ANY,
+                data={
+                    "type": "INVOCATION_FAILURE",
+                    "payload": {"message": "Invocation timed out"},
+                },
+                tracker_id="test_tracker",
+            )
+
+            # Verify cancellation was called
+            mock_cancel_bg.assert_called_once_with(mock_invocation)
+
+        tracker_test_log.info("TEST: test_track_invocation_timeout PASSED.")
