@@ -1,5 +1,6 @@
 import pytest
 import logging
+import itertools
 
 from unittest.mock import Mock, AsyncMock, MagicMock, patch, ANY
 from sys import path
@@ -482,18 +483,18 @@ class TestWorkflowManagerTrackInvocation:
             no_progress_jobs
         )
 
-        
         start_time = 1000.0
         hard_cap = 7 * 24 * 3600  # InvocationTracking.HARD_CAP
+
+        # Use an iterator that repeats the last value to handle extra calls from logging
+        time_side_effect = itertools.chain(
+            [start_time], itertools.repeat(start_time + hard_cap + 100)
+        )
 
         with (
             patch(
                 "time.time",
-                side_effect=[
-                    start_time,
-                    start_time + hard_cap + 100,
-                    start_time + hard_cap + 100,
-                ],
+                side_effect=time_side_effect,
             ),
             patch("asyncio.sleep", return_value=None),
             patch.object(
