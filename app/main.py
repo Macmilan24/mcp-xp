@@ -26,7 +26,8 @@ from app.utils import import_published_workflows
 from app.log_setup import configure_logging
 from app.api.middleware import JWTGalaxyKeyMiddleware, RateLimiterMiddleware, DomainCORSMiddleware
 from app.api.api import api_router 
-from app.api.socket_manager import ws_manager, SocketMessageEvent
+from app.api.socket_manager import ws_manager
+from app.api.socket_enums import SocketMessageEvent
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 
