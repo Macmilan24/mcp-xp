@@ -22,7 +22,7 @@ from app.galaxy import GalaxyClient
 from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.api.schemas import workflow
 from app.api.socket_manager import ws_manager
-from app.api.socket_enums import SocketMessageEvent, SocketMessageType
+from app.api.enums import SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
 from app.enumerations import NumericLimits

@@ -55,3 +55,14 @@ class SocketMessageEvent(str, Enum):
 
     # Output Indexing
     output_index = "output_index"
+    
+    
+class CollectionNames(Enum):
+    """ Enumerations for mongo collection names. """
+    
+    INVOCATION_LISTS = "InvocationList"
+    INVOCATION_RESULTS = "InvocationResults"
+    DELETED_INVOCATIONS = "DeletedInvocation"
+    INVOCATION_STATES = "InvocationStates"
+    
+    

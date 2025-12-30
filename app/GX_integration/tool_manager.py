@@ -21,7 +21,7 @@ from bioblend.galaxy.objects.wrappers import Job, History, Tool, Dataset
 from app.GX_integration.form_generator import ToolFormGenerator
 from app.GX_integration.data_manager import DataManager
 from app.api.socket_manager import SocketManager
-from app.api.socket_enums import SocketMessageEvent, SocketMessageType
+from app.api.enums import SocketMessageEvent, SocketMessageType
 from app.enumerations import NumericLimits
 
 class ToolManager:
