@@ -9,6 +9,8 @@ from fastapi import Response
 from starlette.status import HTTP_204_NO_CONTENT
 
 from app.galaxy import GalaxyClient
+from app.persistence import MongoStore
+from app.api.enums import CollectionNames
 from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.api.schemas import invocation, workflow
 from app.orchestration.invocation_cache import InvocationCache
@@ -27,13 +29,15 @@ class InvocationService:
     def __init__(
         self, 
         cache: InvocationCache, 
-        background_tasks: InvocationBackgroundTasks, 
+        background_tasks: InvocationBackgroundTasks,
+        mongo_client: MongoStore
         ):
         
         self.cache = cache
         self.background_tasks = background_tasks
         self.inv_data_manager = InvocationDataManager(cache = self.cache, background_tasks = self.background_tasks)
         self.inv_tracker = InvocationTracker(cache = self.cache, redis_client = self.cache.redis, inv_data_manager = self.inv_data_manager)
+        self.mongo_client = mongo_client
         self.log = logging.getLogger(__class__.__name__)
     
     async def list_invocations(
@@ -49,12 +53,18 @@ class InvocationService:
             # Get deleted invocations list.
             deleted_invocation_ids= await self.cache.get_deleted_invocations(username)
             
+            if not deleted_invocation_ids:
+                deleted_invocation_ids = await self.mongo_client.get(collection_name= CollectionNames.DELETED_INVOCATIONS.value, key= username)
+                await self.cache.add_to_deleted_invocations(username = username, invocation_ids = deleted_invocation_ids)
+            
             # Step 1: Request deduplication check and filter out deleted invocations
             request_hash = generate_request_hash(username, workflow_id, history_id)
             if await self.cache.is_duplicate_request(username, request_hash):
                 self.log.info("Duplicate request detected, serving from cache")
             
             # Step 2: Try to get cached response first
+            
+            # TODO: here I should fetch the list of invocation with there output ids as well.
             cached_response = await self.cache.get_response_cache(
                 username, workflow_id, history_id
             )
@@ -109,7 +119,8 @@ class InvocationService:
             username = username, 
             invocations_data = invocations_data,
             workflow_mapping = workflow_mapping,
-            workflow_manager = workflow_manager
+            workflow_manager = workflow_manager,
+            mongo_client = self.mongo_client
             )
             
 
@@ -130,7 +141,13 @@ class InvocationService:
             self.log.error(f"Error in list_invocations: {e}", exc_info=True)
             # Try to return partial results if possible
             try:
-                return await self.handle_partial_failure(username, workflow_manager, workflow_id, history_id)
+                return await self.handle_partial_failure(
+                    username = username,
+                    workflow_manager = workflow_manager,
+                    mongo_client = self.mongo_client,
+                    workflow_id = workflow_id,
+                    history_id = history_id
+                    )
             except Exception as fallback_error:
                 self.log.error(f"Fallback also failed: {fallback_error}")
                 raise InternalServerErrorException("Failed to list invocations")
@@ -148,6 +165,13 @@ class InvocationService:
         try:
             # Step 1: Check if deleted
             deleted = await self.cache.get_deleted_invocations(username)
+            
+            if not deleted:
+                deleted = await self.mongo_client.get(collection_name = CollectionNames.DELETED_INVOCATIONS.value, key = username)
+                
+                if deleted:
+                    await self.cache.add_to_deleted_invocations(username = username, invocation_ids = deleted)
+                
             if invocation_id in deleted:
                 raise NotFoundException("Invocation not found")
 
@@ -156,6 +180,13 @@ class InvocationService:
             if cached_result:
                 self.log.info("fetching workflow invocation result from cache.")
                 return invocation.InvocationResult(**cached_result)
+            
+            stored_result = await self.mongo_client.get(collection_name = CollectionNames.INVOCATION_RESULTS.value, key = f"invocation_result:{username}:{invocation_id}")
+            
+            if stored_result:
+                await self.cache.set_invocation_result(username = username, invocation_id = invocation_id, result = stored_result)
+                self.log.info("fetching workflow invocation result from database.")
+                return invocation.InvocationResult(**stored_result)
 
             # Step 3: Fetch invocation for preliminary info
 
@@ -244,6 +275,7 @@ class InvocationService:
                             invocation_id = invocation_id,
                             galaxy_client = galaxy_client,
                             workflow_manager = workflow_manager,
+                            mongo_client = self.mongo_client,
                             history_id = invocation_details.get("history_id"),
                             create_time = invocation_details.get("create_time"),
                             last_update_time = invocation_details.get("update_time"),
@@ -274,6 +306,14 @@ class InvocationService:
                     invocation_id = invocation_details.get("id"),
                     result = invocation_result,
                     )
+                
+                asyncio.create_task(
+                    self.mongo_client.set(
+                        collection_name= CollectionNames.INVOCATION_RESULTS.value, 
+                        key = f"invocation_result:{username}:{invocation_id}", 
+                        value = invocation_result
+                        )
+                    )
             
             return invocation.InvocationResult(**invocation_result)
         except Exception as e:
@@ -294,11 +334,22 @@ class InvocationService:
             # Parse comma-separated string into list
             ids_list = [i.strip() for i in invocation_ids.split(",") if i.strip()]
 
-            # Mark as deleted using cache method
-            await self.cache.add_to_deleted_invocations(username, ids_list)
+            # Mark as deleted using cache method and store deleted invocation.
+            await asyncio.gather(
+                self.cache.add_to_deleted_invocations(username, ids_list),
+                self.mongo_client.add_to_set(collection_name = CollectionNames.DELETED_INVOCATIONS.value, key = f"deleted_invocations:{username}", elements = ids_list)
+            )
+            
             
             # Spawn async deletion tasks
-            background_task = asyncio.create_task(self.inv_tracker.cancel_invocation_and_delete_data(ids_list, workflow_manager, username))
+            background_task = asyncio.create_task(
+                self.inv_tracker.cancel_invocation_and_delete_data(
+                    invocation_ids = ids_list, 
+                    workflow_manager = workflow_manager,
+                    username = username,
+                    mongo_client = self.mongo_client
+                    )
+                )
             background_task.add_done_callback(lambda t: log_task_error(t, task_name="Invocation cancelling and data deletion"))
 
             return Response(status_code=HTTP_204_NO_CONTENT)
@@ -310,6 +361,7 @@ class InvocationService:
         self,
         username: str,
         workflow_manager: WorkflowManager,
+        mongo_client: MongoStore,
         workflow_id: str | None,
         history_id: str | None
     ) -> invocation.InvocationList:
@@ -343,7 +395,8 @@ class InvocationService:
                     username=username,
                     raw_state=inv.get('state'),
                     invocation_id=inv.get('id'),
-                    workflow_manager=workflow_manager
+                    workflow_manager=workflow_manager,
+                    mongo_client = mongo_client
                 )
                 for inv in invocations
             ]
@@ -357,6 +410,7 @@ class InvocationService:
                     workflow_id='Unknown (partial failure)',
                     history_id=inv.get('history_id'),
                     state=state,
+                    outputs = [],
                     create_time=inv.get('create_time'),
                     update_time=inv.get('update_time')
                 )

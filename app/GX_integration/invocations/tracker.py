@@ -10,6 +10,8 @@ from fastapi.concurrency import run_in_threadpool
 from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
 
 from app.galaxy import GalaxyClient
+from app.persistence import MongoStore
+from app.api.enums import CollectionNames
 from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.GX_integration.invocations.output_indexer import OutputIndexer
 from app.api.schemas import invocation
@@ -36,7 +38,8 @@ class InvocationTracker:
         username: str,
         invocations_data: list[dict],
         workflow_mapping: dict[str, dict],
-        workflow_manager: WorkflowManager
+        workflow_manager: WorkflowManager,
+        mongo_client: MongoStore
     ) -> list[invocation.InvocationListItem]:
         """Format invocations with optimized state mapping"""
     
@@ -65,7 +68,8 @@ class InvocationTracker:
                 username=username,
                 raw_state=inv.get('state'),
                 invocation_id=inv.get("id"),
-                workflow_manager=workflow_manager
+                workflow_manager=workflow_manager,
+                mongo_client = mongo_client
             )
             for inv, _, _ in filtered_invocations
         ]
@@ -79,6 +83,7 @@ class InvocationTracker:
                 workflow_id=workflow_id,
                 history_id=inv.get('history_id'),
                 state=state,
+                outputs=[],
                 create_time=inv.get('create_time'),
                 update_time=inv.get('update_time')
             )
@@ -95,7 +100,8 @@ class InvocationTracker:
         username: str,
         raw_state: str,
         invocation_id: str,
-        workflow_manager: WorkflowManager
+        workflow_manager: WorkflowManager,
+        mongo_client: MongoStore
     ) -> str:
         """Map Galaxy invocation states to user-friendly states"""
         
@@ -119,6 +125,7 @@ class InvocationTracker:
         elif raw_state in pending_states:
             return await self.compute_deep_invocation_state(
                 workflow_manager = workflow_manager,
+                mongo_client = mongo_client,
                 invocation_id = invocation_id,
                 username = username
             )
@@ -130,6 +137,7 @@ class InvocationTracker:
     async def compute_deep_invocation_state(
         self,
         workflow_manager: WorkflowManager,
+        mongo_client: MongoStore,
         invocation_id: str,
         username: str
     ) -> str:
@@ -184,10 +192,10 @@ class InvocationTracker:
             else:
                 inv_state = "Pending"
             
-            await self.cache.set_invocation_state(username = username,
-                                                        invocation_id = invocation_id,
-                                                        state = inv_state
-                                                        )
+            await asyncio.gather(
+                    self.cache.set_invocation_state(username, invocation_id, inv_state),
+                    mongo_client.set(collection_name = CollectionNames.INVOCATION_STATES.value, key = f"invocation_states:{username}", value = inv_state)
+                    )
             return inv_state
             
         except Exception as e:
@@ -199,6 +207,7 @@ class InvocationTracker:
         invocation_id: str,
         galaxy_client: GalaxyClient,
         workflow_manager: WorkflowManager,
+        mongo_client: MongoStore,
         history_id: str,
         create_time: str,
         last_update_time: str,
@@ -228,8 +237,12 @@ class InvocationTracker:
                 invocation_check=True
             )
             
-            # Set invocation to cache
-            await self.cache.set_invocation_state(username, invocation_id, inv_state)
+            # Set invocation to cache and persist as well.
+        
+            await asyncio.gather(
+                self.cache.set_invocation_state(username, invocation_id, inv_state),
+                mongo_client.set(collection_name = CollectionNames.INVOCATION_STATES.value, key = f"invocation_states:{username}", value = inv_state)
+                )
 
             if inv_state == "Failed":
                 
@@ -240,6 +253,30 @@ class InvocationTracker:
             else:
                 workflow_result, invocation_report = await self.inv_data_manager.structure_outputs(
                 _invocation=_invocation, outputs=outputs, workflow_manager=workflow_manager
+                )
+            
+            async def _collect_output_id_name_and_type(invocation_output):
+                """ Collect the invocation output id, name, and type and store separately. """
+                
+                invocation_id = invocation_output["invocation_id"]
+                result = invocation_output["result"]
+                extracted_outputs = []
+                
+                for output in result:
+                    if  output.get("type") == "dataset":
+                        extracted_outputs.append({
+                            "id": output.get("id"),
+                            "name": output.get("name"),
+                            "type": output.get("data_type")
+                        })
+
+                await mongo_client.update_value_element(
+                    collection_name = CollectionNames.INVOCATION_LISTS.value,
+                    key = f"invocations_response:{username}:all",
+                    match_field = "id",
+                    match_value = invocation_id,
+                    update_field = "outputs",
+                    new_value = extracted_outputs
                 )
                 
             result_dict = {
@@ -253,7 +290,13 @@ class InvocationTracker:
                 "workflow": workflow_description.model_dump(),
                 "report": invocation_report
             }
-            await self.cache.set_invocation_result(username, invocation_id, result_dict)
+            
+            asyncio.create_task(_collect_output_id_name_and_type(invocation_output = result_dict))
+            
+            await asyncio.gather(
+                self.cache.set_invocation_result(username, invocation_id, result_dict),
+                mongo_client.set(collection_name = CollectionNames.INVOCATION_RESULTS.value, key = f"invocation_result:{username}:{invocation_id}", value = result_dict)
+                )
             
             self.log.info("Invocation results are complete and ready.")
             if ws_manager:
@@ -284,7 +327,11 @@ class InvocationTracker:
                 "workflow": workflow_description.model_dump(),
                 "report": None
             }
-            await self.cache.set_invocation_result(username, invocation_id, result_dict)
+            
+            await asyncio.gather(
+                self.cache.set_invocation_result(username, invocation_id, result_dict),
+                mongo_client.set(collection_name = CollectionNames.INVOCATION_RESULTS.value, key = f"invocation_result:{username}:{invocation_id}", value = result_dict)
+                )
 
         finally:
             await run_in_threadpool(self.redis_client.delete, tracking_key)
@@ -294,7 +341,8 @@ class InvocationTracker:
         self,
         invocation_ids: List[str],
         workflow_manager: WorkflowManager,
-        username: str
+        username: str,
+        mongo_client: MongoStore
     ):
         """Cancel invocations and delete associated data"""
         try:    
@@ -329,7 +377,11 @@ class InvocationTracker:
                 # Concurrently delete invication output datasets.
                 delete_datasets = [asyncio.to_thread(ds.delete, purge= True) for ds in outputs if isinstance(ds, HistoryDatasetAssociation)]
                 delete_collections = [asyncio.to_thread(ds.delete) for ds in outputs if isinstance(ds, HistoryDatasetCollectionAssociation)]       
-                await asyncio.gather(*delete_datasets, *delete_collections, return_exceptions= False)
+                await asyncio.gather(
+                    *delete_datasets,
+                    *delete_collections,
+                    mongo_client.delete(collection_name = CollectionNames.INVOCATION_RESULTS.value, key = f"invocation_result:{username}:{invocation_id}"),
+                    return_exceptions= False)
                 
                 # Delete invocation states saved earlier.
                 await asyncio.gather(*[self.cache.delete_invocation_state(username, inv_id) for inv_id in invocation_ids])

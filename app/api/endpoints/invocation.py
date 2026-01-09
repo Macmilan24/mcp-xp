@@ -17,6 +17,7 @@ from starlette.status import HTTP_204_NO_CONTENT
 
 from app.context import current_api_key
 from app.galaxy import GalaxyClient
+from app.persistence import MongoStore
 from app.api.schemas import invocation
 from app.api.socket_manager import ws_manager
 from app.orchestration.invocation_cache import InvocationCache
@@ -32,11 +33,13 @@ logger = logging.getLogger("Invocation")
 redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.environ.get("REDIS_PORT"), db=0, decode_responses=True)
 invocation_cache = InvocationCache(redis_client)
 invocation_background = InvocationBackgroundTasks(cache = invocation_cache, redis_client=redis_client)
-invocation_service = InvocationService(
-                        cache = invocation_cache,
-                        background_tasks= invocation_background
-                        )
+mongo_client = MongoStore()
 
+invocation_service = InvocationService(
+                cache = invocation_cache,
+                background_tasks = invocation_background,
+                mongo_client = mongo_client
+                )
 router = APIRouter()
 
 @router.get(
@@ -196,4 +199,5 @@ async def delete_invocations(
         )
         
     except Exception as e:
+        logger.error(f"Failed to delete invocations: {e}")
         raise InternalServerErrorException("Failed to delete invocations")
