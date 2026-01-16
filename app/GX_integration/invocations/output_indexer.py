@@ -5,7 +5,8 @@ from app.galaxy import GalaxyClient
 from app.api.socket_manager import SocketManager
 from app.GX_integration.tool_manager import ToolManager
 from app.orchestration.invocation_cache import InvocationCache
-
+from app.persistence import MongoStore
+from app.api.enums import CollectionNames
 from app.GX_integration.invocations.utils import (
     FASTAIndexerTools,
     VCFIndexerTools,
@@ -16,13 +17,14 @@ from app.GX_integration.invocations.utils import (
 class OutputIndexer:
     """support dataset indexing for galaxy workflow invocation output datasets for visualization purposes."""
     
-    def __init__(self, username: str, galaxy_client: GalaxyClient, cache: InvocationCache, ws_manager: SocketManager):
+    def __init__(self, username: str, galaxy_client: GalaxyClient, cache: InvocationCache, mongo_client: MongoStore, ws_manager: SocketManager):
 
         self.gi = galaxy_client.gi_client
         self.username = username
         self.cache = cache
         self.ws_manager = ws_manager
         self.tool_manager = ToolManager(galaxy_client = galaxy_client)
+        self.mongo_client = mongo_client
         
         self.log = logging.getLogger(__class__.__name__)
         
@@ -65,7 +67,7 @@ class OutputIndexer:
                 }
             )
             
-        self.log.info(f"Index structuring complete for {dataset_name} ({len(structured_index)} files).")
+        self.log.debug(f"Index structuring complete for {dataset_name} ({len(structured_index)} files).")
         return structured_index
        
        
@@ -93,7 +95,7 @@ class OutputIndexer:
         self.log.debug(f"FASTA indexing tool completed: produced={len(result['dataset'])} output(s)")
         
         self.index_count += 1
-        self.log.info(f"fasta indexing complete for dataset id: {dataset_id} - {self.index_count}/{self.total_index}")
+        self.log.debug(f"fasta indexing complete for dataset id: {dataset_id} - {self.index_count}/{self.total_index}")
         
         return await self._structure_indexed_data(
             history_id = history_id,
@@ -144,7 +146,7 @@ class OutputIndexer:
             return []
         
         self.index_count += 1
-        self.log.info(f"vcf indexing complete for dataset id: {dataset_id} - {self.index_count}/{self.total_index}")
+        self.log.debug(f"vcf indexing complete for dataset id: {dataset_id} - {self.index_count}/{self.total_index}")
         return await self._structure_indexed_data(
             history_id = history_id,
             dataset_name = f"{name}_tabix_index", 
@@ -174,7 +176,7 @@ class OutputIndexer:
             return []       
          
         self.index_count += 1
-        self.log.info(f"bam indexing complete for dataset id: {dataset_id} - {self.index_count}/{self.total_index}")
+        self.log.debug(f"bam indexing complete for dataset id: {dataset_id} - {self.index_count}/{self.total_index}")
         return await self._structure_indexed_data(
             history_id = history_id,
             dataset_name = f"{name}_bai_index", 
@@ -227,7 +229,7 @@ class OutputIndexer:
             return []
         
         self.index_count += 1
-        self.log.info(f"GTF indexing complete for dataset id: {dataset_id} - {self.index_count}/{self.total_index}")
+        self.log.debug(f"GTF indexing complete for dataset id: {dataset_id} - {self.index_count}/{self.total_index}")
         return await self._structure_indexed_data(
             history_id = history_id,
             dataset_name = f"{name}_tabix_index", 
@@ -236,7 +238,11 @@ class OutputIndexer:
     
     #TODO: Add more dataset indexing functions that JBrowse supports.
     
-    async def index_datasets(self, invocation_result: dict):
+    async def index_datasets_and_register(self, invocation_result: dict):
+        """
+        This function cleans indexes outputs of an invocaiton if they are a [fasta, vcf, bam, gtf] file,
+        and then registers them to the output list
+        """
         
         # create dict to collect datasets to be indexed. NOTE: Add as needed, for now we support fasta, vcf and bam files. 
         index_datasets = {
@@ -288,7 +294,7 @@ class OutputIndexer:
             if self.total_index > 0:
                 
                 self.log.info(f"Total datasets to index: {self.total_index}")
-                self.log.info(f"Beginning dataset indexing for invocation_id={invocation_id} in history_id={history_id}")
+                self.log.debug(f"Beginning dataset indexing for invocation_id = {invocation_id} in history_id = {history_id}")
                 
                 # gather index results; Run tasks concurrently, process results as they finish
                 for coro in asyncio.as_completed(indexing_task):
@@ -313,3 +319,44 @@ class OutputIndexer:
 
                     except Exception as e:
                         self.log.error(f"Indexing subtask failed: {e}")
+                
+                self.log.debug(F'Invocaion with id {invocation_id} as completed execution and indexing, persisting final results.')
+                
+                await self.mongo_client.set(
+                    collection_name= CollectionNames.INVOCATION_RESULTS.value, 
+                    key = f"{self.username}:{invocation_id}", 
+                    value = invocation_result
+                )
+                
+                extracted_outputs = []
+                
+                for output in invocation_outputs:
+                    dataset_type = output.get("type")
+                    if  dataset_type == "dataset":
+                        extracted_outputs.append({
+                            "id": output.get("id"),
+                            "name": output.get("name"),
+                            "type": output.get("data_type")
+                        })
+                        
+                    elif dataset_type == "collection":
+                        collection_elements: list[dict] = output.get("elements", [])
+                        for element in collection_elements:
+                            extracted_outputs.append({
+                                "id":element.get("id"),
+                                "name":  element.get("name"),
+                                "type": element.get("data_type", "unknown")
+                            })
+                        
+                self.log.debug("output information extracted and stored.")
+
+                await self.mongo_client.update_value_element(
+                    collection_name = CollectionNames.INVOCATION_LISTS.value,
+                    key = self.username,
+                    match_field = "id",
+                    match_value = invocation_id,
+                    update_field = "outputs",
+                    new_value = extracted_outputs
+                )
+                
+                self.log.info(f"Worklfow invocaiton with id {invocation_id} has completed full execution including output indexing. results have been stored.")
