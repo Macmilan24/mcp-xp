@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import time
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 import os
 from dotenv import load_dotenv
 from rapidfuzz import process, fuzz
@@ -16,13 +16,16 @@ path.append('.')
 
 from starlette.datastructures import FormData
 from app.galaxy import GalaxyClient
-from bioblend.galaxy.objects.wrappers import Job, History, Tool, Dataset
+from bioblend.galaxy.objects.wrappers import Job, History, Tool
 
 from app.GX_integration.form_generator import ToolFormGenerator
 from app.GX_integration.data_manager import DataManager
 from app.api.socket_manager import SocketManager
-from app.api.enums import SocketMessageEvent, SocketMessageType
-from app.enumerations import NumericLimits
+from app.enumerations import (
+    SocketMessageEvent,
+    SocketMessageType,
+    NumericLimits
+    )
 
 class ToolManager:
     """

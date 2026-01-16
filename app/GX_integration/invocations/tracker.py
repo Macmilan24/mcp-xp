@@ -7,18 +7,26 @@ from sys import path
 path.append(".")
 
 from fastapi.concurrency import run_in_threadpool
-from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryDatasetCollectionAssociation
+from bioblend.galaxy.objects.wrappers import (
+    HistoryDatasetAssociation,
+    HistoryDatasetCollectionAssociation
+    )
 
 from app.galaxy import GalaxyClient
 from app.persistence import MongoStore
-from app.api.enums import CollectionNames
 from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.GX_integration.invocations.output_indexer import OutputIndexer
 from app.api.schemas import invocation
 from app.api.socket_manager import SocketManager
-from app.api.enums import SocketMessageEvent, SocketMessageType
 from app.orchestration.invocation_cache import InvocationCache
-from app.enumerations import NumericLimits, JobState, InvocationStates
+from app.enumerations import (
+    NumericLimits,
+    JobState,
+    InvocationStates,
+    CollectionNames,
+    SocketMessageEvent,
+    SocketMessageType
+    )
 
 from app.GX_integration.invocations.data_manager import InvocationDataManager
 

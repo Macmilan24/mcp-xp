@@ -6,7 +6,7 @@ from app.api.socket_manager import SocketManager
 from app.GX_integration.tool_manager import ToolManager
 from app.orchestration.invocation_cache import InvocationCache
 from app.persistence import MongoStore
-from app.api.enums import CollectionNames
+from app.enumerations import CollectionNames
 from app.GX_integration.invocations.utils import (
     FASTAIndexerTools,
     VCFIndexerTools,
