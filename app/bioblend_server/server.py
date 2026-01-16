@@ -18,18 +18,25 @@ from app.galaxy import GalaxyClient
 
 from app.bioblend_server.background_runner import BackgroundIndexer
 from app.bioblend_server.informer.informer import GalaxyInformer
+
+from app.enumerations import InvocationStates
+
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
-from app.api.endpoints.invocation import show_invocation_result
+
+from app.persistence import MongoStore
+from app.GX_integration.invocations.invocation_service import InvocationService
 from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.GX_integration.invocations.data_manager import InvocationDataManager
 
 configure_logging()
 logger = logging.getLogger("fastmcp_bioblend_server")
 
+mongo_client = MongoStore()
 redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
 invocation_cache = InvocationCache(redis_client)
 invocation_background = InvocationBackgroundTasks(cache = invocation_cache, redis_client = redis_client)
+invocation_service = InvocationService(cache = invocation_cache, background_tasks= invocation_background, mongo_client= mongo_client)
 inv_data_manager = InvocationDataManager(cache = invocation_cache, background_tasks = invocation_background)
 
 if not os.environ.get("GALAXY_API_KEY") or not os.environ.get("QDRANT_HTTP_PORT") or not os.environ.get("CURRENT_LLM"):
@@ -37,7 +44,8 @@ if not os.environ.get("GALAXY_API_KEY") or not os.environ.get("QDRANT_HTTP_PORT"
 
 @asynccontextmanager
 async def mcp_galaxy_lifespan(server: FastMCP):
-    """ Manages the lifecycle of the background indexer.
+    """ 
+    Manages the lifecycle of the background indexer.
     Ensures it starts with the server and shuts down gracefully.
     """
     # 1. Initialize the worker and start loop
@@ -338,16 +346,27 @@ async def analyze_invocation(invocation_id: str, user_api_key: str, failure: boo
         invocation_raw_state = invocation_details.get('state', "Unknown")
     
         if invocation_raw_state == "scheduled":
-            invocation_state = "Pending"
+            invocation_state = InvocationStates.PENDING.value
             
             try:
-                asyncio.create_task(show_invocation_result(invocation_id=invocation_id, internal_api=user_api_key))
+                workflow_manager = WorkflowManager(galaxy_client=galaxy_client)
+
+                asyncio.create_task(
+                    invocation_service.get_invocation_result(
+                        invocation_id = invocation_id,
+                        username=username,
+                        api_key = current_api_key_server,
+                        galaxy_client=galaxy_client,
+                        workflow_manager= workflow_manager,
+                        ws_manager=None
+                        )
+                    )
                 explanation += "Workflow invocation still in Pending state. tracking workflow invocation."
             except Exception as e:
                 logger.error(f"Error retrieving or tracking scheduled invocation: {str(e)}")
                 explanation += f"\nError tracking scheduled invocation: {str(e)}\n"
         else:
-            invocation_state = "Failed"
+            invocation_state = InvocationStates.FAILED.value
     
     invocation_inputs: dict = invocation_details.get("inputs", {})
     invocation_input_parameters: dict = invocation_details.get("input_step_parameters", {})
@@ -362,7 +381,7 @@ async def analyze_invocation(invocation_id: str, user_api_key: str, failure: boo
     explanation += f"\n\nInvocation State: {invocation_state}\n\n"
     
     # If failure is indicated, focus on errors; otherwise, report on outputs
-    if failure or invocation_state not in ["Pending", "Complete"]:
+    if failure or invocation_state not in [InvocationStates.PENDING.value, InvocationStates.COMPLETE.value]:
         
         failure = True
         explanation += "Analysis for failures in the workflow invocation:\n"
