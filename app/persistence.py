@@ -19,30 +19,16 @@ class MongoStore:
     Supports flexible connection via URI string or individual parameters.
     Includes retry mechanisms for connection and operations.
 
-    Args:
-        connection_string: Optional MongoDB URI (e.g., 'mongodb://user:pass@host:port/db').
-        host: MongoDB host (ignored if connection_string provided).
-        port: MongoDB port (ignored if connection_string provided).
-        database_name: Database name.
-        collection_name: Collection name for key-value storage.
-        username: Username for authentication (ignored if connection_string provided).
-        password: Password for authentication (ignored if connection_string provided).
-        auth_source: Authentication source database.
-        server_selection_timeout_ms: Timeout for server selection in milliseconds.
-        max_retries: Maximum retries for connection and operations.
-        retry_delay_ms: Delay between retries in milliseconds.
-
     """
     
     def __init__(
         self,
         connection_string: Optional[str] = None,
         host: str = os.getenv("MONGO_HOST", "localhost"),
-        port: int = os.getenv("MONGO_PORT", 27017),
+        port: int = int(os.getenv("MONGO_PORT", 27017)),
         database_name: str = "Galaxy_Integration",
         username: Optional[str] = None,
         password: Optional[str] = None,
-        auth_source: str = "admin",
         server_selection_timeout_ms: int = 5000,
         max_retries: int = 3,
         retry_delay_ms: int = 1000,
@@ -64,45 +50,10 @@ class MongoStore:
                 port=port,
                 username=username,
                 password=password,
-                auth_source=auth_source,
-                server_selection_timeout_ms=server_selection_timeout_ms,
             )
 
         self._db = self._client[database_name]
-
-    # Class async instantiator.
-    
-    @classmethod
-    async def create(
-        cls,
-        connection_string: Optional[str] = None,
-        host: str = "localhost",
-        port: int = 27017,
-        database_name: str = "Galaxy_Integration",
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        auth_source: str = "admin",
-        server_selection_timeout_ms: int = 5000,
-        max_retries: int = 3,
-        retry_delay_ms: int = 1000,
-    ):
-        """ Asynchronous classmethod to create and initialize the store instance. """
-        
-        self = cls(
-            connection_string=connection_string,
-            host=host,
-            port=port,
-            database_name=database_name,
-            username=username,
-            password=password,
-            auth_source=auth_source,
-            server_selection_timeout_ms=server_selection_timeout_ms,
-            max_retries=max_retries,
-            retry_delay_ms=retry_delay_ms,
-        )
-        await self._ping_with_retry()
-        return self
-    
+   
     # Lifecycle helpers
 
     async def __aenter__(self):
@@ -155,6 +106,27 @@ class MongoStore:
             raise RuntimeError("Failed to create index.") from exc
 
     # Public API
+    
+    async def verify_connection(self) -> None:
+        await self._ping_with_retry()
+    
+    async def exists(self, collection_name: str, key: str) -> bool:
+        await self._ensure_indexes(collection_name)
+        
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("Key must be a non-empty string.")
+
+        @retry(...)
+        async def check():
+            return await self._db[collection_name].find_one(
+                {"key": key}, {"_id": 1}
+            ) is not None
+
+        try:
+            return await check()
+        except errors.PyMongoError as exc:
+            self.log.error(f"Failed to check existence of key '{key}'.")
+            raise RuntimeError(f"Failed to check key '{key}'.") from exc
 
     async def set(self, collection_name: str, key: str, value: Any) -> None:
         """ Asynchronously store or update a key-value pair with retry. Uses upsert semantics (idempotent). Supports any JSON-serializable value. """
@@ -210,14 +182,79 @@ class MongoStore:
         except errors.PyMongoError as exc:
             self.log.error(f"Failed to fetch key '{key}' after retries.")
             raise RuntimeError(f"Failed to fetch key '{key}'.") from exc
-    
+        
+    async def extend(self, collection_name: str, key: str, new_values: list[Any]) -> None:
+        """ Asynchronously extend the list under the key with new_values. Creates the key if it doesn't exist (idempotent). Assumes the value is a list; supports any JSON-serializable values. """
+        
+        await self._ensure_indexes(collection_name)
+        
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("Key must be a non-empty string.")
+        
+        if not isinstance(new_values, list):
+            raise ValueError("new_values must be a list.")
+        
+        if not new_values:  # Nothing to add
+            self.log.debug(f"No new values to extend for key '{key}'.")
+            return
+        
+        @retry(
+            stop=stop_after_attempt(self._max_retries),
+            wait=wait_fixed(self._retry_delay_seconds),
+            retry=retry_if_exception_type(errors.PyMongoError),
+            reraise=True,
+        )
+        async def update():
+            await self._db[collection_name].update_one(
+                {"key": key},
+                {"$push": {"value": {"$each": new_values}}},
+                upsert=True,
+            )
+        
+        try:
+            await update()
+            self.log.debug(f"Successfully extended key '{key}' with {len(new_values)} new values.")
+        except errors.PyMongoError as exc:
+            self.log.error(f"Failed to extend key '{key}' after retries.")
+            raise RuntimeError(f"Failed to extend key '{key}'.") from exc
+        
+    async def delete_specific(self, collection_name: str, key: str, elements: Iterable[Any]) -> None:
+        """ Asynchronously remove elements from the list under the key where the 'id' field matches any of the provided ids. Does nothing if the key or matching elements don't exist. """
+        
+        await self._ensure_indexes(collection_name)
+        
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("Key must be a non-empty string.")
+                
+        if not elements:  # Nothing to remove
+            self.log.debug(f"No ids provided to delete for key '{key}'.")
+            return
+        
+        @retry(
+            stop=stop_after_attempt(self._max_retries),
+            wait=wait_fixed(self._retry_delay_seconds),
+            retry=retry_if_exception_type(errors.PyMongoError),
+            reraise=True,
+        )
+        async def update():
+            result = await self._db[collection_name].update_one(
+                {"key": key},
+                {"$pull": {"value": {"id": {"$in": elements}}}},
+            )
+            return result
+        
+        try:
+            result = await update()
+            if result.modified_count > 0:
+                self.log.debug(f"Successfully removed matching element(s) from key '{key}'.")
+            else:
+                self.log.debug(f"No matching elements found to remove from key '{key}'.")
+        except errors.PyMongoError as exc:
+            self.log.error(f"Failed to delete from key '{key}' after retries.")
+            raise RuntimeError(f"Failed to delete from key '{key}'.") from exc
+
     async def add_to_set(self, collection_name: str, key: str, elements: Iterable[Any]) -> None:
-        """
-        Atomically add one or more elements to a set-like array value.
-        - Uses MongoDB $addToSet semantics (no duplicates)
-        - Upserts if key does not exist
-        - Safe under concurrency
-        """
+        """ Atomically add one or more elements to a set-like array value. """
 
         await self._ensure_indexes(collection_name)
          
@@ -270,26 +307,17 @@ class MongoStore:
             deleted = await remove()
             if deleted:
                 self.log.debug(f"Successfully deleted key '{key}'.")
+                return True
+            else:
+                return False
                 
         except errors.PyMongoError as exc:
             self.log.error(f"Failed to delete key '{key}' after retries.")
-            raise RuntimeError(f"Failed to delete key '{key}'.") from exc
-
-    async def exists(self, key: str) -> bool:
-        """ Asynchronously check if a key exists. """
-        return await self.get(key) is not None
-
+            raise RuntimeError(f"Failed to delete key '{key}'.") from exc       
+        
     async def list_keys(self, collection_name: str, prefix: Optional[str] = None, limit: int = 100) -> List[str]:
-        """
-        Asynchronously list keys, optionally filtered by prefix.
-
-        Args:
-            prefix: Optional prefix to filter keys.
-            limit: Maximum number of keys to return.
-
-        Returns:
-            List of matching keys.
-        """
+        """ Asynchronously list keys, optionally filtered by prefix. """
+        
         await self._ensure_indexes(collection_name)
          
         query = {"key": {"$regex": f"^{prefix}"}} if prefix else {}
@@ -322,9 +350,7 @@ class MongoStore:
         update_field: str,
         new_value: Any,
     ) -> None:
-        """
-        Update a field inside a matched object in the `value` array.
-        """
+        """ Update a field inside a matched object in the `value` array. """
 
         await self._ensure_indexes(collection_name)
 
@@ -354,6 +380,39 @@ class MongoStore:
             raise RuntimeError("Failed to update a selected element.") from exc
         
 
+    async def remove_from_set(self, collection_name: str, key: str, elements: Iterable[Any]) -> int:
+        """ Atomically remove one or more elements from the set-like array value. """
+
+        await self._ensure_indexes(collection_name)
+        
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("Key must be a non-empty string.")
+
+        elements = list(elements)
+        if not elements:
+            return 0  # no-op by design
+
+        @retry(
+            stop=stop_after_attempt(self._max_retries),
+            wait=wait_fixed(self._retry_delay_seconds),
+            retry=retry_if_exception_type(errors.PyMongoError),
+            reraise=True,
+        )
+        async def update():
+            result = await self._db[collection_name].update_one(
+                {"key": key},
+                {"$pull": {"value": {"$in": elements}}},
+            )
+            return result.modified_count
+
+        try:
+            modified = await update()
+            self.log.debug(f"Removed elements from set '{key}': modified {modified}.")
+            return modified
+        except errors.PyMongoError as exc:
+            self.log.error(f"Failed to remove elements from set '{key}' after retries.")
+            raise RuntimeError(f"Failed to update set for key '{key}'.") from exc
+        
     async def remove_from_value_array(
         self,
         collection_name: str,
@@ -361,11 +420,7 @@ class MongoStore:
         match_field: str,
         match_value: Any,
     ) -> bool:
-        """
-        Remove element(s) from the `value` array where match_field == match_value.
-
-        Returns True if at least one element was removed.
-        """
+        """ Remove element(s) from the `value` array where match_field == match_value. Returns True if at least one element was removed. """
 
         await self._ensure_indexes(collection_name)
 
@@ -399,3 +454,95 @@ class MongoStore:
         except errors.PyMongoError as exc:
             self.log.error("Failed to remove element(s) from value array after retries.")
             raise RuntimeError("Failed to update value array.") from exc
+        
+    async def set_element(self, collection_name: str, key: str, field: str, value: Any) -> None:
+        """ Asynchronously set a field in a hash-like document. """
+        
+        await self._ensure_indexes(collection_name)
+
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("Hash key must be a non-empty string.")
+        if not isinstance(field, str) or not field.strip():
+            raise ValueError("Field must be a non-empty string.")
+
+        @retry(
+            stop=stop_after_attempt(self._max_retries),
+            wait=wait_fixed(self._retry_delay_seconds),
+            retry=retry_if_exception_type(errors.PyMongoError),
+            reraise=True,
+        )
+        async def upsert():
+            await self._db[collection_name].update_one(
+                {"key": key},
+                {"$set": {f"value.{field}": value}},
+                upsert=True,
+            )
+
+        try:
+            await upsert()
+            self.log.debug(f"set to {collection_name}:{key} {field}")
+        except errors.PyMongoError as exc:
+            self.log.error(f"Failed to set {collection_name}:{key}:{field} - {exc}")
+
+    async def get_element(self, collection_name: str, key: str, field: str) -> Optional[Any]:
+        """ Asynchronously get a single field from a document. """
+        
+        await self._ensure_indexes(collection_name)
+
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("Hash key must be a non-empty string.")
+        if not isinstance(field, str) or not field.strip():
+            raise ValueError("Field must be a non-empty string.")
+
+        @retry(
+            stop=stop_after_attempt(self._max_retries),
+            wait=wait_fixed(self._retry_delay_seconds),
+            retry=retry_if_exception_type(errors.PyMongoError),
+            reraise=True,
+        )
+        async def fetch():
+            doc = await self._db[collection_name].find_one(
+                {"key": key},
+                {"_id": 0, "value": 1},
+            )
+            value_dict = doc.get("value") if doc else None
+            if isinstance(value_dict, dict):
+                return value_dict.get(field)
+            return None
+
+        try:
+            return await fetch()
+        except errors.PyMongoError as exc:
+            self.log.error(f"Failed to get {collection_name}:{key}:{field} - {exc}")
+            return None
+        
+    async def delete_elements(self, collection_name: str, key: str, fields: Iterable[str]) -> None:
+        """ Asynchronously delete multiple fields from a hash-like document. """
+        
+        await self._ensure_indexes(collection_name)
+
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("Hash key must be a non-empty string.")
+        if not isinstance(fields, list) or not all(isinstance(f, str) and f.strip() for f in fields):
+            raise ValueError("Fields must be a list of non-empty strings.")
+
+        # Construct the $unset dict dynamically
+        unset_dict = {f"value.{f}": "" for f in fields}
+
+        @retry(
+            stop=stop_after_attempt(self._max_retries),
+            wait=wait_fixed(self._retry_delay_seconds),
+            retry=retry_if_exception_type(errors.PyMongoError),
+            reraise=True,
+        )
+        async def unset():
+            await self._db[collection_name].update_one(
+                {"key": key},
+                {"$unset": unset_dict},
+            )
+
+        try:
+            await unset()
+            self.log.debug(f"Deleted fields {fields} from {collection_name}:{key}")
+        except errors.PyMongoError as exc:
+            self.log.error(f"Failed to delete fields {fields} from {collection_name}:{key} - {exc}")
