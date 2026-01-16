@@ -71,9 +71,12 @@ async def list_invocations(
         
         return await invocation_service.list_invocations(
             username = username,
+            api_key = api_key,
+            galaxy_client = galaxy_client,
             workflow_manager = workflow_manager,
             workflow_id = workflow_id,
-            history_id = history_id
+            history_id = history_id,
+            ws_manager = ws_manager
         )
         
     except Exception as e:
