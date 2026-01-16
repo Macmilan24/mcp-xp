@@ -61,8 +61,7 @@ class CollectionNames(Enum):
     """ Enumerations for mongo collection names. """
     
     INVOCATION_LISTS = "InvocationList"
+    INVOCATION_IDS = "InvocationIDs"
     INVOCATION_RESULTS = "InvocationResults"
     DELETED_INVOCATIONS = "DeletedInvocation"
     INVOCATION_STATES = "InvocationStates"
-    
-    

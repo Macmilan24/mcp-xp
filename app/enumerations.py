@@ -17,7 +17,6 @@ class NumericLimits(IntEnum):
     TOOL_EXECUTION_POLL = 5
     BATCH_LIMIT = 2
 
-
 class TTLiveConfig(IntEnum):
     """ Centralizing TTL for invocation and worklows. """
     
@@ -28,7 +27,6 @@ class TTLiveConfig(IntEnum):
     DUPLICATE_CHECK = 3
     INVOCACTION_RESULT = 259200  # 3 day cache for invocation result.
     
-    
 class InvocationTracking(IntEnum):
     """ Invocation tracker time limits. """
     
@@ -36,13 +34,11 @@ class InvocationTracking(IntEnum):
     STALLED_THRESHOLD = 48 * 3600     # 3 days
     HARD_CAP = 7 * 24 * 3600          # 7 days
 
+    POLL_QUICK = 10 # 10 sec
     POLL_FAST = 5 * 60 # 5 min
     POLL_MEDIUM = 10 * 60 # 10 min
     POLL_SLOW = 15 * 60 # 15 min
     POLL_MAX = 60 * 60 # 1 hour
-
-
-    
     
 class JobState(str, Enum):
     """ Galaxy job execution states. """
@@ -62,3 +58,8 @@ class JobState(str, Enum):
     STOPPING = "stop"
     STOPPED = "stopped"
     SKIPPED = "skipped"
+
+class InvocationStates(Enum):
+    PENDING = "Pending"
+    COMPLETE = "Complete"
+    FAILED = "Failed"

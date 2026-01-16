@@ -18,7 +18,7 @@ from bioblend.galaxy.objects.wrappers import Workflow, Invocation, History, Data
 from app.galaxy import GalaxyClient
 from app.api.socket_manager import SocketManager
 from app.api.enums import SocketMessageEvent, SocketMessageType
-from app.enumerations import NumericLimits, InvocationTracking, JobState
+from app.enumerations import NumericLimits, InvocationTracking, JobState, InvocationStates
 
 class WorkflowInvocationHandler:
     """Handles workflow invocation execution, monitoring, and result collection"""
@@ -144,7 +144,7 @@ class WorkflowInvocationHandler:
         last_progress_at = time.time()
         poll_interval = InvocationTracking.POLL_FAST.value
 
-        invocation_state_result = "Failed"
+        invocation_state_result = InvocationStates.FAILED.value
 
         # Explicit initial check before loop for already-completed/failed workflows
         if inv is None:
@@ -160,7 +160,7 @@ class WorkflowInvocationHandler:
         self.log.debug(f"invocation details: {json.dumps(inv, indent=4)}")
 
         if invocation_state in ("failed", "error"):
-            invocation_state_result = "Failed"
+            invocation_state_result = InvocationStates.FAILED.value
             
             self.log.error("workflow invocation has failed.")
             
@@ -297,7 +297,7 @@ class WorkflowInvocationHandler:
             
         if has_error:
             # Early exit if error (collected prior steps)
-            invocation_state_result = "Failed"
+            invocation_state_result = InvocationStates.FAILED.value
             if invocation_check:
                 return invocation_outputs, invocation_state_result, invocation_update_time
             else:
@@ -308,7 +308,7 @@ class WorkflowInvocationHandler:
                 f"All steps completed successfully. "
                 f"Jobs: {completed_jobs_in_invocation}/{total_scheduled_jobs_in_invocation} completed"
             )
-            invocation_state_result = "Complete"
+            invocation_state_result = InvocationStates.COMPLETE.value
             
             final_inv_coro = asyncio.to_thread(
                 self.gi_object.gi.invocations.show_invocation, invocation_id=invocation.id
@@ -370,7 +370,7 @@ class WorkflowInvocationHandler:
             self.log.debug(json.dumps(inv, indent=4))
             if invocation_state in ("failed", "error"):
                 self.log.error("workflow invocation has failed.")
-                invocation_state_result = "Failed"
+                invocation_state_result = InvocationStates.FAILED.value
                 if ws_manager:
                     ws_data = {
                         "type": SocketMessageType.INVOCATION_FAILURE.value,
@@ -383,7 +383,7 @@ class WorkflowInvocationHandler:
                     )
                 break
             
-            invocation_state_result = "Pending"
+            invocation_state_result = InvocationStates.PENDING.value
             
             step_jobs_coro = asyncio.to_thread(
                 self.gi_object.gi.invocations.get_invocation_step_jobs_summary, invocation_id=invocation.id
@@ -512,7 +512,7 @@ class WorkflowInvocationHandler:
                     all_ok = False
                 
             if has_error:
-                invocation_state_result = "Failed"
+                invocation_state_result = InvocationStates.FAILED.value
                 break
             
             if not all_ok or not confirmation_check:
@@ -523,7 +523,7 @@ class WorkflowInvocationHandler:
                     f"All Jobs completed successfully. "
                     f"Jobs: {completed_jobs_in_invocation}/{total_scheduled_jobs_in_invocation} completed"
                 )
-                invocation_state_result = "Complete"
+                invocation_state_result = InvocationStates.COMPLETE.value
                 
                 if ws_manager:
                     ws_data = {
@@ -580,8 +580,15 @@ class WorkflowInvocationHandler:
                 
             
             no_progress = time.time() - last_progress_at
+            
+            # Polling should slowly take longer and longer, but for the first 10 min do quick checks.
+            if no_progress < 1 * 600: 
+                if not confirmation_check:
+                    poll_interval = InvocationTracking.POLL_QUICK.value
+                else:
+                    poll_interval = InvocationTracking.POLL_QUICK.value * 6 # 1 Min for confirmation if workflow invocation finishes fast
 
-            if no_progress < 1 * 3600:
+            elif no_progress < 1 * 3600:
                 poll_interval = InvocationTracking.POLL_FAST.value
                 
             elif no_progress < InvocationTracking.BASE_NO_PROGRESS.value:
@@ -614,7 +621,7 @@ class WorkflowInvocationHandler:
                     )
                     
                 asyncio.create_task(self._cancel_invocation_background(invocation))
-                invocation_state_result = "Failed"
+                invocation_state_result = InvocationStates.FAILED.value
                 break
 
             

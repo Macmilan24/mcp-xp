@@ -335,7 +335,7 @@ class ToolManager:
             current_state = job.state
 
             if current_state != previous_state:
-                self.log.info(f"Job {job_id} transitioned to {current_state}")
+                self.log.debug(f"Job {job_id} transitioned to {current_state}")
                 
                 if ws_manager:
                     await ws_manager.broadcast(
@@ -355,7 +355,7 @@ class ToolManager:
                 deadline = max(deadline + extension, start_time + initial_wait)
 
             if current_state == "ok":
-                self.log.info("Job execution complete.")
+                self.log.debug("Job execution complete.")
                 if ws_manager:
                     await ws_manager.broadcast(
                         event = SocketMessageEvent.tool_execute.value,
@@ -486,7 +486,7 @@ class ToolManager:
         job_id = tool_execution['jobs'][0]['id']
         outputs = tool_execution['outputs']
 
-        self.log.info(f"Started job {job_id} for tool {tool_id!r}")
+        self.log.debug(f"Started job {job_id} for tool {tool_id!r}")
         
         if ws_manager:
             await ws_manager.broadcast(
