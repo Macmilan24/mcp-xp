@@ -40,7 +40,7 @@ class GlobalRecommender:
         unique_workflows: dict[str, dict] = {}
 
         def add_or_update_workflow(wf):
-            name = wf.get("name")
+            name = wf.get("name").lower().strip()
             if not name:
                 return
 

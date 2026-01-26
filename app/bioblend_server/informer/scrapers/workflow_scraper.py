@@ -11,7 +11,10 @@ import logging
 from dotenv import load_dotenv
 
 from app.log_setup import configure_logging
-from app.bioblend_server.informer.utils import WorkflowGitubScraperUrl
+from app.bioblend_server.informer.utils import (
+    WorkflowGitubScraperUrl,
+    WorkflowHubScraperUrl,
+)
 
 
 class GalaxyWorkflowScraper:
@@ -369,8 +372,8 @@ class WorkflowHubScraper:
     def __init__(self):
         configure_logging()
         self.log = logging.getLogger(__class__.__name__)
-        self.base_url = "https://workflowhub.eu"
-        self.trs_base_url = "https://workflowhub.eu/ga4gh/trs/v2"
+        self.base_url = WorkflowHubScraperUrl.BASE_URL.value
+        self.trs_base_url = WorkflowHubScraperUrl.TRS_BASE_URL.value
         self.semaphore = asyncio.Semaphore(5)
 
     async def _get(self, client, url, params=None):
