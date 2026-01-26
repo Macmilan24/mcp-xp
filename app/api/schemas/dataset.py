@@ -43,3 +43,8 @@ class HistoryContentsResponse(BaseModel):
     """Response schema for listing the contents of a history."""
     datasets: List[DatasetInfo]
     collections: List[DatasetInfo]
+    
+class LocalDatasetImportResponse(BaseModel):
+    """Response schema for local file adoption."""
+    dataset_id: str
+    history_id: str
