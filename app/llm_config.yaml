@@ -1,0 +1,24 @@
+providers:
+  gemini:
+    base_url: https://generativelanguage.googleapis.com/v1beta/models
+    model: gemini-2.0-flash
+    embedding_model: embedding-001
+    provider: gemini
+    temperature: 0.7
+    max_tokens: 1048576
+    top_p: 1
+    stream: true
+    stop: null
+
+  openai:
+    base_url: https://api.openai.com/v1
+    model: gpt-4o-mini
+    embedding_model: text-embedding-3-small
+    provider: openai
+    temperature: 0.7
+    max_tokens: 8000
+    top_p: 1
+    stream: true
+    stop: null
+
+default_provider: gemini

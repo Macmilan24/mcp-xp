@@ -1,6 +1,6 @@
 import logging
 import asyncio
-import numpy as np
+
 from app.bioblend_server.informer.manager import InformerManager
 from app.bioblend_server.informer.utils import LLMResponse
 

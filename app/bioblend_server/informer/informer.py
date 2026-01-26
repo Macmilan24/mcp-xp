@@ -15,7 +15,7 @@ from sys import path
 path.append(".")
 
 from app.log_setup import configure_logging
-from app.bioblend_server.galaxy import GalaxyClient
+from app.galaxy import GalaxyClient
 from app.bioblend_server.informer.prompts import SUMMARIZER_PROMPT, FINAL_RESPONSE_PROMPT
 
 # Import modular components
@@ -301,24 +301,26 @@ class GalaxyInformer:
                 
             return response_text
         
+        all_results = []
         
         if retrieved_contents:
             tasks = [content_response(content) for content in retrieved_contents]
             task_results = await asyncio.gather(*tasks)
-            
-            if cached_summaries:
-                task_results.extend(cached_summaries)
-                
-            query_responses = "\n\n\n\n".join(str(r) for r in task_results if r)
+            all_results.extend(task_results)
+        if cached_summaries:
+            all_results.extend(cached_summaries)
+        
+        if all_results:        
+            query_responses = "\n\n\n\n".join(str(r) for r in all_results if r)
         
         if global_content:
             global_responses = "\n\n\n\n".join(str(r) for r in global_content if r)
         
-        if query_responses.strip()=="" or retrieved_contents is None:
+        if not query_responses.strip():
             self.log.info(f"No suitable {self.entity_type}s found in the users galaxy instance for the users needs.")
             query_responses = f"No suitable {self.entity_type}s found in the users galaxy instance for the users needs."
             
-        if global_responses.strip()=="" or global_content is None:
+        if not global_responses.strip() and not global_content:
             self.log.info(f"No suitable {self.entity_type}s found in external sources for the users needs.")
             global_responses = f"No suitable {self.entity_type}s found in external sources for the users needs."
 
@@ -341,12 +343,14 @@ class GalaxyInformer:
             # Validate the id against the entity id in galaxy instance
             retrived_entity = next((e for e in entities if e[id_field] == entity_id), None)
             if retrived_entity != None:
-                found_entities = {
-                    '0': {
+                found_entities = [
+                    {
                         'name': retrived_entity['name'],
-                        id_field: retrived_entity[id_field]
+                        id_field: retrived_entity[id_field],
+                        'source': 'user_instance', 
+                        'content': None 
                     }
-                }
+                ]
 
         if found_entities is None:
             self.log.info(f"No ID provided or invalid ID. Searching for entities based on query: '{search_query}'")

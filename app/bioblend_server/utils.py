@@ -4,17 +4,15 @@ import logging
 import asyncio
 import jwt
 
-from pydantic import BaseModel, Field
-from typing import Literal, Optional
+from typing import Optional
 from contextvars import ContextVar
 from cryptography.fernet import Fernet, InvalidToken
 
 from fastmcp.server.middleware import Middleware, MiddlewareContext, CallNext
 from fastmcp.server.dependencies import get_http_headers
 
-from app.AI.llm_config._base_config import LLMModelConfig
-from app.AI.provider.gemini_provider import GeminiProvider
-from app.AI.provider.openai_provider import OpenAIProvider
+from app.llm_config import LLMModelConfig, LLMConfiguration
+from app.llm_provider import GeminiProvider, OpenAIProvider
 
 current_api_key_server: ContextVar[str] = ContextVar("current_api_key_server", default=None)
 
@@ -112,8 +110,8 @@ class JWTGalaxyKeyMiddleware(Middleware):
             return None
         
 async def get_llm_response(message, llm_provider = os.environ.get("CURRENT_LLM", "gemini")):
-    with open('app/AI/llm_config/llm_config.json', 'r') as f:
-        model_config_data = json.load(f)
+    
+    model_config_data = LLMConfiguration().data
     
     if llm_provider == "gemini":
         gemini_cfg = LLMModelConfig(model_config_data['providers']['gemini'])

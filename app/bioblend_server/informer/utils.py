@@ -4,11 +4,13 @@ import numpy as np
 from enum import IntEnum, Enum
 from dotenv import load_dotenv
 
-from app.AI.provider._base_provider import LLMProvider
-from app.AI.provider.huggingface_provider import HuggingFaceModel
-from app.AI.provider.gemini_provider import GeminiProvider
-from app.AI.provider.openai_provider import OpenAIProvider
-from app.AI.llm_config._base_config import LLMModelConfig
+from app.llm_config import LLMModelConfig
+from app.llm_provider import (
+    LLMProvider, 
+    GeminiProvider, 
+    OpenAIProvider,
+    HuggingFaceModel
+    )
 
 load_dotenv()
 
@@ -36,7 +38,12 @@ class SearchThresholds(Enum):
     SEMANTIC_THRESHOLD = 0.3
     FUZZY_THRESHOLD = 50
     SEARCH_LIMIT = 50
+    TOOL_SCRAPE_PERCENTAGE = 1
 
+class WorkflowGitubScraperUrl(Enum):
+    GITHUB_SCRAPE_URL = "https://api.github.com/repos/galaxyproject/iwc/contents/workflows"
+    RAW_BASE_URL = "https://raw.githubusercontent.com/galaxyproject/iwc/main/workflows"
+    
 class EmbeddingModel(Enum):
     """Defines supported embedding models and their vector sizes."""
     

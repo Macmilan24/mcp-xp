@@ -4,7 +4,7 @@ import redis
 import logging
 import asyncio
 
-from app.orchestration.utils import TTLiveConfig
+from app.enumerations import TTLiveConfig
 
 class InvocationCache:
     def __init__(self, redis_client: redis.Redis):

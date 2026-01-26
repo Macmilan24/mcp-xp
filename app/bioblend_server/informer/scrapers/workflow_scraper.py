@@ -1,15 +1,16 @@
-import json
-import os
-
 from sys import path
 path.append(".")
 
+import os
+import re
+import json
+import httpx
+import asyncio
 import logging
 from dotenv import load_dotenv
-import httpx
-import re
+
 from app.log_setup import configure_logging
-import asyncio
+from app.bioblend_server.informer.utils import WorkflowGitubScraperUrl
 
 
 class GalaxyWorkflowScraper:
@@ -23,8 +24,9 @@ class GalaxyWorkflowScraper:
 
         # github token for future use
         self.github_token = os.getenv("GITHUB_TOKEN", None)
-        self.github_API_URL = "https://api.github.com/repos/galaxyproject/iwc/contents/workflows"
-        self.raw_base_url = "https://raw.githubusercontent.com/galaxyproject/iwc/main/workflows"
+        self.github_API_URL = WorkflowGitubScraperUrl.GITHUB_SCRAPE_URL.value
+        self.raw_base_url = WorkflowGitubScraperUrl.RAW_BASE_URL.value
+        
         if self.github_token:
             self.headers = {
                 "Authorization": f"token {self.github_token}"

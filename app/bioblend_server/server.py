@@ -14,17 +14,23 @@ from qdrant_client.http.exceptions import ApiException
 
 from app.log_setup import configure_logging
 from app.bioblend_server.utils import JWTGalaxyKeyMiddleware, current_api_key_server, get_llm_response
-from app.bioblend_server.galaxy import GalaxyClient
-from app.bioblend_server.informer.informer import GalaxyInformer
-from app.bioblend_server.executor.workflow_manager import WorkflowManager
-from app.orchestration.invocation_cache import InvocationCache
-from app.api.endpoints.invocation import show_invocation_result, report_invocation_failure
+from app.galaxy import GalaxyClient
+
 from app.bioblend_server.background_runner import BackgroundIndexer
+from app.bioblend_server.informer.informer import GalaxyInformer
+from app.orchestration.invocation_cache import InvocationCache
+from app.orchestration.invocation_tasks import InvocationBackgroundTasks
+from app.api.endpoints.invocation import show_invocation_result
+from app.GX_integration.workflows.workflow_manager import WorkflowManager
+from app.GX_integration.invocations.data_manager import InvocationDataManager
 
 configure_logging()
 logger = logging.getLogger("fastmcp_bioblend_server")
 
 redis_client = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"), port=os.getenv("REDIS_PORT"), db=0, decode_responses=True)
+invocation_cache = InvocationCache(redis_client)
+invocation_background = InvocationBackgroundTasks(cache = invocation_cache, redis_client = redis_client)
+inv_data_manager = InvocationDataManager(cache = invocation_cache, background_tasks = invocation_background)
 
 if not os.environ.get("GALAXY_API_KEY") or not os.environ.get("QDRANT_HTTP_PORT") or not os.environ.get("CURRENT_LLM"):
     logger.warning("MCP server environment variables are not set.")
@@ -231,7 +237,7 @@ async def import_workflow_to_galaxy_instance(
         galaxy_client: GalaxyClient = GalaxyClient(user_api_key)
         username = galaxy_client.whoami
         workflow_manager: WorkflowManager = WorkflowManager(galaxy_client)
-        qdrant_client: InformerManager = InformerManager().create()
+        qdrant_client: InformerManager = await InformerManager().create()
 
         # TODO: Fill the workflow collection name (has to be user-specific, so ...)
         workflow_collection_name: str = ""
@@ -300,7 +306,6 @@ async def analyze_invocation(invocation_id: str, user_api_key: str, failure: boo
     # instantiate galaxy client and invocation cacher classes
     galaxy_client = GalaxyClient(user_api_key)
     username = galaxy_client.whoami
-    invocation_cache = InvocationCache(redis_client)
     
     logger.info(f"Loading workflow Invocation with ID: {invocation_id} for explanationn for current Galaxy MCP server user: {username}")
     
@@ -363,7 +368,7 @@ async def analyze_invocation(invocation_id: str, user_api_key: str, failure: boo
         explanation += "Analysis for failures in the workflow invocation:\n"
         
         # Get failure reports or the invocation.
-        explanation += await report_invocation_failure(galaxy_client, invocation_id)
+        explanation += await inv_data_manager.report_invocation_failure(galaxy_client, invocation_id)
         
         return explanation
     if invocation_state == "pending":

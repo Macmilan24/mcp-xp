@@ -1,15 +1,18 @@
 import os
 from sys import path
 path.append(".")
-import xml.etree.ElementTree as ET
-from bioblend.galaxy import GalaxyInstance
+
 import httpx
-import yaml
 import random
 import logging
 from dotenv import load_dotenv
 from app.log_setup import configure_logging
 import asyncio
+
+import xml.etree.ElementTree as ET
+from bioblend.galaxy import GalaxyInstance
+
+from app.bioblend_server.informer.utils import SearchThresholds
 
 
 class GalaxyToolScraper:
@@ -20,13 +23,6 @@ class GalaxyToolScraper:
         configure_logging()
         
         self.log = logging.getLogger(__class__.__name__)
-        
-        config_file = "config.yml"
-        if not os.path.exists(config_file):
-            self.log.error(f"Configuration file {config_file} not found.")
-            raise FileNotFoundError(f"Configuration file {config_file} not found.")
-        with open(config_file, "r") as f:
-            self.config = yaml.safe_load(f)
             
         # Get Galaxy scraping credentials from environment variables
         self.galaxy_url = os.getenv("GALAXY_SCRAPING_URL")
@@ -47,10 +43,9 @@ class GalaxyToolScraper:
         
     async def scrape_tool(self):
         # setting variables
-        categories_config = self.config.get("categories", {})
         self.log.info(f"Scraping galaxy tools data...")
-        
         self.log.info(f"Fetching tool list from Galaxy instance at {self.galaxy_url}...")
+        
         tools = await asyncio.to_thread(self.gi.tools.get_tools)
         
         # Group tools By Category
@@ -63,11 +58,9 @@ class GalaxyToolScraper:
         tool_map = {}
         total_tools = 0
         for category, cat_tools in tools_by_category.items():
-            percentage = categories_config.get(category, {}).get("percentage", 1)
-            if not isinstance(percentage, (int, float)) or percentage < 0:
-                self.log.debug(f"Invalid percentage for {category}: {percentage}. Using 100%.")
-                percentage = 1
-            percentage = min(percentage, 1)
+            # TODO: Fix implementation of percentage and tool scraping, the percentage is uneeded here.
+            
+            percentage = SearchThresholds.TOOL_SCRAPE_PERCENTAGE.value
             num_tools = int(len(cat_tools) * percentage)
             if num_tools == 0 and percentage > 0:
                 num_tools = 1

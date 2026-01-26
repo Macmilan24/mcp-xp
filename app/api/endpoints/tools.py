@@ -10,8 +10,8 @@ from bioblend.galaxy.objects.wrappers import HistoryDatasetAssociation, HistoryD
 from app.context import current_api_key
 from app.api.schemas.tool import ToolExecutionResponse
 from app.api.schemas.workflow import OutputDataset, CollectionOutputDataset
-from app.bioblend_server.galaxy import GalaxyClient 
-from app.bioblend_server.executor.tool_manager import ToolManager
+from app.galaxy import GalaxyClient 
+from app.GX_integration.tool_manager import ToolManager
 from app.api.socket_manager import ws_manager
 
 from app.exceptions import InternalServerErrorException
@@ -89,18 +89,14 @@ async def execute_tool(
         
         log.info(f"Transformed inputs: {bioblend_inputs}")
         
-        # Get history object
-        history = await run_in_threadpool(
-            tool_manager.gi_object.histories.get, history_id
-            )
-        
         # Execute tool with transformed inputs
         result = await tool_manager.run(
             tool_id = tool_id, 
-            history = history, 
+            history_id = history_id, 
             inputs = bioblend_inputs,
-            ws_manager = ws_manager,
-            tracker_id= tracker_id
+            tracker_id= tracker_id,
+            ws_manager = ws_manager
+            
             )
         
         # Process output datasets

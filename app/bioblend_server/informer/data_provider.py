@@ -6,7 +6,7 @@ import logging
 from typing import Dict, Any, Union
 from urllib.parse import quote
 
-from app.bioblend_server.galaxy import GalaxyClient
+from app.galaxy import GalaxyClient
 
 class GalaxyDataProvider:
     """Dynamic Data fetcher/provider of for a given user. Data fecthing ffor galaxy tools, worklows,and datasets."""

@@ -50,10 +50,3 @@ class BackgroundIndexer:
             raise
         finally:
             self.log.info("Background scraper loop shutdown complete.")
-            
-if __name__ == "__main__":
-    async def main():
-        bg = BackgroundIndexer()
-        await bg.run_once()
-        
-    asyncio.run(main())
