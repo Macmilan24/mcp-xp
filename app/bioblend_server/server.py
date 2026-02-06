@@ -195,8 +195,11 @@ async def explain_galaxy_workflow_invocation(
                 - Key output datasets or collections
                 - Next logical steps for the user
                 """
-        
-        response = await get_llm_response(message = invocation_prompt)
+        try:
+            response = await get_llm_response(message = invocation_prompt)
+        except Exception as e:
+            logger.error(f"Error preparing structured suggestions, returning full report. {e}")
+            response = invocation_analysis
         return response
     
     except GalaxyConnectionError as e:
@@ -248,10 +251,11 @@ async def import_workflow_to_galaxy_instance(
         qdrant_client: InformerManager = await InformerManager().create()
 
         # TODO: Fill the workflow collection name (has to be user-specific, so ...)
-        workflow_collection_name: str = ""
+        workflow_collection_name: str = "generic_galaxy_workflow"
 
         # Step 1: Search for the workflow by name in metadata (synchronous call in thread pool)
-        logger.info(f"Searching for workflow '{workflow_name}' in collection '{workflow_collection_name}' for explanationn for current Galaxy MCP server user: {username}")
+        logger.info(f"Searching for workflow '{workflow_name}' in collection '{workflow_collection_name}'.")
+        logger.info(f"current Galaxy MCP server user: {username}")
         hits = await qdrant_client.match_name_from_collection(
             workflow_collection_name=workflow_collection_name,
             workflow_name = workflow_name
@@ -274,7 +278,7 @@ async def import_workflow_to_galaxy_instance(
         workflow_json: dict = await fetch_workflow_json_async(workflow_url)
 
         # TODO: Ensure that getting the workflow name is correct.
-        ga_workflow_name: str = workflow_json.get("workflow_name", "")
+        ga_workflow_name: str = workflow_json.get("name", workflow_json.get("workflow_name", ""))
         if not ga_workflow_name:
             logger.error(f"Workflow JSON does not contain a 'name' field for '{workflow_name}'")
             raise ValueError(f"Workflow JSON does not contain a 'name' field for '{workflow_name}'.")

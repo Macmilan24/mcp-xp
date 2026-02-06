@@ -362,6 +362,8 @@ class GalaxyWorkflowScraper:
         try:
             self.log.info("Preprocessing scraped workflows...")
             preprocessed = self.preprocess_scraped(all_data)
+            if not preprocessed:
+                raise ValueError("No workflows scraped")
             return preprocessed
         except Exception as e:
             self.log.error(f"Error during preprocessing or saving: {e}")

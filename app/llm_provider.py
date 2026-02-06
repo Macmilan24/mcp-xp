@@ -137,7 +137,10 @@ class GeminiProvider(LLMProvider):
 class OpenAIProvider(LLMProvider):
     def __init__(self, model_config):
         super().__init__(model_config)
-        self.client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+        self.client = AsyncOpenAI(
+                        api_key=OPENAI_API_KEY,
+                        base_url = model_config.base_url
+                        )
 
         self.log = logging.getLogger(self.__class__.__name__)
         
