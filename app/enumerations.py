@@ -102,6 +102,7 @@ class SocketMessageType(str, Enum):
     INDEX_UPDATE = "INDEX_UPDATE"
     INDEX_START =  "INDEX_START"
     INDEX_FINISH = "INDEX_FINISH"
+    INDEX_FAIL = "INDEX_FAIL"
 
 class SocketMessageEvent(str, Enum):
     """Enumeration of possible socket message event types for workflow and tool execution."""

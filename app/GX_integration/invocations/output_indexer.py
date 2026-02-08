@@ -15,7 +15,7 @@ from app.GX_integration.invocations.utils import (
 )
 
 from app.api.schemas import dataset
-from app.enumerations import IndexingResponses, NumericLimits
+from app.enumerations import IndexingResponses, NumericLimits, SocketMessageEvent, SocketMessageType
 from app.GX_integration.invocations.utils import log_task_error
 from app.exceptions import InternalServerErrorException
 
@@ -301,6 +301,20 @@ class OutputIndexer:
                 self.log.info(f"Total datasets to index: {self.total_index}")
                 self.log.debug(f"Beginning dataset indexing for invocation_id = {invocation_id} in history_id = {history_id}")
                 
+                completed = 0
+
+                # Notify start
+                if self.ws_manager:
+                    
+                    await self.ws_manager.broadcast(
+                        event=SocketMessageEvent.output_index.value,
+                        data={
+                            "type": SocketMessageType.INDEX_START.value,
+                            "payload":{ "message" : f"Starting indexing of {self.total_index} datasets for invocation {invocation_id}"},
+                        },
+                        tracker_id=invocation_id
+                    )
+                    
                 # gather index results; Run tasks concurrently, process results as they finish
                 for coro in asyncio.as_completed(indexing_task):
 
@@ -319,7 +333,21 @@ class OutputIndexer:
                             invocation_id=invocation_id,
                             result=invocation_result
                         )
-
+                        
+                        if self.ws_manager:
+                            
+                            completed += 1
+                            await self.ws_manager.broadcast(
+                                event=SocketMessageEvent.output_index.value,
+                                data={
+                                    "type": SocketMessageType.INDEX_UPDATE.value,
+                                    "payload":{
+                                        "message": f"Dataset indexing progress: {completed}/{self.total_index}",
+                                        "progress": f"{completed}/{self.total_index}"
+                                        }
+                                },
+                                tracker_id=invocation_id
+                            )
                         self.log.debug("Incremental index result saved to cache.")
 
                     except Exception as e:
@@ -327,6 +355,19 @@ class OutputIndexer:
                 
                 self.log.debug(F'Invocaion with id {invocation_id} as completed execution and indexing, persisting final results.')
                 
+                if self.ws_manager:
+                    
+                    await self.ws_manager.broadcast(
+                        event=SocketMessageEvent.output_index.value,
+                        data={
+                            "type": SocketMessageType.INDEX_FINISH.value,
+                            "payload": {
+                                "message": f"Completed indexing datasets for invocation {invocation_id}."
+                                },
+                        },
+                        tracker_id=invocation_id
+                    )
+                    
                 await self.mongo_client.set(
                     collection_name= CollectionNames.INVOCATION_RESULTS.value, 
                     key = f"{self.username}:{invocation_id}", 
@@ -443,13 +484,16 @@ class OutputIndexer:
                 await self.cache.set_dataset_index(username = username, unique_id = unique_id, index_data = response)
 
                 # Notify user
-                await self.ws_manager.broadcast(
-                    user_id=username,
-                    message={
-                        "event": "INDEXING_COMPLETE", # TODO
-                        "message": "Dataset indexing complete"
-                    }
-                )
+                if self.ws_manager:
+                    
+                    await self.ws_manager.broadcast(
+                        event= SocketMessageEvent.output_index.value,
+                        data={
+                            "type": SocketMessageType.INDEX_FINISH.value,
+                            "payload": {"message": "Dataset indexing complete"}
+                        },
+                        tracker_id = unique_id
+                    )
                 self.log.info(f"Indexing complete and persisted for {dataset_id}")
                 
             else:
@@ -458,11 +502,18 @@ class OutputIndexer:
         except Exception as e:
             self.log.error(f"Background indexing failed: {e}")
             await self.cache.delete_dataset_index(username, unique_id)
-            await self.ws_manager.broadcast(
-                user_id=username,
-                message={"event": "INDEXING_FAILED",  "message": str(e)}
-            )
             
+            if self.ws_manager:
+                
+                await self.ws_manager.broadcast(
+                    event=SocketMessageEvent.output_index.value,
+                    data={
+                        "type": SocketMessageType.INDEX_FAIL.value, 
+                        "payload": {"message": "Dataset indexing Failed."}
+                        },
+                    tracker_id=unique_id
+                )
+                
     async def get_dataset_index(
         self,
         dataset_id: str,
@@ -487,6 +538,17 @@ class OutputIndexer:
                 await self.cache.set_dataset_index(username, unique_id, stored_index)
                 self.log.info("Dataset index served from database")
                 return dataset.IndexingResponse(**stored_index)
+            
+            if self.ws_manager:
+                
+                await self.ws_manager.broadcast(
+                    event = SocketMessageEvent.output_index.value,
+                    data = {
+                        "event": SocketMessageType.INDEX_START.value, # TODO
+                        "payload": {"message" :"Starting Dataset indexing."}
+                    },
+                    tracker_id = unique_id
+                )
 
             # Optional short-lived "processing" marker
             result = {
