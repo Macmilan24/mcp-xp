@@ -43,6 +43,10 @@ class SearchThresholds(Enum):
 class WorkflowGitubScraperUrl(Enum):
     GITHUB_SCRAPE_URL = "https://api.github.com/repos/galaxyproject/iwc/contents/workflows"
     RAW_BASE_URL = "https://raw.githubusercontent.com/galaxyproject/iwc/main/workflows"
+
+class WorkflowHubScraperUrl(Enum):
+    BASE_URL = "https://workflowhub.eu"
+    TRS_BASE_URL = "https://workflowhub.eu/ga4gh/trs/v2"
     
 class EmbeddingModel(Enum):
     """Defines supported embedding models and their vector sizes."""
