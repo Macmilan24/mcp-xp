@@ -14,6 +14,7 @@ class NumericLimits(IntEnum):
     WARM_TIMESTAMP = 3600
     WARM_CHECK = 180
     BACKGROUND_INVOCATION_TRACK = 86400
+    BACKGROUND_INDEX_TRACK = 3600
     TOOL_EXECUTION_POLL = 5
     BATCH_LIMIT = 2
 
@@ -26,6 +27,7 @@ class TTLiveConfig(IntEnum):
     RAW_INVOCATION_LIST = 10
     DUPLICATE_CHECK = 3
     INVOCACTION_RESULT = 259200  # 3 day cache for invocation result.
+    SHORT_TTL = 20
     
 class InvocationTracking(IntEnum):
     """ Invocation tracker time limits. """
@@ -113,8 +115,16 @@ class SocketMessageEvent(str, Enum):
 class CollectionNames(Enum):
     """ Enumerations for mongo collection names. """
     
+    DATA_ADOPTATION = "DataAdoptation"
+    DATA_INDEXES = "DataIndexes"
     INVOCATION_LISTS = "InvocationList"
     INVOCATION_IDS = "InvocationIDs"
     INVOCATION_RESULTS = "InvocationResults"
     DELETED_INVOCATIONS = "DeletedInvocation"
     INVOCATION_STATES = "InvocationStates"
+    
+class IndexingResponses(Enum):
+    PENDING_MESSAGE = "Data Indexing in progress."
+    COMPLETE_MESSAGE = "Indexing Completed."
+    PENDING_STATUS = "Pending"
+    COMPLETE_STATUS = "Complete"

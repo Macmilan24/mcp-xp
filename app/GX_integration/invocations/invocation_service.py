@@ -10,7 +10,6 @@ from starlette.status import HTTP_204_NO_CONTENT
 
 from app.galaxy import GalaxyClient
 from app.persistence import MongoStore
-from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.api.schemas import invocation, workflow
 from app.orchestration.invocation_cache import InvocationCache
 from app.orchestration.invocation_tasks import InvocationBackgroundTasks
@@ -27,6 +26,7 @@ from app.exceptions import (
     NotFoundException
     )
 
+from app.GX_integration.workflows.workflow_manager import WorkflowManager
 from app.GX_integration.invocations.data_manager import InvocationDataManager
 from app.GX_integration.invocations.tracker import InvocationTracker
 from app.GX_integration.invocations.utils import generate_request_hash, log_task_error

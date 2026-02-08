@@ -1,16 +1,24 @@
+import logging
 import httpx
 from typing import Optional, Literal
-
+from starlette.status import HTTP_202_ACCEPTED
 from fastapi import (
     APIRouter,
     Query,
     HTTPException
     )
 
+from app.log_setup import configure_logging
 from app.context import current_api_key
 from app.config import GALAXY_URL
+from app.galaxy import GalaxyClient
+from app.enumerations import CollectionNames
+from app.api.schemas.dataset import LocalDatasetImportResponse, IndexingResponse
+from app.api.endpoints.invocation import ws_manager, mongo_client, invocation_cache
+from app.GX_integration.invocations.output_indexer import OutputIndexer 
 
-from app.api.schemas.dataset import LocalDatasetImportResponse
+configure_logging()
+log = logging.getLogger("Dataset")
 
 router = APIRouter()
 
@@ -23,12 +31,26 @@ tags = ["Histories & Data"]
 )
 async def proxy_adopt_local_file(
     file_path: str = Query(..., description="Absolute path to the local file"),
-    file_name: Optional[str] = Query(None),
-    extension: Optional[str] = Query(None),
+    file_name: Optional[str] = Query(None, description="Display name in history"),
+    extension: Optional[str] = Query(None, description="Galaxy extension (fastq.gz, vcf, etc.)"),
     file_origin: Optional[Literal["annotation", "hypothesis"]] = Query(None),
+    unique_id: Optional[str] = Query(None, description="unique identifier for the file to be adopted. Preferably annotation/Hypothesis ID."),
     hist_id: Optional[str] = Query(None),
     ):
-    
+    """
+    Adopts a local file into Galaxy via proxy, optionally caching the response for annotation or hypothesis files.
+    This endpoint proxies a request to Galaxy's `/api/datasets/adopt_file` to import a file located in local storage.
+    """
+
+    if file_origin and unique_id:
+        storage_key = f"{file_origin}_{unique_id}"
+        try:
+            stored_response = await mongo_client.get(collection_name=CollectionNames.DATA_ADOPTATION.value, key = storage_key)
+            if stored_response:
+                return LocalDatasetImportResponse(**stored_response)
+        except Exception as e:
+            log.warning(f"Failed to fetch from storage: {e}")
+            
     params = {
     "file_path": file_path,
     "file_name": file_name,
@@ -66,6 +88,14 @@ async def proxy_adopt_local_file(
             )
 
     response = resp.json()
+    
+    if file_origin and unique_id:
+        storage_key = f"{file_origin}_{unique_id}"
+        try:
+            await mongo_client.set(collection_name= CollectionNames.DATA_ADOPTATION.value, key = storage_key, value = response)
+        except Exception as e:
+            log.warning(f"Failed to store response: {e}")
+            
     return LocalDatasetImportResponse(**response)
 
 @router.post(
@@ -83,9 +113,22 @@ async def proxy_adopt_minio_object(
     file_name: Optional[str] = Query(None, description="Display name in history"),
     extension: Optional[str] = Query(None, description="Galaxy extension (fastq.gz, vcf, etc.)"),
     file_origin: Optional[Literal["annotation", "hypothesis"]] = Query(None),
+    unique_id: Optional[str] = Query(None, description="unique identifier for the file to be adopted. Preferably annotation/Hypothesis ID."),
     hist_id: Optional[str] = Query(None, description="Encoded history_id"),
 ):
-    
+    """
+    Adopts an object from a MinIO bucket into Galaxy via proxy, optionally caching the response.
+    This endpoint proxies a request to Galaxy's `/api/datasets/adopt_object` to import a file from MinIO object storage.
+    """
+    if file_origin and unique_id:
+        storage_key = f"{file_origin}_{unique_id}"
+        try:
+            stored_response = await mongo_client.get(collection_name=CollectionNames.DATA_ADOPTATION.value, key = storage_key)
+            if stored_response:
+                return LocalDatasetImportResponse(**stored_response)
+        except Exception as e:
+            log.warning(f"Failed to fetch from storage: {e}")
+            
     params = {
         "bucket": bucket,
         "object_key": object_key,
@@ -122,4 +165,56 @@ async def proxy_adopt_minio_object(
         )
 
     response = resp.json()
+    
+    if file_origin and unique_id:
+        storage_key = f"{file_origin}_{unique_id}"
+        try:
+            await mongo_client.set(collection_name= CollectionNames.DATA_ADOPTATION.value, key = storage_key, value = response)
+        except Exception as e:
+            log.warning(f"Failed to store response: {e}")
+    
     return LocalDatasetImportResponse(**response)
+
+@router.post(
+    "/index_file",
+    response_model=IndexingResponse,
+    status_code= HTTP_202_ACCEPTED,
+    summary="Generate index file for endpoint"
+)
+async def generate_index_file(
+    file_path: str = Query(..., description="Absolute path to the local file"),
+    file_name: Optional[str] = Query(None),
+    extension: Optional[str] = Query(None),
+    file_origin: Optional[Literal["annotation", "hypothesis"]] = Query(None),
+    unique_id: Optional[str] = Query(None, description="unique identifier for the file to be indexed. Preferably annotation/Hypothesis ID.")
+):
+    api_key = current_api_key.get()
+    galaxy_client = GalaxyClient(user_api_key=api_key)
+    username = galaxy_client.whoami
+
+    # Adopt local file or fetch dataset id if data has already beed adopted into galaxy.
+    try:
+        galaxy_info = await proxy_adopt_local_file(
+            file_path=file_path,
+            file_name=file_name,
+            extension=extension,
+            file_origin=file_origin,
+            unique_id = unique_id
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to adopt file: {str(e)}")
+
+    output_indexer = OutputIndexer(
+        username=username,
+        galaxy_client=galaxy_client,
+        cache = invocation_cache,
+        mongo_client = mongo_client,
+        ws_manager = ws_manager 
+    )
+
+    # Index and return index data information
+    return await output_indexer.get_dataset_index(
+        dataset_id = galaxy_info.dataset_id,
+        unique_id = unique_id,
+        username = username
+    )
