@@ -265,3 +265,32 @@ class InvocationCache:
             
         except Exception as e:
             self.log.error(f"Failed to clear deleted workflows for user: {username}: {e}")
+    
+    async def get_dataset_index(self, username: str, unique_id: str) -> Optional[Dict]:
+        """Get cached dataset index result"""
+        try:
+            cache_key = f"dataset_index:{username}:{unique_id}"
+            cached_data = await asyncio.to_thread(self.redis.get, cache_key)
+            if cached_data:
+                return json.loads(cached_data)
+            return None
+        except Exception as e:
+            self.log.error(f"Error getting dataset index: {e}")
+            return None
+
+    async def set_dataset_index(self, username: str, unique_id: str, index_data: Dict, ttl: int = TTLiveConfig.SHORT_TTL.value):
+        """Cache dataset index result"""
+        try:
+            cache_key = f"dataset_index:{username}:{unique_id}"
+            await asyncio.to_thread(self.redis.setex, cache_key, ttl, json.dumps(index_data))
+        except Exception as e:
+            self.log.error(f"Error setting dataset index: {e}")
+    
+    async def delete_dataset_index(self, username: str, unique_id: str) -> None:
+        """Remove cached dataset index result (used on failure or forced retry)"""
+        try:
+            cache_key = f"dataset_index:{username}:{unique_id}"
+            await asyncio.to_thread(self.redis.delete, cache_key)
+            self.log.info(f"Deleted dataset index cache for {username}:{unique_id}")
+        except Exception as e:
+            self.log.error(f"Error deleting dataset index: {e}")
