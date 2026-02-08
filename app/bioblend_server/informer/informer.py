@@ -6,7 +6,7 @@ for Galaxy bioinformatics entities (tools, workflows, datasets).
 """
 
 import os
-
+import re
 import logging
 import asyncio
 from typing import List, Dict
@@ -251,7 +251,7 @@ class GalaxyInformer:
         
         return selected
 
-    async def get_entity_details(self, entity_id: str, content: str = None) -> dict:
+    async def get_entity_details(self, entity_id: str, action_lookup: dict, content: str = None) -> dict:
         """
         Fetch detailed information for a specific entity. return either metadata and/or summarized cached response
         """
@@ -266,12 +266,16 @@ class GalaxyInformer:
             method = detail_methods[self.entity_type]
 
             if asyncio.iscoroutinefunction(method):
-                result =  await method(entity_id)
+                result, name, link =  await method(entity_id)
             else:
-                result = method(entity_id)
+                result, name, link = method(entity_id)
             if content:
                 result["content"] = content
-            
+            if name and link:
+                action_lookup[name] = {
+                    "action" : "Execute",
+                    "link" : link
+                }
             return result
         
         except Exception as e:
@@ -279,7 +283,7 @@ class GalaxyInformer:
             return {"error": "Failed to retrieve details."}
         
  
-    async def generate_final_response(self, query: str, retrieved_contents: list = None, cached_summaries: list[str] = None, global_content: list = None):
+    async def generate_final_response(self, query: str, retrieved_contents: list = None, cached_summaries: list[str] = None, global_content: list = None , action_lookup: dict[str, dict] = None):
         """Generates a final, user-facing natural language response based on the retrieved and processed information."""
         
         query_responses = ""
@@ -311,10 +315,10 @@ class GalaxyInformer:
             all_results.extend(cached_summaries)
         
         if all_results:        
-            query_responses = "\n\n\n\n".join(str(r) for r in all_results if r)
+            query_responses = "\n\n\n".join(str(r) for r in all_results if r)
         
         if global_content:
-            global_responses = "\n\n\n\n".join(str(r) for r in global_content if r)
+            global_responses = "\n\n\n".join(str(r) for r in global_content if r)
         
         if not query_responses.strip():
             self.log.info(f"No suitable {self.entity_type}s found in the users galaxy instance for the users needs.")
@@ -326,10 +330,17 @@ class GalaxyInformer:
 
         self.log.info('Generating final response.')
         prompt = FINAL_RESPONSE_PROMPT.format(entity = self.entity_type,query=query, query_responses = query_responses, global_responses = global_responses)
-        response_text = await self.llm_response.get_response(prompt)
-        self.log.info(f"Final response: {response_text}")
-        return response_text
-
+        final_message = await self.llm_response.get_response(prompt)
+        self.log.info(f"Final response: {final_message}")
+        # return response_text
+        
+        actions = {
+            name: action_lookup[name]
+            for name in action_lookup
+            if re.search(rf"\b{re.escape(name)}\b", final_message, re.IGNORECASE)
+        }
+        
+        return final_message, actions
 
     async def get_entity_info(self, search_query: str, entity_id: str = None) -> dict:
         """The main public method to orchestrate the entire information retrieval process."""
@@ -365,6 +376,7 @@ class GalaxyInformer:
         global_results = []
         cached_summary = None
         cached_summaries = []
+        action_lookup = {}
         
         for item_stub in found_entities:
             item_content = item_stub.get("content")
@@ -377,20 +389,29 @@ class GalaxyInformer:
                         continue
                     
                     if self.entity_type == "workflow":
-                        tasks.append(self.get_entity_details(entity_id = item_id, content= item_content))
+                        tasks.append(self.get_entity_details(entity_id = item_id, action_lookup = action_lookup, content= item_content))
                     else:
-                        tasks.append(self.get_entity_details(item_id))
+                        tasks.append(self.get_entity_details(entity_id = item_id, action_lookup = action_lookup))
             else:
                 global_results.append(item_content)
+                if self.entity_type == "workflow":
+                    item_name = item_content["name"]
+                    action_lookup[item_name] = {
+                        "action" : "Import",
+                        "link": None
+                        }
         
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
         else:
             results = []
         
-        return await self.generate_final_response(
+        response, actions = await self.generate_final_response(
             query = search_query,
             retrieved_contents = results,
             cached_summaries = cached_summaries,
-            global_content = global_results
+            global_content = global_results,
+            action_lookup = action_lookup
             )
+        
+        return response, actions
